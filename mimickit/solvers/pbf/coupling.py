@@ -12,6 +12,46 @@ def add_boundary_forces(forces: wp.array(dtype=wp.spatial_vector),
     body_f[index] += forces[index]
 
 
+class CoupledStepGraph:
+    """Captured full-engine steps with this solver pair's host-side bookkeeping.
+
+    The runtime owns this handle and supplies its complete step as a capture-only
+    callback. The callback is not retained. Buffer addresses, PBF's prediction
+    swaps and MuJoCo's uncaptured Python counter stay inside the solver adapter.
+    Capturing restores host state even on failure; replay commits it once.
+    """
+
+    def __init__(self, solver, step, substeps):
+        self._solver = solver
+        self._substeps = substeps
+        self._graphs = {}
+        fluid = solver.fluid
+        for module in ("solvers.pbf.pbf_helper", "solvers.pbf.PBF",
+                       "solvers.pbf.boundary_model", "solvers.pbf.coupling"):
+            wp.load_module(module=module, device=solver.model.device)
+        fluid.grid.reserve(solver.model.particle_count)
+        prediction = (fluid.pre_Pos, fluid.temp_pPos)
+        rigid_step = solver.rigid._step
+        # Odd numbers of PBF substeps alternate the starting buffer address.
+        starts = [prediction] if substeps % 2 == 0 else [prediction, prediction[::-1]]
+        try:
+            for buffers in starts:
+                fluid.pre_Pos, fluid.temp_pPos = buffers
+                with wp.ScopedCapture(device=solver.model.device) as capture:
+                    step()
+                self._graphs[buffers[0].ptr] = (capture.graph, (fluid.pre_Pos, fluid.temp_pPos))
+        finally:
+            fluid.pre_Pos, fluid.temp_pPos = prediction
+            solver.rigid._step = rigid_step
+
+    def launch(self):
+        fluid = self._solver.fluid
+        graph, prediction = self._graphs[fluid.pre_Pos.ptr]
+        wp.capture_launch(graph)
+        fluid.pre_Pos, fluid.temp_pPos = prediction
+        self._solver.rigid._step += self._substeps
+
+
 class SolverPBFMuJoCo(newton.solvers.SolverBase):
     """Compose the existing solvers, forwarding only rigid-body observables."""
     ObservableKind = newton.solvers.SolverMuJoCo.ObservableKind
@@ -32,6 +72,10 @@ class SolverPBFMuJoCo(newton.solvers.SolverBase):
 
     def observables(self, kinds, *, contacts=None, requires_grad=None):
         return self.rigid.observables(kinds, contacts=contacts, requires_grad=requires_grad)
+
+    def capture_step_graph(self, step, substeps):
+        """Capture the caller's full step without exposing solver-private state."""
+        return CoupledStepGraph(self, step, substeps)
 
     def step(self, state_in, state_out, control, contacts, dt, *, observables=None):
         # The engine has already cleared forces and applied user inputs.

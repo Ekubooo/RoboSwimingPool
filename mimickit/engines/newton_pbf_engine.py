@@ -3,8 +3,6 @@ wp.config.enable_backward = False
 
 import newton
 import numpy as np
-import inspect
-import linecache
 import os
 import torch
 import pyglet
@@ -43,6 +41,90 @@ def str_to_key_code(key_str):
     key_code = getattr(pyglet.window.key, key_name)
     return key_code
 
+class ArticulationLayout:
+    """Shared, construction-time topology for MimicKit's object/batch views.
+
+    This backend imports one joint per body and repeats the same object layout
+    in every world. Slices cover all worlds; batched Torch views use the first
+    world's slices. Only topology is cached here, never mutable gains or masses.
+    The Warp indices belong to this layout and are borrowed by state/actuation.
+    """
+
+    def __init__(self, model, num_envs):
+        self.device = model.device
+        self.num_envs = num_envs
+        self.objs_per_env = int(model.articulation_count / num_envs)
+        self.articulation_start = model.articulation_start.numpy()
+        self.joint_q_start = model.joint_q_start.numpy()
+        self.joint_qd_start = model.joint_qd_start.numpy()
+        joint_types = model.joint_type.numpy()
+        joint_parent = model.joint_parent.numpy()
+
+        starts = self.articulation_start
+        q_start = self.joint_q_start
+        qd_start = self.joint_qd_start
+        self.body_slices = tuple(slice(int(a), int(b)) for a, b in zip(starts[:-1], starts[1:]))
+        self.q_slices = tuple(slice(int(q_start[a + 1]), int(q_start[b]))
+                              for a, b in zip(starts[:-1], starts[1:]))
+        self.dof_slices = tuple(slice(int(qd_start[a + 1]), int(qd_start[b]))
+                                for a, b in zip(starts[:-1], starts[1:]))
+        self.root_q_starts = tuple(int(q_start[a]) for a in starts[:-1])
+        self.root_dof_slices = tuple(slice(int(qd_start[a]), int(qd_start[a + 1])) for a in starts[:-1])
+        self.fixed_roots = tuple(joint_types[a] == newton.JointType.FIXED for a in starts[:-1])
+
+        sphere_q_start, sphere_dof_start = [], []
+        nonsphere_q_idx, nonsphere_dof_idx = [], []
+        for j in range(model.joint_count):
+            if joint_parent[j] == -1:
+                continue
+            if joint_types[j] == newton.JointType.BALL:
+                assert q_start[j + 1] - q_start[j] == 4
+                assert qd_start[j + 1] - qd_start[j] == 3
+                sphere_q_start.append(q_start[j])
+                sphere_dof_start.append(qd_start[j])
+            else:
+                nonsphere_q_idx.extend(range(q_start[j], q_start[j + 1]))
+                nonsphere_dof_idx.extend(range(qd_start[j], qd_start[j + 1]))
+        self.sphere_q_start = wp.array(sphere_q_start, device=self.device, dtype=int)
+        self.sphere_dof_start = wp.array(sphere_dof_start, device=self.device, dtype=int)
+        self.nonsphere_q_idx = wp.array(nonsphere_q_idx, device=self.device, dtype=int)
+        self.nonsphere_dof_idx = wp.array(nonsphere_dof_idx, device=self.device, dtype=int)
+        self.has_spherical_joints = bool(sphere_q_start)
+
+    def object_index(self, env_id, obj_id):
+        return env_id * self.objs_per_env + obj_id
+
+
+def dof_positions_to_joint_q(layout, source, target):
+    """Write non-root MimicKit scalar/exp-map positions to Newton coordinates."""
+    wp.launch(copy_indexed, dim=layout.nonsphere_dof_idx.shape[0],
+              inputs=[source, layout.nonsphere_dof_idx, layout.nonsphere_q_idx, target],
+              device=layout.device)
+    if layout.has_spherical_joints:
+        wp.launch(exp_map_to_quat_indexed, dim=layout.sphere_dof_start.shape[0],
+                  inputs=[source, layout.sphere_dof_start, layout.sphere_q_start, target],
+                  device=layout.device)
+
+
+def joint_q_to_dof_positions(layout, source, target):
+    """Read non-root Newton scalar/quaternion coordinates into MimicKit space."""
+    wp.launch(copy_indexed, dim=layout.nonsphere_q_idx.shape[0],
+              inputs=[source, layout.nonsphere_q_idx, layout.nonsphere_dof_idx, target],
+              device=layout.device)
+    if layout.has_spherical_joints:
+        wp.launch(quat_to_exp_map_indexed, dim=layout.sphere_q_start.shape[0],
+                  inputs=[source, layout.sphere_q_start, layout.sphere_dof_start, target],
+                  device=layout.device)
+
+
+def rotate_dof_vectors(layout, joint_q, source, target, to_newton):
+    """Rotate BALL velocities/efforts; leave scalar and root DOFs untouched."""
+    if layout.has_spherical_joints:
+        wp.launch(rotate_spherical_vectors, dim=layout.sphere_q_start.shape[0],
+                  inputs=[joint_q, layout.sphere_q_start, layout.sphere_dof_start,
+                          source, to_newton, target], device=layout.device)
+
+
 class SimState:
     """Own both Newton states and their MimicKit views; borrow feedback arrays.
 
@@ -51,6 +133,7 @@ class SimState:
     """
 
     def __init__(self, sim_model, num_envs):
+        self.model = sim_model
         self._sim_model = sim_model
         self.raw_state = self._sim_model.state()
         self.eval_fk()
@@ -79,13 +162,8 @@ class SimState:
         self.body_ang_vel = []
         self.body_force = []
 
-        articulation_start = sim_model.articulation_start.numpy()
-        joint_q_start = sim_model.joint_q_start.numpy()
-        joint_qd_start = sim_model.joint_qd_start.numpy()
-        joint_types = self._sim_model.joint_type.numpy()
-
-        num_objs = sim_model.articulation_count
-        objs_per_env = int(num_objs / num_envs)
+        self.layout = ArticulationLayout(sim_model, num_envs)
+        layout = self.layout
 
         joint_q = self._torch_joint_q.view(num_envs, -1)
         joint_qd = self._torch_joint_qd.view(num_envs, -1)
@@ -94,7 +172,6 @@ class SimState:
         body_force = self._torch_body_force.view(num_envs, -1, 6)
         joint_X_p = self._torch_joint_X_p.view(num_envs, -1, 7)
 
-        self._record_spherical_joints()
         has_sphere_joints = self._has_spherical_joints()
 
         if (has_sphere_joints):
@@ -108,24 +185,17 @@ class SimState:
         else:
             dof_vel = joint_qd
 
-        for obj_id in range(objs_per_env):
-            body_start = articulation_start[obj_id]
-            body_end = articulation_start[obj_id + 1]
+        for obj_id in range(layout.objs_per_env):
+            bodies = layout.body_slices[obj_id]
+            body_start = bodies.start
+            q_root_start = layout.root_q_starts[obj_id]
+            qd_root_start = layout.root_dof_slices[obj_id].start
 
-            q_root_start = joint_q_start[body_start]
-            q_dof_start = joint_q_start[body_start + 1]
-            q_dof_end = joint_q_start[body_end]
+            obj_body_q = body_q[:, bodies, :]
+            obj_body_qd = body_qd[:, bodies, :]
+            obj_body_force = body_force[:, bodies, :]
 
-            qd_root_start = joint_qd_start[body_start]
-            qd_dof_start = joint_qd_start[body_start + 1]
-            qd_dof_end = joint_qd_start[body_end]
-
-            obj_body_q = body_q[:, body_start:body_end, :]
-            obj_body_qd = body_qd[:, body_start:body_end, :]
-            obj_body_force = body_force[:, body_start:body_end, :]
-
-            root_type = joint_types[body_start]
-            fix_root = root_type == newton.JointType.FIXED
+            fix_root = layout.fixed_roots[obj_id]
 
             if (fix_root):
                 obj_root_pos = joint_X_p[..., body_start, :3]
@@ -139,11 +209,11 @@ class SimState:
                 obj_root_ang_vel = joint_qd[:, qd_root_start + 3:qd_root_start + 6]
 
             if (has_sphere_joints):
-                obj_dof_pos = dof_pos[:, qd_dof_start:qd_dof_end]
+                obj_dof_pos = dof_pos[:, layout.dof_slices[obj_id]]
             else:
-                obj_dof_pos = joint_q[:, q_dof_start:q_dof_end]
+                obj_dof_pos = joint_q[:, layout.q_slices[obj_id]]
 
-            obj_dof_vel = dof_vel[:, qd_dof_start:qd_dof_end]
+            obj_dof_vel = dof_vel[:, layout.dof_slices[obj_id]]
 
             obj_body_pos = obj_body_q[..., :3]
             obj_body_rot = obj_body_q[..., 3:]
@@ -174,6 +244,10 @@ class SimState:
         self._wp_body_force.zero_()
         return
 
+    def copy_external_forces_to(self, raw_state):
+        """Copy the buffered command without exposing its storage to actuation."""
+        wp.copy(raw_state.body_f, self._wp_body_force)
+
     def copy(self, raw_state):
         wp.copy(self.raw_state.joint_q, raw_state.joint_q)
         wp.copy(self.raw_state.joint_qd, raw_state.joint_qd)
@@ -186,22 +260,12 @@ class SimState:
 
     def pre_step_update(self):
         if (self._has_spherical_joints()):
-            wp.launch(
-                kernel=copy_indexed,
-                dim=self._wp_nonsphere_joint_dof_idx.shape[0],
-                inputs=[self._wp_dof_pos, self._wp_nonsphere_joint_dof_idx,
-                        self._wp_nonsphere_joint_q_idx, self.raw_state.joint_q]
-            )
-            wp.launch(
-                kernel=exp_map_to_quat_indexed,
-                dim=self._wp_sphere_dof_start.shape[0],
-                inputs=[self._wp_dof_pos, self._wp_sphere_dof_start,
-                        self._wp_sphere_q_start, self.raw_state.joint_q]
-            )
+            layout = self.layout
+            dof_positions_to_joint_q(layout, self._wp_dof_pos, self.raw_state.joint_q)
             # Copy only non-root DOFs: root views already reference raw_state.
-            wp.launch(copy_indexed, dim=self._wp_nonsphere_joint_dof_idx.shape[0],
-                      inputs=[self._wp_dof_vel, self._wp_nonsphere_joint_dof_idx,
-                              self._wp_nonsphere_joint_dof_idx, self.raw_state.joint_qd],
+            wp.launch(copy_indexed, dim=layout.nonsphere_dof_idx.shape[0],
+                      inputs=[self._wp_dof_vel, layout.nonsphere_dof_idx,
+                              layout.nonsphere_dof_idx, self.raw_state.joint_qd],
                       device=self._sim_model.device)
             self.rotate_dof_vectors(self.raw_state.joint_q, self._wp_dof_vel,
                                     self.raw_state.joint_qd, to_newton=True)
@@ -209,81 +273,25 @@ class SimState:
 
     def post_step_update(self):
         if (self._has_spherical_joints()):
-            wp.launch(
-                kernel=copy_indexed,
-                dim=self._wp_nonsphere_joint_q_idx.shape[0],
-                inputs=[self.raw_state.joint_q, self._wp_nonsphere_joint_q_idx,
-                        self._wp_nonsphere_joint_dof_idx, self._wp_dof_pos]
-            )
-            wp.launch(
-                kernel=quat_to_exp_map_indexed,
-                dim=self._wp_sphere_q_start.shape[0],
-                inputs=[self.raw_state.joint_q, self._wp_sphere_q_start,
-                        self._wp_sphere_dof_start, self._wp_dof_pos]
-            )
-            wp.launch(copy_indexed, dim=self._wp_nonsphere_joint_dof_idx.shape[0],
-                      inputs=[self.raw_state.joint_qd, self._wp_nonsphere_joint_dof_idx,
-                              self._wp_nonsphere_joint_dof_idx, self._wp_dof_vel],
+            layout = self.layout
+            joint_q_to_dof_positions(layout, self.raw_state.joint_q, self._wp_dof_pos)
+            wp.launch(copy_indexed, dim=layout.nonsphere_dof_idx.shape[0],
+                      inputs=[self.raw_state.joint_qd, layout.nonsphere_dof_idx,
+                              layout.nonsphere_dof_idx, self._wp_dof_vel],
                       device=self._sim_model.device)
             self.rotate_dof_vectors(self.raw_state.joint_q, self.raw_state.joint_qd,
                                     self._wp_dof_vel, to_newton=False)
         return
 
     def rotate_dof_vectors(self, joint_q, source, target, to_newton):
-        if self._has_spherical_joints():
-            wp.launch(rotate_spherical_vectors, dim=self._wp_sphere_q_start.shape[0],
-                      inputs=[joint_q, self._wp_sphere_q_start, self._wp_sphere_dof_start,
-                              source, to_newton, target], device=self._sim_model.device)
+        rotate_dof_vectors(self.layout, joint_q, source, target, to_newton)
 
     def eval_fk(self):
         newton.eval_fk(self._sim_model, self.raw_state.joint_q, self.raw_state.joint_qd, self.raw_state)
         return
 
-    def _record_spherical_joints(self):
-        sphere_type = newton.JointType.BALL
-
-        joint_q_start = self._sim_model.joint_q_start.numpy()
-        joint_qd_start = self._sim_model.joint_qd_start.numpy()
-        joint_types = self._sim_model.joint_type.numpy()
-        joint_parent = self._sim_model.joint_parent.numpy()
-        num_joints = self._sim_model.joint_count
-
-        sphere_q_start = []
-        sphere_dof_start = []
-        nonsphere_q_idx = []
-        nonsphere_dof_idx = []
-
-        for j in range(num_joints):
-            curr_joint_type = joint_types[j]
-            curr_joint_parent = joint_parent[j]
-            is_root = curr_joint_parent == -1
-
-            q_start = joint_q_start[j]
-            q_end = joint_q_start[j + 1]
-            dof_start = joint_qd_start[j]
-            dof_end = joint_qd_start[j + 1]
-
-            if (is_root):
-                pass
-            elif (curr_joint_type == sphere_type):
-                assert(q_end - q_start == 4)
-                assert(dof_end - dof_start == 3)
-                sphere_q_start.append(q_start)
-                sphere_dof_start.append(dof_start)
-            else:
-                curr_q_idx = [i for i in range(q_start, q_end)]
-                curr_dof_idx = [i for i in range(dof_start, dof_end)]
-                nonsphere_q_idx += curr_q_idx
-                nonsphere_dof_idx += curr_dof_idx
-
-        self._wp_sphere_q_start = wp.array(sphere_q_start, device=self._sim_model.device, dtype=int)
-        self._wp_sphere_dof_start = wp.array(sphere_dof_start, device=self._sim_model.device, dtype=int)
-        self._wp_nonsphere_joint_q_idx = wp.array(nonsphere_q_idx, device=self._sim_model.device, dtype=int)
-        self._wp_nonsphere_joint_dof_idx = wp.array(nonsphere_dof_idx, device=self._sim_model.device, dtype=int)
-        return
-
     def _has_spherical_joints(self):
-        return self._wp_sphere_q_start.shape[0] > 0
+        return self.layout.has_spherical_joints
 
 
     def synchronize_buffers(self):
@@ -293,21 +301,11 @@ class SimState:
         self._raw_dof_pos = torch.zeros_like(self._torch_joint_q)
         self._obj_dof_pos = []
 
-        articulation_start = self._sim_model.articulation_start.numpy()
-        joint_q_start = self._sim_model.joint_q_start.numpy()
-
         num_envs = self._num_envs
-        num_objs = self._sim_model.articulation_count
-        objs_per_env = int(num_objs / num_envs)
         dof_pos = self._raw_dof_pos.view(num_envs, -1)
 
-        for obj_id in range(objs_per_env):
-            body_start = articulation_start[obj_id]
-            body_end = articulation_start[obj_id + 1]
-            q_start = joint_q_start[body_start + 1]
-            q_end = joint_q_start[body_end]
-
-            obj_dof_pos = dof_pos[:, q_start:q_end]
+        for obj_id in range(self.layout.objs_per_env):
+            obj_dof_pos = dof_pos[:, self.layout.q_slices[obj_id]]
             self._obj_dof_pos.append(obj_dof_pos)
         return
 
@@ -468,56 +466,29 @@ class SimState:
 
 
     def get_obj_torque_limits(self, env_id, obj_id):
-        objs_per_env = self.get_objs_per_env()
-        obj_idx = env_id * objs_per_env + obj_id
-
-        articulation_start = self._sim_model.articulation_start.numpy()
-        joint_qd_start = self._sim_model.joint_qd_start.numpy()
+        obj_idx = self.layout.object_index(env_id, obj_id)
         effort_lim = self._sim_model.joint_effort_limit.numpy()
-
-        body_start = articulation_start[obj_idx]
-        body_end = articulation_start[obj_idx + 1]
-        qd_start = joint_qd_start[body_start + 1]
-        qd_end = joint_qd_start[body_end]
-
-        torque_lim = effort_lim[qd_start:qd_end]
+        torque_lim = effort_lim[self.layout.dof_slices[obj_idx]]
         return torque_lim
 
 
     def get_obj_dof_limits(self, env_id, obj_id):
-        objs_per_env = self.get_objs_per_env()
-        obj_idx = env_id * objs_per_env + obj_id
-
-        articulation_start = self._sim_model.articulation_start.numpy()
-        joint_qd_start = self._sim_model.joint_qd_start.numpy()
+        obj_idx = self.layout.object_index(env_id, obj_id)
         lim_low = self._sim_model.joint_limit_lower.numpy()
         lim_upper = self._sim_model.joint_limit_upper.numpy()
 
-        body_start = articulation_start[obj_idx]
-        body_end = articulation_start[obj_idx + 1]
-        qd_start = joint_qd_start[body_start + 1]
-        qd_end = joint_qd_start[body_end]
-
-        dof_low = lim_low[qd_start:qd_end]
-        dof_high = lim_upper[qd_start:qd_end]
+        dofs = self.layout.dof_slices[obj_idx]
+        dof_low = lim_low[dofs]
+        dof_high = lim_upper[dofs]
 
         return dof_low, dof_high
 
 
     def get_obj_pd_gains(self, env_id, obj_id):
-        objs_per_env = self.get_objs_per_env()
-        obj_idx = env_id * objs_per_env + obj_id
-
-        articulation_start = self._sim_model.articulation_start.numpy()
-        joint_qd_start = self._sim_model.joint_qd_start.numpy()
-
-        body_start = articulation_start[obj_idx]
-        body_end = articulation_start[obj_idx + 1]
-        qd_start = joint_qd_start[body_start + 1]
-        qd_end = joint_qd_start[body_end]
-
-        kp = self._sim_model.joint_target_ke.numpy()[qd_start:qd_end]
-        kd = self._sim_model.joint_target_kd.numpy()[qd_start:qd_end]
+        obj_idx = self.layout.object_index(env_id, obj_id)
+        dofs = self.layout.dof_slices[obj_idx]
+        kp = self._sim_model.joint_target_ke.numpy()[dofs]
+        kd = self._sim_model.joint_target_kd.numpy()[dofs]
 
         return kp, kd
 
@@ -539,36 +510,28 @@ class SimState:
 
 
     def get_obj_body_names(self, obj_id):
-        articulation_start = self._sim_model.articulation_start.numpy()
-        body_start = articulation_start[obj_id]
-        body_end = articulation_start[obj_id + 1]
-        body_labels = self._sim_model.body_label[body_start:body_end]
+        body_labels = self._sim_model.body_label[self.layout.body_slices[obj_id]]
         body_names = [os.path.basename(l) for l in body_labels]
         return body_names
 
 
     def calc_obj_mass(self, env_id, obj_id):
-        objs_per_env = self.get_objs_per_env()
-        obj_idx = env_id * objs_per_env + obj_id
-
-        articulation_start = self._sim_model.articulation_start.numpy()
+        obj_idx = self.layout.object_index(env_id, obj_id)
         body_masses = self._sim_model.body_mass.numpy()
-
-        body_start = int(articulation_start[obj_idx])
-        body_end = int(articulation_start[obj_idx + 1])
-        masses = body_masses[body_start:body_end]
+        masses = body_masses[self.layout.body_slices[obj_idx]]
         total_mass = float(masses.sum())
         return total_mass
 
 
     def get_obj_body_ids(self, obj_id):
-        starts = self._sim_model.articulation_start.numpy()
-        # As in SimState, this backend imports one joint per body.
-        return list(range(int(starts[obj_id]), int(starts[obj_id + 1])))
+        bodies = self.layout.body_slices[obj_id]
+        return list(range(bodies.start, bodies.stop))
 
 
-class Controls:
-    def __init__(self, sim_model, num_envs):
+class CommandBuffers:
+    """Own Newton control and the MimicKit command arrays; perform no actuation."""
+
+    def __init__(self, sim_model, num_envs, layout=None):
         if not sim_model.use_coord_layout_targets:
             raise ValueError("NewtonEngine requires coordinate-layout joint targets.")
         self.control = sim_model.control()
@@ -585,25 +548,17 @@ class Controls:
         target_vel = self._torch_target_vel.view(num_envs, -1)
         joint_force = self._torch_joint_force.view(num_envs, -1)
 
-        articulation_start = sim_model.articulation_start.numpy()
-        joint_qd_start = sim_model.joint_qd_start.numpy()
-
-        num_objs = sim_model.articulation_count
-        objs_per_env = int(num_objs / num_envs)
+        self.layout = layout if layout is not None else ArticulationLayout(sim_model, num_envs)
 
         self.target_pos = []
         self.target_vel = []
         self.joint_force = []
 
-        for obj_id in range(objs_per_env):
-            body_start = articulation_start[obj_id]
-            body_end = articulation_start[obj_id + 1]
-            qd_start = joint_qd_start[body_start + 1]
-            qd_end = joint_qd_start[body_end]
-
-            obj_target_pos = target_pos[:, qd_start:qd_end]
-            obj_target_vel = target_vel[:, qd_start:qd_end]
-            obj_joint_force = joint_force[:, qd_start:qd_end]
+        for obj_id in range(self.layout.objs_per_env):
+            dofs = self.layout.dof_slices[obj_id]
+            obj_target_pos = target_pos[:, dofs]
+            obj_target_vel = target_vel[:, dofs]
+            obj_joint_force = joint_force[:, dofs]
 
             self.target_pos.append(obj_target_pos)
             self.target_vel.append(obj_target_vel)
@@ -667,7 +622,6 @@ class SceneBuilder:
         return self.play_scene.bind_model(model, body_ids)
 
     def apply_start_transforms(self, state):
-        self._state = state  # Borrowed for later GSI character placement.
         num_envs = self.num_envs
         objs_per_env = state.get_objs_per_env()
         for env_id in range(num_envs):
@@ -682,16 +636,6 @@ class SceneBuilder:
 
         state.eval_fk()
         return
-
-
-    def place_character(self, obj_id):
-        self._state.pre_step_update()
-        self._state.eval_fk()
-        root = self._state.get_root_pos(obj_id)
-        shift = self.play_scene.character_translation(
-            self._state.raw_state, self._state.get_obj_body_ids(obj_id), root[0].cpu().numpy())
-        root.add_(torch.as_tensor(shift, device=self.device))
-        return shift
 
 
     def create_env(self):
@@ -821,12 +765,13 @@ class SceneBuilder:
         return
 
 
-class Control:
+class Actuation:
     """Convert commands and apply forces using the existing control/state buffers."""
 
     def __init__(self, model, state, mode, num_envs):
         self.model = model
         self.state = state
+        self.layout = state.layout
         self.mode = mode
         self._num_envs = num_envs
         self._build_controls()
@@ -875,15 +820,13 @@ class Control:
         self.model.joint_damping.fill_(0.0)
 
         # The root belongs to the state, not the object's command vector.
-        qd_start = self.model.joint_qd_start.numpy()
-        root_joints = self.model.articulation_start.numpy()[:-1]
         modes = self.model.joint_target_mode.numpy()
-        for root in root_joints:
-            modes[qd_start[root]:qd_start[root + 1]] = int(newton.JointTargetMode.NONE)
+        for root_dofs in self.layout.root_dof_slices:
+            modes[root_dofs] = int(newton.JointTargetMode.NONE)
         self.model.joint_target_mode.assign(modes)
 
         num_envs = self._num_envs
-        self.controls = Controls(self.model, num_envs)
+        self.controls = CommandBuffers(self.model, num_envs, layout=self.layout)
         return
 
     def set_cmd(self, obj_id, cmd):
@@ -915,39 +858,22 @@ class Control:
     def update_targets(self):
         if self.mode != engine.ControlMode.pos:
             return
-        state = self.state
-        wp.launch(copy_indexed, dim=state._wp_nonsphere_joint_dof_idx.shape[0],
-                  inputs=[self.controls.target_dof_pos, state._wp_nonsphere_joint_dof_idx,
-                          state._wp_nonsphere_joint_q_idx, self.controls.control.joint_target_q],
-                  device=self.model.device)
-        if state._has_spherical_joints():
-            wp.launch(exp_map_to_quat_indexed, dim=state._wp_sphere_dof_start.shape[0],
-                      inputs=[self.controls.target_dof_pos, state._wp_sphere_dof_start,
-                              state._wp_sphere_q_start, self.controls.control.joint_target_q],
-                      device=self.model.device)
+        dof_positions_to_joint_q(self.layout, self.controls.target_dof_pos,
+                                 self.controls.control.joint_target_q)
 
     def _apply_pd_explicit_torque(self, sim_state, control):
-        state = self.state
         wp.copy(self._pd_dof_vel, sim_state.joint_qd)
-        state.rotate_dof_vectors(sim_state.joint_q, sim_state.joint_qd,
-                                 self._pd_dof_vel, to_newton=False)
-        wp.launch(copy_indexed, dim=state._wp_nonsphere_joint_q_idx.shape[0],
-                  inputs=[sim_state.joint_q, state._wp_nonsphere_joint_q_idx,
-                          state._wp_nonsphere_joint_dof_idx, self._pd_dof_pos],
-                  device=self.model.device)
-        if state._has_spherical_joints():
-            wp.launch(quat_to_exp_map_indexed, dim=state._wp_sphere_q_start.shape[0],
-                      inputs=[sim_state.joint_q, state._wp_sphere_q_start,
-                              state._wp_sphere_dof_start, self._pd_dof_pos],
-                      device=self.model.device)
+        rotate_dof_vectors(self.layout, sim_state.joint_q, sim_state.joint_qd,
+                           self._pd_dof_vel, to_newton=False)
+        joint_q_to_dof_positions(self.layout, sim_state.joint_q, self._pd_dof_pos)
         wp.launch(apply_pd_torque, dim=self.model.joint_dof_count,
                   inputs=[self.controls.target_dof_pos, self._pd_dof_pos, self._pd_dof_vel,
                           self._kp_raw, self._kd_raw, self._torque_lim_raw,
                           self.model.joint_target_mode, self.controls.dof_force],
                   device=self.model.device)
         wp.copy(control.joint_f, self.controls.dof_force)
-        state.rotate_dof_vectors(sim_state.joint_q, self.controls.dof_force,
-                                 control.joint_f, to_newton=True)
+        rotate_dof_vectors(self.layout, sim_state.joint_q, self.controls.dof_force,
+                           control.joint_f, to_newton=True)
         return
 
     def apply_control(self, raw_state, control):
@@ -955,17 +881,17 @@ class Control:
             self._apply_pd_explicit_torque(raw_state, control)
         elif self.mode == engine.ControlMode.vel:
             wp.copy(control.joint_target_qd, self.controls.target_dof_vel)
-            self.state.rotate_dof_vectors(raw_state.joint_q, self.controls.target_dof_vel,
-                                               control.joint_target_qd, to_newton=True)
+            rotate_dof_vectors(self.layout, raw_state.joint_q, self.controls.target_dof_vel,
+                               control.joint_target_qd, to_newton=True)
         elif self.mode == engine.ControlMode.torque:
             wp.copy(control.joint_f, self.controls.dof_force)
-            self.state.rotate_dof_vectors(raw_state.joint_q, self.controls.dof_force,
-                                               control.joint_f, to_newton=True)
+            rotate_dof_vectors(self.layout, raw_state.joint_q, self.controls.dof_force,
+                               control.joint_f, to_newton=True)
         return
 
     def apply_external_forces(self, raw_state):
         def apply_body_force():
-            wp.copy(raw_state.body_f, self.state._wp_body_force)
+            self.state.copy_external_forces_to(raw_state)
             return
         wp.capture_if(self.has_body_forces, on_true=apply_body_force)
 
@@ -977,11 +903,49 @@ class Control:
         wp.capture_if(self.has_body_forces, on_true=self.clear_external_forces)
 
 
+# Compatibility names for callers importing the original internal components.
+Controls = CommandBuffers
+Control = Actuation
+
+
+class SceneReset:
+    """Coordinate runtime placement/reset; borrow components, own no buffers.
+
+    Placement and reset remain separate operations: the environment first writes
+    its sampled joints and scene objects, then places the character, then resets
+    solver history. Keep that order and the existing FK synchronization points.
+    """
+
+    def __init__(self, state, actuation, runtime, play_scene):
+        self._state = state
+        self._actuation = actuation
+        self._runtime = runtime
+        self._play_scene = play_scene
+
+    def place_character(self, obj_id):
+        self._state.pre_step_update()
+        self._state.eval_fk()
+        root = self._state.get_root_pos(obj_id)
+        shift = self._play_scene.character_translation(
+            self._state.raw_state, self._state.get_obj_body_ids(obj_id), root[0].cpu().numpy())
+        root.add_(torch.as_tensor(shift, device=root.device))
+        return shift
+
+    def reset(self):
+        self._state.pre_step_update()
+        self._runtime.reset_solver()
+        self._state.synchronize_buffers()
+        self._actuation.clear_external_forces()
+        self._runtime.reset_clock()
+        self._state.post_step_update()
+        self._runtime.clear_feedback()
+
+
 class SimulationRuntime:
     """Own solver execution, contact feedback, Graphs and the physics clock.
 
-    State and Control own their buffers. This runtime borrows them and receives
-    an interaction-force callback; it has no reference back to NewtonEngine.
+    SimState and CommandBuffers own their buffers. The runtime borrows them and
+    receives an interaction-force callback; it has no reference back to NewtonEngine.
     """
 
     def __init__(self, config, num_envs, device):
@@ -1007,7 +971,7 @@ class SimulationRuntime:
 
     def initialize(self, state, control, scene, interaction_forces):
         self._state = state
-        self._sim_model = state._sim_model
+        self._sim_model = state.model
         self._control = control
         self._interaction_forces = interaction_forces
         self._build_solver(scene)
@@ -1021,12 +985,8 @@ class SimulationRuntime:
         state.bind_feedback(self._dof_forces, self._contact_forces, self._ground_contact_forces)
 
     def advance(self):
-        if self._graph:
-            fluid = self._solver.fluid
-            graph, prediction = self._fluid_graphs[fluid.pre_Pos.ptr]
-            wp.capture_launch(graph)
-            fluid.pre_Pos, fluid.temp_pPos = prediction
-            self._solver.rigid._step += self._sim_steps
+        if self._graph is not None:
+            self._graph.launch()
         else:
             self._simulate()
 
@@ -1090,18 +1050,16 @@ class SimulationRuntime:
         assert ground_forces.shape[1] == 1
         ground_forces = ground_forces.view(num_envs, -1, 3)
 
-        offset_idx = 0
         self._contact_forces = []
         self._ground_contact_forces = []
 
         for obj_id in range(num_objs):
-            num_bodies = self._state.get_obj_num_bodies(obj_id)
-            obj_total_forces = total_forces[:, offset_idx:offset_idx + num_bodies, :]
-            obj_ground_forces = ground_forces[:, offset_idx:offset_idx + num_bodies, :]
+            bodies = self._state.layout.body_slices[obj_id]
+            obj_total_forces = total_forces[:, bodies, :]
+            obj_ground_forces = ground_forces[:, bodies, :]
 
             self._contact_forces.append(obj_total_forces)
             self._ground_contact_forces.append(obj_ground_forces)
-            offset_idx += num_bodies
         return
 
 
@@ -1119,10 +1077,8 @@ class SimulationRuntime:
         if self._control.mode in (engine.ControlMode.pos, engine.ControlMode.vel):
             self._wp_dof_forces = wp.clone(self._observables.qfrc_actuator)
             forces = wp.to_torch(self._wp_dof_forces).view(self.num_envs, -1)
-            starts = self._sim_model.articulation_start.numpy()
-            qd_start = self._sim_model.joint_qd_start.numpy()
             self._dof_forces = [
-                forces[:, qd_start[starts[obj] + 1]:qd_start[starts[obj + 1]]]
+                forces[:, self._state.layout.dof_slices[obj]]
                 for obj in range(self._state.get_objs_per_env())]
         else:
             self._dof_forces = self._control.controls.joint_force
@@ -1132,30 +1088,11 @@ class SimulationRuntime:
     # Execution: capture the same substep sequence that eager mode runs.
     def build_graphs(self):
         self._graph = None
-        self._fluid_graphs = {}
         if not self._enable_cuda_graph:
             return
-
-        fluid = self._solver.fluid
-        for module in ("solvers.pbf.pbf_helper", "solvers.pbf.PBF",
-                       "solvers.pbf.boundary_model", "solvers.pbf.coupling"):
-            wp.load_module(module=module, device=self._sim_model.device)
-        fluid.grid.reserve(self._sim_model.particle_count)
-        prediction = (fluid.pre_Pos, fluid.temp_pPos)
-        rigid_step = self._solver.rigid._step
-        # PBF swaps prediction buffers as it spatially reorders particles.
-        # Odd substep counts need a graph for each starting buffer address.
-        starts = [prediction] if self._sim_steps % 2 == 0 else [prediction, prediction[::-1]]
-        try:
-            for buffers in starts:
-                fluid.pre_Pos, fluid.temp_pPos = buffers
-                with wp.ScopedCapture(device=self._sim_model.device) as capture:
-                    self._simulate()
-                self._fluid_graphs[buffers[0].ptr] = (capture.graph, (fluid.pre_Pos, fluid.temp_pPos))
-        finally:
-            fluid.pre_Pos, fluid.temp_pPos = prediction
-            self._solver.rigid._step = rigid_step
-        self._graph = self._fluid_graphs[prediction[0].ptr][0]
+        # Compile adapter kernels before capture, including scalar-only scenes.
+        wp.load_module(module=__name__, device=self._sim_model.device)
+        self._graph = self._solver.capture_step_graph(self._simulate, self._sim_steps)
         return
 
 
@@ -1224,7 +1161,8 @@ class Presentation:
             self._build_viewer()
 
     def initialize(self, state, colors):
-        self._sim_model = state._sim_model
+        self._sim_model = state.model
+        self._layout = state.layout
         self._obj_colors = colors
         self._body_counts = [state.get_obj_num_bodies(i) for i in range(state.get_objs_per_env())]
         if self._viewer is not None:
@@ -1325,11 +1263,8 @@ class Presentation:
         return
 
     def set_body_color(self, env_id, obj_id, body_id, color, viewer=None):
-        objs_per_env = len(self._obj_colors[0])
-        articulation_start = self._sim_model.articulation_start.numpy()
-
-        obj_idx = env_id * objs_per_env + obj_id
-        body_start = articulation_start[obj_idx]
+        obj_idx = self._layout.object_index(env_id, obj_id)
+        body_start = self._layout.body_slices[obj_idx].start
         body_idx = body_start + body_id
 
         body_shape_idx = self._sim_model.body_shapes[body_idx]
@@ -1445,111 +1380,14 @@ class Presentation:
         return
 
 
-# Explicit MimicKit API ownership; only these methods are delegated.
-_ENGINE_DELEGATES = (
-    ("_scene", SceneBuilder, (
-        "create_env", "create_obj", "get_obj_type", "place_character",
-    )),
-    ("_state", SimState, (
-        "get_root_pos", "get_root_rot", "get_root_vel", "get_root_ang_vel",
-        "get_dof_pos", "get_dof_vel", "get_dof_forces",
-        "get_body_pos", "get_body_rot", "get_body_vel", "get_body_ang_vel",
-        "set_root_pos", "set_root_rot", "set_root_vel", "set_root_ang_vel",
-        "set_dof_pos", "set_dof_vel",
-        "set_body_pos", "set_body_rot", "set_body_vel", "set_body_ang_vel",
-        "get_obj_torque_limits", "get_obj_dof_limits", "get_obj_pd_gains",
-        "get_obj_num_bodies", "get_obj_num_dofs", "get_obj_body_names",
-        "get_obj_body_ids", "get_objs_per_env",
-        "get_contact_forces", "get_ground_contact_forces",
-        "find_obj_body_id", "calc_obj_mass",
-    )),
-    ("_control", Control, (
-        "set_cmd", "set_body_forces",
-    )),
-    ("_runtime", SimulationRuntime, ("get_sim_time",)),
-    ("_presentation", Presentation, (
-        "get_viewer", "set_camera_pose", "get_camera_pos", "get_camera_dir",
-        "set_viewer_world_offsets", "set_body_color", "init_viewer", "draw_lines",
-        "register_keyboard_callback", "register_ui_callback",
-        "get_viewer_paused", "set_viewer_paused", "enabled_record_video",
-        "get_video_recording", "start_video_recording", "stop_video_recording",
-    )),
-)
-
-
-# Zero-argument accessors: fixed attribute paths, never evaluated expressions.
-_ENGINE_READERS = (
-    ("get_play_scene", ("_scene", "play_scene")),
-    ("get_control_mode", ("_control_mode",)),
-    ("get_timestep", ("_runtime", "timestep")),
-    ("get_sim_timestep", ("_runtime", "sim_timestep")),
-    ("get_num_envs", ("_runtime", "num_envs")),
-    ("get_gravity", ("_state", "gravity")),
-    ("get_sim_model", ("_state", "_sim_model")),
-    ("get_sim_state", ("_state",)),
-)
-_ENGINE_CONSTANTS = (("get_name", "newton_pbf"),)
-
-
-def _delegate_engine_api(cls):
-    """Install exact-signature methods and simple readers once at import time."""
-    declared = set()
-    methods = []
-
-    def register(name, signature, expression, target=None):
-        if name in declared or name in vars(cls):
-            raise ValueError(f"Duplicate or handwritten engine method: {name}")
-        if not name.isidentifier():
-            raise ValueError(f"Invalid engine method name: {name}")
-        declared.add(name)
-        methods.append((name, signature, expression, target))
-
-    for attribute, component, names in _ENGINE_DELEGATES:
-        if not attribute.isidentifier():
-            raise ValueError(f"Invalid component attribute: {attribute}")
-        for name in names:
-            target = getattr(component, name, None)
-            if not inspect.isfunction(target):
-                raise TypeError(f"Delegation target is not a method: {component.__name__}.{name}")
-            signature = inspect.signature(target)
-            parameters = tuple(signature.parameters.values())
-            if (not parameters or parameters[0].name != "self"
-                    or any(p.kind != inspect.Parameter.POSITIONAL_OR_KEYWORD for p in parameters)):
-                raise TypeError(f"Unsupported delegated method signature: {name}{signature}")
-            arguments = ", ".join(p.name for p in parameters[1:])
-            register(name, signature, f"self.{attribute}.{name}({arguments})", target)
-
-    for name, path in _ENGINE_READERS:
-        if not path or not all(part.isidentifier() for part in path):
-            raise ValueError(f"Invalid reader path: {name}")
-        register(name, "(self)", "self." + ".".join(path))
-    for name, value in _ENGINE_CONSTANTS:
-        if not isinstance(value, (str, int, float, bool, type(None))):
-            raise TypeError(f"Unsupported engine constant: {name}")
-        register(name, "(self)", repr(value))
-
-    for name, signature, expression, target in methods:
-        source = f"def {name}{signature}:\n    return {expression}\n"
-        filename = f"<{cls.__module__}.{cls.__qualname__}.{name}>"
-        namespace = {}
-        exec(compile(source, filename, "exec"), globals(), namespace)
-        method = namespace[name]
-        method.__qualname__ = f"{cls.__qualname__}.{name}"
-        if target is not None:
-            method.__doc__ = target.__doc__
-            method.__defaults__ = target.__defaults__
-            method.__annotations__ = target.__annotations__.copy()
-        linecache.cache[filename] = (len(source), None, source.splitlines(keepends=True), filename)
-        setattr(cls, name, method)
-    return cls
-
-
-@_delegate_engine_api
 class NewtonEngine(engine.Engine):
-    """MimicKit entry point: scene, state, control, simulation and presentation.
+    """MimicKit facade: compose components and expose a stable, explicit API.
 
-    The six workflows below coordinate component lifetimes and execution order.
-    The fixed declarations above preserve the rest of MimicKit's Engine API.
+    SceneBuilder declares the model. SimState owns state and shared topology;
+    Actuation owns command processing. SimulationRuntime drives the coupled
+    solver and feedback. SceneReset coordinates runtime reset, and Presentation
+    owns display/recording. Components never call back into this facade, except
+    for the existing video recorder's public Engine API adapter.
     """
 
     def __init__(self, config, num_envs, device, visualize, record_video=False):
@@ -1562,35 +1400,243 @@ class NewtonEngine(engine.Engine):
         self._presentation = resource_util.construct(
             Presentation, num_envs, self._runtime.env_spacing, visualize, record_video)
 
+    # Scene declaration and initialization.
+
+    def get_name(self):
+        return "newton_pbf"
+
+    def create_env(self):
+        return self._scene.create_env()
+
+    def create_obj(self, env_id, obj_type, asset_file, name, is_visual=False, enable_self_collisions=True,
+                   fix_root=False, start_pos=None, start_rot=None, color=None, disable_motors=False):
+        return self._scene.create_obj(env_id, obj_type, asset_file, name, is_visual, enable_self_collisions,
+                                      fix_root, start_pos, start_rot, color, disable_motors)
+
+    def get_obj_type(self, obj_id):
+        return self._scene.get_obj_type(obj_id)
+
+    def get_play_scene(self):
+        return self._scene.play_scene
+
     def initialize_sim(self):
         model = self._scene.finalize()
         self._state = SimState(model, self.get_num_envs())
         self._scene.apply_start_transforms(self._state)
-        self._control = Control(model, self._state, self._control_mode, self.get_num_envs())
+        self._control = Actuation(model, self._state, self._control_mode, self.get_num_envs())
         self._runtime.initialize(self._state, self._control, self._scene,
                                  self._presentation.apply_forces)
+        self._scene_reset = SceneReset(self._state, self._control, self._runtime,
+                                       self._scene.play_scene)
         self._presentation.initialize(self._state, self._scene.colors)
         self._presentation.initialize_recording(self)
         self._runtime.build_graphs()
+
+    # State, object metadata and borrowed solver feedback.
+
+    def get_sim_model(self):
+        return self._state.model
+
+    def get_sim_state(self):
+        return self._state
+
+    def get_gravity(self):
+        return self._state.gravity
+
+    def get_num_envs(self):
+        return self._runtime.num_envs
+
+    def get_root_pos(self, obj_id):
+        return self._state.get_root_pos(obj_id)
+
+    def get_root_rot(self, obj_id):
+        return self._state.get_root_rot(obj_id)
+
+    def get_root_vel(self, obj_id):
+        return self._state.get_root_vel(obj_id)
+
+    def get_root_ang_vel(self, obj_id):
+        return self._state.get_root_ang_vel(obj_id)
+
+    def get_dof_pos(self, obj_id):
+        return self._state.get_dof_pos(obj_id)
+
+    def get_dof_vel(self, obj_id):
+        return self._state.get_dof_vel(obj_id)
+
+    def get_dof_forces(self, obj_id):
+        return self._state.get_dof_forces(obj_id)
+
+    def get_body_pos(self, obj_id):
+        return self._state.get_body_pos(obj_id)
+
+    def get_body_rot(self, obj_id):
+        return self._state.get_body_rot(obj_id)
+
+    def get_body_vel(self, obj_id):
+        return self._state.get_body_vel(obj_id)
+
+    def get_body_ang_vel(self, obj_id):
+        return self._state.get_body_ang_vel(obj_id)
+
+    def set_root_pos(self, env_id, obj_id, root_pos):
+        return self._state.set_root_pos(env_id, obj_id, root_pos)
+
+    def set_root_rot(self, env_id, obj_id, root_rot):
+        return self._state.set_root_rot(env_id, obj_id, root_rot)
+
+    def set_root_vel(self, env_id, obj_id, root_vel):
+        return self._state.set_root_vel(env_id, obj_id, root_vel)
+
+    def set_root_ang_vel(self, env_id, obj_id, root_ang_vel):
+        return self._state.set_root_ang_vel(env_id, obj_id, root_ang_vel)
+
+    def set_dof_pos(self, env_id, obj_id, dof_pos):
+        return self._state.set_dof_pos(env_id, obj_id, dof_pos)
+
+    def set_dof_vel(self, env_id, obj_id, dof_vel):
+        return self._state.set_dof_vel(env_id, obj_id, dof_vel)
+
+    def set_body_pos(self, env_id, obj_id, body_pos):
+        return self._state.set_body_pos(env_id, obj_id, body_pos)
+
+    def set_body_rot(self, env_id, obj_id, body_rot):
+        return self._state.set_body_rot(env_id, obj_id, body_rot)
+
+    def set_body_vel(self, env_id, obj_id, body_vel):
+        return self._state.set_body_vel(env_id, obj_id, body_vel)
+
+    def set_body_ang_vel(self, env_id, obj_id, body_ang_vel):
+        return self._state.set_body_ang_vel(env_id, obj_id, body_ang_vel)
+
+    def get_obj_torque_limits(self, env_id, obj_id):
+        return self._state.get_obj_torque_limits(env_id, obj_id)
+
+    def get_obj_dof_limits(self, env_id, obj_id):
+        return self._state.get_obj_dof_limits(env_id, obj_id)
+
+    def get_obj_pd_gains(self, env_id, obj_id):
+        return self._state.get_obj_pd_gains(env_id, obj_id)
+
+    def get_obj_num_bodies(self, obj_id):
+        return self._state.get_obj_num_bodies(obj_id)
+
+    def get_obj_num_dofs(self, obj_id):
+        return self._state.get_obj_num_dofs(obj_id)
+
+    def get_obj_body_names(self, obj_id):
+        return self._state.get_obj_body_names(obj_id)
+
+    def get_obj_body_ids(self, obj_id):
+        return self._state.get_obj_body_ids(obj_id)
+
+    def get_objs_per_env(self):
+        return self._state.get_objs_per_env()
+
+    def get_contact_forces(self, obj_id):
+        return self._state.get_contact_forces(obj_id)
+
+    def get_ground_contact_forces(self, obj_id):
+        return self._state.get_ground_contact_forces(obj_id)
+
+    def find_obj_body_id(self, obj_id, body_name):
+        return self._state.find_obj_body_id(obj_id, body_name)
+
+    def calc_obj_mass(self, env_id, obj_id):
+        return self._state.calc_obj_mass(env_id, obj_id)
+
+    # Command submission and simulation advancement.
+
+    def get_control_mode(self):
+        return self._control_mode
+
+    def set_cmd(self, obj_id, cmd):
+        return self._control.set_cmd(obj_id, cmd)
+
+    def set_body_forces(self, env_id, obj_id, body_id, forces):
+        return self._control.set_body_forces(env_id, obj_id, body_id, forces)
+
+    def get_timestep(self):
+        return self._runtime.timestep
+
+    def get_sim_timestep(self):
+        return self._runtime.sim_timestep
+
+    def get_sim_time(self):
+        return self._runtime.get_sim_time()
 
     def step(self):
         self._presentation.capture_before_step()
         self._runtime.advance()
         self._runtime.finish_step()
 
+    # Placement does not reset the world; the environment calls these in order.
+
+    def place_character(self, obj_id):
+        return self._scene_reset.place_character(obj_id)
+
+    def reset_play_scene(self):
+        self._scene_reset.reset()
+
+    # Display, interaction callbacks and recording.
+
+    def get_viewer(self):
+        """Expose the viewer to opt-in tool adapters without changing its owner."""
+        return self._presentation.get_viewer()
+
+    def set_camera_pose(self, pos, look_at):
+        return self._presentation.set_camera_pose(pos, look_at)
+
+    def get_camera_pos(self):
+        return self._presentation.get_camera_pos()
+
+    def get_camera_dir(self):
+        return self._presentation.get_camera_dir()
+
+    def set_viewer_world_offsets(self, offsets):
+        """Change display placement only; preserve the picking array's identity."""
+        return self._presentation.set_viewer_world_offsets(offsets)
+
+    def set_body_color(self, env_id, obj_id, body_id, color, viewer=None):
+        return self._presentation.set_body_color(env_id, obj_id, body_id, color, viewer)
+
+    def init_viewer(self, viewer):
+        return self._presentation.init_viewer(viewer)
+
+    def draw_lines(self, env_id, start_verts, end_verts, cols, line_width):
+        return self._presentation.draw_lines(env_id, start_verts, end_verts, cols, line_width)
+
+    def register_keyboard_callback(self, key_str, callback_func):
+        return self._presentation.register_keyboard_callback(key_str, callback_func)
+
+    def register_ui_callback(self, callback_func, position="side"):
+        """Expose Newton's optional UI extension without exposing its viewer."""
+        return self._presentation.register_ui_callback(callback_func, position)
+
+    def get_viewer_paused(self):
+        """Read the viewer's pause control for an opt-in playback controller."""
+        return self._presentation.get_viewer_paused()
+
+    def set_viewer_paused(self, paused):
+        """Keep opt-in playback controls synchronized with Newton's pause UI."""
+        return self._presentation.set_viewer_paused(paused)
+
+    def enabled_record_video(self):
+        return self._presentation.enabled_record_video()
+
+    def get_video_recording(self):
+        return self._presentation.get_video_recording()
+
+    def start_video_recording(self):
+        return self._presentation.start_video_recording()
+
+    def stop_video_recording(self):
+        return self._presentation.stop_video_recording()
+
     def render(self):
         self._presentation.render(self.get_sim_time(), self._state.raw_state,
                                   self._scene.play_scene.draw_pool)
         super().render()
-
-    def reset_play_scene(self):
-        self._state.pre_step_update()
-        self._runtime.reset_solver()
-        self._state.synchronize_buffers()
-        self._control.clear_external_forces()
-        self._runtime.reset_clock()
-        self._state.post_step_update()
-        self._runtime.clear_feedback()
 
     def close(self):
         if getattr(self, "_closed", False):
