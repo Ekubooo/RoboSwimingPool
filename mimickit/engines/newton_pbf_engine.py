@@ -340,65 +340,591 @@ class ObjCfg():
         same &= self.enable_self_collisions == other.enable_self_collisions
         return same
 
+class ModelAssembly:
+    """Own object declarations, import caches and pre-finalization builders."""
 
-class NewtonEngine(engine.Engine):
-    def __init__(self, config, num_envs, device, visualize, record_video=False):
-        super().__init__(visualize=visualize)
-
-        if num_envs != 1 or not wp.get_device(device).is_cuda:
-            raise ValueError("newton_pbf currently supports one CUDA environment")
-
-        self._device = device
-        self._num_envs = num_envs
-        self._env_spacing = config["env_spacing"]
-        # GSI can create contact-rich initial poses; keep historical defaults for existing tasks.
-        self._solver_njmax = int(config.get("newton_njmax", 450))
-        self._solver_nconmax = int(config.get("newton_nconmax", 150))
-        if self._solver_njmax <= 0 or self._solver_nconmax <= 0:
-            raise ValueError("Newton constraint/contact capacities must be positive.")
-
-        sim_freq = config.get("sim_freq", 60)
-        control_freq = config.get("control_freq", 10)
-        assert(sim_freq >= control_freq and sim_freq % control_freq == 0), \
-            "Simulation frequency must be a multiple of the control frequency"
-
-        self._timestep = 1.0 / control_freq
-        self._sim_steps = int(sim_freq / control_freq)
-        self._sim_timestep = 1.0 / sim_freq
-        self._sim_step_count = 0
-        self._enable_cuda_graph = bool(config.get("enable_cuda_graph", True))
-        self._fluid_scene = PBFScene(config.get("pbf_asset_dir", "output/sim_ready/pbf_play"),
-                                    device, self._timestep, self._sim_steps)
-
-        self._scene_builder = self._create_model_builder()
-        self._builder_cache = dict()
-
-        self._obj_types = []
+    def __init__(self, num_envs):
+        self.num_envs = num_envs
+        self.builder = self._create_model_builder()
+        self._builder_cache = {}
+        self.object_types = []
         self._obj_builders = []
         self._obj_start_pos = []
         self._obj_start_rot = []
-        self._obj_colors = []
-        self._obj_visual = []
+        self.colors = []
+        self.visual = []
 
-        if ("control_mode" in config):
-            self._control_mode = engine.ControlMode[config["control_mode"]]
-        else:
-            self._control_mode = engine.ControlMode.none
+    def create_env(self):
+        env_id = len(self._obj_builders)
+        assert(env_id < self.num_envs)
 
-        self._build_ground()
+        self._obj_builders.append([])
+        self.object_types.append([])
+        self._obj_start_pos.append([])
+        self._obj_start_rot.append([])
+        self.colors.append([])
+        self.visual.append([])
 
-        if (visualize):
-            self._build_viewer()
-            self._keyboard_callbacks = dict()
-            self._record_video = False
-        else:
-            self._viewer = None
-            self._record_video = record_video
+        return env_id
 
+    def create_obj(self, env_id, obj_type, asset_file, name, is_visual=False, enable_self_collisions=True,
+                   fix_root=False, start_pos=None, start_rot=None, color=None, disable_motors=False):
+        if (start_rot is None):
+            start_rot = np.array([0.0, 0.0, 0.0, 1.0])
+
+        if (start_pos is None):
+            start_pos = np.array([0.0, 0.0, 0.0])
+
+        obj_builder = self._create_obj_builder(asset_file=asset_file, fix_root=fix_root, is_visual=is_visual,
+                                               enable_self_collisions=enable_self_collisions)
+
+        obj_id = len(self._obj_builders[env_id])
+        self.object_types[env_id].append(obj_type)
+        self._obj_builders[env_id].append(obj_builder)
+        self._obj_start_pos[env_id].append(start_pos)
+        self._obj_start_rot[env_id].append(start_rot)
+        self.colors[env_id].append(color)
+        self.visual[env_id].append(is_visual)
+
+        return obj_id
+
+    def get_obj_type(self, obj_id):
+        obj_type = self.object_types[0][obj_id]
+        return obj_type
+
+    def validate_envs(self):
+        num_envs = self.num_envs
+        objs_per_env = len(self._obj_builders[0])
+
+        for i in range(0, num_envs):
+            curr_objs = self._obj_builders[i]
+            num_objs = len(curr_objs)
+            assert(num_objs == objs_per_env), "All envs must have the same number of objects."
         return
 
-    def get_name(self):
-        return "newton_pbf"
+    def build_objects(self, add_particles):
+        num_envs = self.num_envs
+        objs_per_env = len(self._obj_builders[0])
+        total_objs = num_envs * objs_per_env
+
+        for env_id in range(num_envs):
+            self.builder.begin_world()
+
+            for obj_id in range(objs_per_env):
+                obj_builder = self._obj_builders[env_id][obj_id]
+                self.builder.add_builder(obj_builder)
+
+                num_created = env_id * objs_per_env + obj_id + 1
+                Logger.print("Building {:d}/{:d} objs".format(num_created, total_objs), end='\r')
+
+            add_particles(self.builder)
+            self.builder.end_world()
+
+        Logger.print("")
+        return
+
+    def apply_start_transforms(self, objects, device):
+        num_envs = self.num_envs
+        objs_per_env = objects.get_objs_per_env()
+        for env_id in range(num_envs):
+            for obj_id in range(objs_per_env):
+                start_pos = self._obj_start_pos[env_id][obj_id]
+                start_rot = self._obj_start_rot[env_id][obj_id]
+                start_pos = torch.tensor(start_pos, device=device)
+                start_rot = torch.tensor(start_rot, device=device)
+
+                objects.set_root_pos(env_id, obj_id, start_pos)
+                objects.set_root_rot(env_id, obj_id, start_rot)
+
+        objects.state.eval_fk()
+        return
+
+    def _create_obj_builder(self, asset_file, fix_root, is_visual, enable_self_collisions):
+        obj_cfg = ObjCfg(asset_file=asset_file, fix_root=fix_root, is_visual=is_visual,
+                         enable_self_collisions=enable_self_collisions)
+
+        if (obj_cfg in self._builder_cache):
+            obj_builder = self._builder_cache[obj_cfg]
+        else:
+            obj_builder = self._create_model_builder()
+
+            _, asset_ext = os.path.splitext(asset_file)
+            if (asset_ext == ".xml"):
+                obj_builder.add_mjcf(
+                    asset_file,
+                    floating=not fix_root,
+                    ignore_inertial_definitions=False,
+                    collapse_fixed_joints=False,
+                    enable_self_collisions=enable_self_collisions,
+                    convert_3d_hinge_to_ball_joints=True
+                )
+            elif (asset_ext == ".urdf"):
+                obj_builder.add_urdf(
+                    asset_file,
+                    floating=not fix_root,
+                    ignore_inertial_definitions=False,
+                    collapse_fixed_joints=False,
+                    enable_self_collisions=enable_self_collisions,
+                    joint_ordering="dfs"
+                )
+            else:
+                assert(False), "Unsupported asset format: {:s}".format(asset_ext)
+
+            if (is_visual):
+                for i in range(len(obj_builder.shape_flags)):
+                    obj_builder.shape_flags[i] &= ~newton.ShapeFlags.COLLIDE_SHAPES
+
+            self._builder_cache[obj_cfg] = obj_builder
+
+        return obj_builder
+
+    def _create_model_builder(self):
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_shape_cfg.mu = 1.0
+        return builder
+
+    def build_ground(self):
+        shape_cfg = self.builder.ShapeConfig(mu=1.0, restitution=0)
+        self.builder.add_ground_plane(cfg=shape_cfg)
+        return
+
+class ObjectAccess:
+    """Borrow model/state views to expose object properties and state access.
+
+    Physics owns feedback buffers and binds them here after initialization.
+    This class neither allocates another state nor changes its representation.
+    """
+
+    def __init__(self, model, state):
+        self.model = model
+        self.state = state
+
+    def bind_feedback(self, dof_forces, contact_forces, ground_contact_forces):
+        self._dof_forces = dof_forces
+        self._contact_forces = contact_forces
+        self._ground_contact_forces = ground_contact_forces
+
+    def get_root_pos(self, obj_id):
+        root_pos = self.state.root_pos[obj_id]
+        return root_pos
+
+    def get_root_rot(self, obj_id):
+        root_rot = self.state.root_rot[obj_id]
+        return root_rot
+
+    def get_root_vel(self, obj_id):
+        root_vel = self.state.root_vel[obj_id]
+        return root_vel
+
+    def get_root_ang_vel(self, obj_id):
+        root_ang_vel = self.state.root_ang_vel[obj_id]
+        return root_ang_vel
+
+    def get_dof_pos(self, obj_id):
+        dof_pos = self.state.dof_pos[obj_id]
+        return dof_pos
+
+    def get_dof_vel(self, obj_id):
+        dof_vel = self.state.dof_vel[obj_id]
+        return dof_vel
+
+    def get_dof_forces(self, obj_id):
+        return self._dof_forces[obj_id]
+
+    def get_body_pos(self, obj_id):
+        body_pos = self.state.body_pos[obj_id]
+        return body_pos
+
+    def get_body_rot(self, obj_id):
+        body_rot = self.state.body_rot[obj_id]
+        return body_rot
+
+    def get_body_vel(self, obj_id):
+        body_vel = self.state.body_vel[obj_id]
+        return body_vel
+
+    def get_body_ang_vel(self, obj_id):
+        body_ang_vel = self.state.body_ang_vel[obj_id]
+        return body_ang_vel
+
+    def set_root_pos(self, env_id, obj_id, root_pos):
+        if (env_id is None):
+            self.state.root_pos[obj_id][:, :] = root_pos
+        else:
+            self.state.root_pos[obj_id][env_id, :] = root_pos
+        return
+
+    def set_root_rot(self, env_id, obj_id, root_rot):
+        if (env_id is None):
+            self.state.root_rot[obj_id][:, :] = root_rot
+        else:
+            self.state.root_rot[obj_id][env_id, :] = root_rot
+        return
+
+    def set_root_vel(self, env_id, obj_id, root_vel):
+        if (env_id is None):
+            self.state.root_vel[obj_id][:, :] = root_vel
+        else:
+            self.state.root_vel[obj_id][env_id, :] = root_vel
+        return
+
+    def set_root_ang_vel(self, env_id, obj_id, root_ang_vel):
+        if (env_id is None):
+            self.state.root_ang_vel[obj_id][:, :] = root_ang_vel
+        else:
+            self.state.root_ang_vel[obj_id][env_id, :] = root_ang_vel
+        return
+
+    def set_dof_pos(self, env_id, obj_id, dof_pos):
+        if (env_id is None):
+            self.state.dof_pos[obj_id][:, :] = dof_pos
+        else:
+            self.state.dof_pos[obj_id][env_id, :] = dof_pos
+        return
+
+    def set_dof_vel(self, env_id, obj_id, dof_vel):
+        if (env_id is None):
+            self.state.dof_vel[obj_id][:, :] = dof_vel
+        else:
+            self.state.dof_vel[obj_id][env_id, :] = dof_vel
+        return
+
+    def set_body_pos(self, env_id, obj_id, body_pos):
+        if (env_id is None):
+            self.state.body_pos[obj_id][:, :, :] = body_pos
+        else:
+            self.state.body_pos[obj_id][env_id, :, :] = body_pos
+        return
+
+    def set_body_rot(self, env_id, obj_id, body_rot):
+        if (env_id is None):
+            self.state.body_rot[obj_id][:, :, :] = body_rot
+        else:
+            self.state.body_rot[obj_id][env_id, :, :] = body_rot
+        return
+
+    def set_body_vel(self, env_id, obj_id, body_vel):
+        if (env_id is None):
+            self.state.body_vel[obj_id][:, :, :] = body_vel
+        else:
+            self.state.body_vel[obj_id][env_id, :, :] = body_vel
+        return
+
+    def set_body_ang_vel(self, env_id, obj_id, body_ang_vel):
+        if (env_id is None):
+            self.state.body_ang_vel[obj_id][:, :, :] = body_ang_vel
+        else:
+            self.state.body_ang_vel[obj_id][env_id, :, :] = body_ang_vel
+        return
+
+    def get_objs_per_env(self):
+        return len(self.state.root_pos)
+
+    def get_contact_forces(self, obj_id):
+        forces = self._contact_forces[obj_id]
+        return forces
+
+    def get_ground_contact_forces(self, obj_id):
+        forces = self._ground_contact_forces[obj_id]
+        return forces
+
+    def get_obj_torque_limits(self, env_id, obj_id):
+        objs_per_env = self.get_objs_per_env()
+        obj_idx = env_id * objs_per_env + obj_id
+
+        articulation_start = self.model.articulation_start.numpy()
+        joint_qd_start = self.model.joint_qd_start.numpy()
+        effort_lim = self.model.joint_effort_limit.numpy()
+
+        body_start = articulation_start[obj_idx]
+        body_end = articulation_start[obj_idx + 1]
+        qd_start = joint_qd_start[body_start + 1]
+        qd_end = joint_qd_start[body_end]
+
+        torque_lim = effort_lim[qd_start:qd_end]
+        return torque_lim
+
+    def get_obj_dof_limits(self, env_id, obj_id):
+        objs_per_env = self.get_objs_per_env()
+        obj_idx = env_id * objs_per_env + obj_id
+
+        articulation_start = self.model.articulation_start.numpy()
+        joint_qd_start = self.model.joint_qd_start.numpy()
+        lim_low = self.model.joint_limit_lower.numpy()
+        lim_upper = self.model.joint_limit_upper.numpy()
+
+        body_start = articulation_start[obj_idx]
+        body_end = articulation_start[obj_idx + 1]
+        qd_start = joint_qd_start[body_start + 1]
+        qd_end = joint_qd_start[body_end]
+
+        dof_low = lim_low[qd_start:qd_end]
+        dof_high = lim_upper[qd_start:qd_end]
+
+        return dof_low, dof_high
+
+    def get_obj_pd_gains(self, env_id, obj_id):
+        objs_per_env = self.get_objs_per_env()
+        obj_idx = env_id * objs_per_env + obj_id
+
+        articulation_start = self.model.articulation_start.numpy()
+        joint_qd_start = self.model.joint_qd_start.numpy()
+
+        body_start = articulation_start[obj_idx]
+        body_end = articulation_start[obj_idx + 1]
+        qd_start = joint_qd_start[body_start + 1]
+        qd_end = joint_qd_start[body_end]
+
+        kp = self.model.joint_target_ke.numpy()[qd_start:qd_end]
+        kd = self.model.joint_target_kd.numpy()[qd_start:qd_end]
+
+        return kp, kd
+
+    def find_obj_body_id(self, obj_id, body_name):
+        body_names = self.get_obj_body_names(obj_id)
+        body_id = body_names.index(body_name)
+        return  body_id
+
+    def get_obj_num_bodies(self, obj_id):
+        num_bodies = self.state.body_pos[obj_id].shape[-2]
+        return num_bodies
+
+    def get_obj_num_dofs(self, obj_id):
+        num_dofs = self.state.dof_pos[obj_id].shape[-1]
+        return num_dofs
+
+    def get_obj_body_names(self, obj_id):
+        articulation_start = self.model.articulation_start.numpy()
+        body_start = articulation_start[obj_id]
+        body_end = articulation_start[obj_id + 1]
+        body_labels = self.model.body_label[body_start:body_end]
+        body_names = [os.path.basename(l) for l in body_labels]
+        return body_names
+
+    def calc_obj_mass(self, env_id, obj_id):
+        objs_per_env = self.get_objs_per_env()
+        obj_idx = env_id * objs_per_env + obj_id
+
+        articulation_start = self.model.articulation_start.numpy()
+        body_masses = self.model.body_mass.numpy()
+
+        body_start = int(articulation_start[obj_idx])
+        body_end = int(articulation_start[obj_idx + 1])
+        masses = body_masses[body_start:body_end]
+        total_mass = float(masses.sum())
+        return total_mass
+
+    def get_obj_body_ids(self, obj_id):
+        starts = self.model.articulation_start.numpy()
+        # As in SimState, this backend imports one joint per body.
+        return list(range(int(starts[obj_id]), int(starts[obj_id + 1])))
+
+class Actuation:
+    """Convert commands and apply forces using the existing control/state buffers."""
+
+    def __init__(self, model, state, mode, num_envs):
+        self.model = model
+        self.state = state
+        self.mode = mode
+        self._num_envs = num_envs
+        self._build_controls()
+
+    def initialize_force_buffer(self):
+        self.has_body_forces = wp.array([0], dtype=wp.int32, device=self.model.device)
+
+    def _build_controls(self):
+        kp = self.model.mujoco.dof_passive_stiffness
+        kd = self.model.joint_damping
+
+        if (self.mode == engine.ControlMode.none):
+            self.model.joint_target_ke.fill_(0.0)
+            self.model.joint_target_kd.fill_(0.0)
+            self.model.joint_target_mode.fill_(int(newton.JointTargetMode.NONE))
+
+        elif (self.mode == engine.ControlMode.pos):
+            wp.copy(self.model.joint_target_ke, kp)
+            wp.copy(self.model.joint_target_kd, kd)
+            self.model.joint_target_mode.fill_(int(newton.JointTargetMode.POSITION))
+
+        elif (self.mode == engine.ControlMode.vel):
+            self.model.joint_target_ke.fill_(0.0)
+            wp.copy(self.model.joint_target_kd, kd)
+            self.model.joint_target_mode.fill_(int(newton.JointTargetMode.VELOCITY))
+
+        elif (self.mode == engine.ControlMode.torque):
+            self.model.joint_target_ke.fill_(0.0)
+            self.model.joint_target_kd.fill_(0.0)
+            self.model.joint_target_mode.fill_(int(newton.JointTargetMode.EFFORT))
+
+        elif (self.mode == engine.ControlMode.pd_explicit):
+            self.model.joint_target_ke.fill_(0.0)
+            self.model.joint_target_kd.fill_(0.0)
+            self._kp_raw = wp.clone(kp)
+            self._kd_raw = wp.clone(kd)
+            self._torque_lim_raw = wp.clone(self.model.joint_effort_limit)
+            self._pd_dof_pos = wp.zeros_like(self.state.raw_state.joint_qd)
+            self._pd_dof_vel = wp.zeros_like(self.state.raw_state.joint_qd)
+            self.model.joint_target_mode.fill_(int(newton.JointTargetMode.EFFORT))
+
+        else:
+            assert(False), "Unsupported control mode: {}".format(self.mode)
+
+        self.model.mujoco.dof_passive_stiffness.fill_(0.0)
+        self.model.joint_damping.fill_(0.0)
+
+        # The root belongs to the state, not the object's command vector.
+        qd_start = self.model.joint_qd_start.numpy()
+        root_joints = self.model.articulation_start.numpy()[:-1]
+        modes = self.model.joint_target_mode.numpy()
+        for root in root_joints:
+            modes[qd_start[root]:qd_start[root + 1]] = int(newton.JointTargetMode.NONE)
+        self.model.joint_target_mode.assign(modes)
+
+        num_envs = self._num_envs
+        self.controls = Controls(self.model, num_envs)
+        return
+
+    def set_cmd(self, obj_id, cmd):
+        if (self.mode == engine.ControlMode.none):
+            pass
+        elif (self.mode == engine.ControlMode.pos):
+            self.controls.target_pos[obj_id][:] = cmd
+        elif (self.mode == engine.ControlMode.vel):
+            self.controls.target_vel[obj_id][:] = cmd
+        elif (self.mode == engine.ControlMode.torque):
+            self.controls.joint_force[obj_id][:] = cmd
+        elif (self.mode == engine.ControlMode.pd_explicit):
+            self.controls.target_pos[obj_id][:] = cmd
+        else:
+            assert(False), "Unsupported control mode: {}".format(self.mode)
+        return
+
+    def set_body_forces(self, env_id, obj_id, body_id, forces):
+        if (env_id is None or len(env_id) > 0):
+            assert(len(forces.shape) == 2)
+            self.has_body_forces.fill_(1)
+
+            if (env_id is None):
+                self.state.body_force[obj_id][:, body_id, :3] = forces
+            else:
+                self.state.body_force[obj_id][env_id, body_id, :3] = forces
+        return
+
+    def update_targets(self):
+        if self.mode != engine.ControlMode.pos:
+            return
+        state = self.state
+        wp.launch(copy_indexed, dim=state._wp_nonsphere_joint_dof_idx.shape[0],
+                  inputs=[self.controls.target_dof_pos, state._wp_nonsphere_joint_dof_idx,
+                          state._wp_nonsphere_joint_q_idx, self.controls.control.joint_target_q],
+                  device=self.model.device)
+        if state._has_spherical_joints():
+            wp.launch(exp_map_to_quat_indexed, dim=state._wp_sphere_dof_start.shape[0],
+                      inputs=[self.controls.target_dof_pos, state._wp_sphere_dof_start,
+                              state._wp_sphere_q_start, self.controls.control.joint_target_q],
+                      device=self.model.device)
+
+    def _apply_pd_explicit_torque(self, sim_state, control):
+        state = self.state
+        wp.copy(self._pd_dof_vel, sim_state.joint_qd)
+        state.rotate_dof_vectors(sim_state.joint_q, sim_state.joint_qd,
+                                 self._pd_dof_vel, to_newton=False)
+        wp.launch(copy_indexed, dim=state._wp_nonsphere_joint_q_idx.shape[0],
+                  inputs=[sim_state.joint_q, state._wp_nonsphere_joint_q_idx,
+                          state._wp_nonsphere_joint_dof_idx, self._pd_dof_pos],
+                  device=self.model.device)
+        if state._has_spherical_joints():
+            wp.launch(quat_to_exp_map_indexed, dim=state._wp_sphere_q_start.shape[0],
+                      inputs=[sim_state.joint_q, state._wp_sphere_q_start,
+                              state._wp_sphere_dof_start, self._pd_dof_pos],
+                      device=self.model.device)
+        wp.launch(apply_pd_torque, dim=self.model.joint_dof_count,
+                  inputs=[self.controls.target_dof_pos, self._pd_dof_pos, self._pd_dof_vel,
+                          self._kp_raw, self._kd_raw, self._torque_lim_raw,
+                          self.model.joint_target_mode, self.controls.dof_force],
+                  device=self.model.device)
+        wp.copy(control.joint_f, self.controls.dof_force)
+        state.rotate_dof_vectors(sim_state.joint_q, self.controls.dof_force,
+                                 control.joint_f, to_newton=True)
+        return
+
+    def apply_control(self, raw_state, control):
+        if (self.mode == engine.ControlMode.pd_explicit):
+            self._apply_pd_explicit_torque(raw_state, control)
+        elif self.mode == engine.ControlMode.vel:
+            wp.copy(control.joint_target_qd, self.controls.target_dof_vel)
+            self.state.rotate_dof_vectors(raw_state.joint_q, self.controls.target_dof_vel,
+                                               control.joint_target_qd, to_newton=True)
+        elif self.mode == engine.ControlMode.torque:
+            wp.copy(control.joint_f, self.controls.dof_force)
+            self.state.rotate_dof_vectors(raw_state.joint_q, self.controls.dof_force,
+                                               control.joint_f, to_newton=True)
+        return
+
+    def apply_external_forces(self, raw_state):
+        def apply_body_force():
+            wp.copy(raw_state.body_f, self.state._wp_body_force)
+            return
+        wp.capture_if(self.has_body_forces, on_true=apply_body_force)
+
+    def clear_external_forces(self):
+        self.state.clear_forces()
+        self.has_body_forces.zero_()
+
+    def finish_step(self):
+        wp.capture_if(self.has_body_forces, on_true=self.clear_external_forces)
+
+class Presentation:
+    """Own display, input callbacks and recording; borrow simulation data."""
+
+    def __init__(self, num_envs, env_spacing, visualize, record_video):
+        self._num_envs = num_envs
+        self._env_spacing = env_spacing
+        self._viewer = None
+        self._video_recorder = None
+        self._record_video = record_video and not visualize
+        self._recording = False
+        self._closed = False
+        self._keyboard_callbacks = {}
+        if visualize:
+            self._build_viewer()
+
+    def initialize(self, model, colors, body_counts):
+        self._sim_model = model
+        self._obj_colors = colors
+        self._body_counts = body_counts
+        if self._viewer is not None:
+            self.init_viewer(self._viewer)
+            self._camera_offsets = self._viewer.world_offsets.numpy()
+
+    def attach_recorder(self, recorder):
+        self._video_recorder = recorder
+
+    def capture_before_step(self):
+        if self._record_video and self._recording:
+            self._video_recorder.capture_frame()
+
+    def apply_forces(self, raw_state):
+        if self._viewer is not None:
+            self._viewer.apply_forces(raw_state)
+
+    def render(self, sim_time, raw_state, draw_scene):
+        if (not self._viewer.is_running()):
+            raise SystemExit(0)
+
+        self._viewer.end_frame()
+        # Window events can destroy the GL context during end_frame().
+        if (not self._viewer.is_running()):
+            raise SystemExit(0)
+
+        self._viewer.begin_frame(sim_time)
+        self._viewer.log_state(raw_state)
+        draw_scene(self._viewer)
+
+        self._draw_line_count = 0
+
+        return
 
     def close(self):
         if getattr(self, "_closed", False):
@@ -416,117 +942,9 @@ class NewtonEngine(engine.Engine):
         self._video_recorder = None
         return
 
-    def create_env(self):
-        env_id = len(self._obj_builders)
-        assert(env_id < self.get_num_envs())
-
-        self._obj_builders.append([])
-        self._obj_types.append([])
-        self._obj_start_pos.append([])
-        self._obj_start_rot.append([])
-        self._obj_colors.append([])
-        self._obj_visual.append([])
-
-        return env_id
-
-    def initialize_sim(self):
-        self._validate_envs()
-        self._fluid_scene.add_static(self._scene_builder)
-        self._build_objs()
-        # Fluid contacts and pressure feedback belong exclusively to PBF.
-        for i in range(len(self._scene_builder.shape_flags)):
-            self._scene_builder.shape_flags[i] &= ~newton.ShapeFlags.COLLIDE_PARTICLES
-
-        Logger.print("Initializing simulation...")
-        self._sim_model = self._scene_builder.finalize(device=self._device, requires_grad=False)
-
-        num_envs = self.get_num_envs()
-        self._sim_state = SimState(self._sim_model, num_envs)
-        self._state_swap_buffer = self._sim_model.state()
-        self._gravity = self._sim_model.gravity.numpy()[0]
-
-        self._apply_start_xform()
-
-        self._build_controls()
-        self._build_solver()
-        self._fluid_scene.initialize_particles(self._sim_state.raw_state, self._state_swap_buffer)
-        self._solver.boundaries.sync_body_poses(self._sim_state.raw_state)
-        self._build_contact_sensors()
-        self._collision_pipeline = newton.CollisionPipeline(
-            self._sim_model, rigid_contact_max=self._solver.get_max_contact_count(),
-            soft_contact_max=0)
-        self._contacts = self._collision_pipeline.contacts()
-        kinds = set(self._ground_contact_sensor.solver_observable_kinds)
-        if self._control_mode in (engine.ControlMode.pos, engine.ControlMode.vel):
-            kinds.add(self._solver.ObservableKind.QFRC_ACTUATOR)
-        self._observables = self._solver.observables(kinds, contacts=self._contacts)
-
-        self._build_sim_tensors()
-        self._build_dof_force_tensors()
-
-        if (self._visualize()):
-            self.init_viewer(self._viewer)
-            self._camera_offsets = self._viewer.world_offsets.numpy()
-
-        if self.enabled_record_video():
-            self._video_recorder = self._build_video_recorder()
-            self._recording = False
-
-        self._build_graphs()
-        return
-
-    def step(self):
-        if (self.enabled_record_video() and self._recording):
-            self._video_recorder.capture_frame()
-
-        if (self._graph):
-            fluid = self._solver.fluid
-            graph, prediction = self._fluid_graphs[fluid.pre_Pos.ptr]
-            wp.capture_launch(graph)
-            fluid.pre_Pos, fluid.temp_pPos = prediction
-            self._solver.rigid._step += self._sim_steps
-        else:
-            self._simulate()
-
-        self._update_contact_sensors()
-        self._sim_step_count += 1
-        return
-
-    def create_obj(self, env_id, obj_type, asset_file, name, is_visual=False, enable_self_collisions=True,
-                   fix_root=False, start_pos=None, start_rot=None, color=None, disable_motors=False):
-        if (start_rot is None):
-            start_rot = np.array([0.0, 0.0, 0.0, 1.0])
-
-        if (start_pos is None):
-            start_pos = np.array([0.0, 0.0, 0.0])
-
-        obj_builder = self._create_obj_builder(asset_file=asset_file, fix_root=fix_root, is_visual=is_visual,
-                                               enable_self_collisions=enable_self_collisions)
-
-        obj_id = len(self._obj_builders[env_id])
-        self._obj_types[env_id].append(obj_type)
-        self._obj_builders[env_id].append(obj_builder)
-        self._obj_start_pos[env_id].append(start_pos)
-        self._obj_start_rot[env_id].append(start_rot)
-        self._obj_colors[env_id].append(color)
-        self._obj_visual[env_id].append(is_visual)
-
-        return obj_id
-
-    def set_cmd(self, obj_id, cmd):
-        if (self._control_mode == engine.ControlMode.none):
-            pass
-        elif (self._control_mode == engine.ControlMode.pos):
-            self._controls.target_pos[obj_id][:] = cmd
-        elif (self._control_mode == engine.ControlMode.vel):
-            self._controls.target_vel[obj_id][:] = cmd
-        elif (self._control_mode == engine.ControlMode.torque):
-            self._controls.joint_force[obj_id][:] = cmd
-        elif (self._control_mode == engine.ControlMode.pd_explicit):
-            self._controls.target_pos[obj_id][:] = cmd
-        else:
-            assert(False), "Unsupported control mode: {}".format(self._control_mode)
-        return
+    def get_viewer(self):
+        """Expose the viewer to opt-in tool adapters without changing its owner."""
+        return self._viewer
 
     def set_camera_pose(self, pos, look_at):
         dx = look_at[0] - pos[0]
@@ -560,280 +978,6 @@ class NewtonEngine(engine.Engine):
         cam_dir /= np.linalg.norm(cam_dir)
         return cam_dir
 
-    def render(self):
-        if (not self._viewer.is_running()):
-            raise SystemExit(0)
-
-        sim_time = self.get_sim_time()
-
-        self._viewer.end_frame()
-        # Window events can destroy the GL context during end_frame().
-        if (not self._viewer.is_running()):
-            raise SystemExit(0)
-
-        self._viewer.begin_frame(sim_time)
-        self._viewer.log_state(self._sim_state.raw_state)
-        self._fluid_scene.draw_pool(self._viewer)
-
-        self._draw_line_count = 0
-
-        super().render()
-        return
-
-    def get_timestep(self):
-        return self._timestep
-
-    def get_sim_timestep(self):
-        return self._sim_timestep
-
-    def get_sim_time(self):
-        time_step = self.get_timestep()
-        return time_step * self._sim_step_count
-
-    def get_num_envs(self):
-        return self._num_envs
-
-    def get_gravity(self):
-        return self._gravity
-
-    def get_objs_per_env(self):
-        return len(self._sim_state.root_pos)
-
-    def get_root_pos(self, obj_id):
-        root_pos = self._sim_state.root_pos[obj_id]
-        return root_pos
-
-    def get_root_rot(self, obj_id):
-        root_rot = self._sim_state.root_rot[obj_id]
-        return root_rot
-
-    def get_root_vel(self, obj_id):
-        root_vel = self._sim_state.root_vel[obj_id]
-        return root_vel
-
-    def get_root_ang_vel(self, obj_id):
-        root_ang_vel = self._sim_state.root_ang_vel[obj_id]
-        return root_ang_vel
-
-    def get_dof_pos(self, obj_id):
-        dof_pos = self._sim_state.dof_pos[obj_id]
-        return dof_pos
-
-    def get_dof_vel(self, obj_id):
-        dof_vel = self._sim_state.dof_vel[obj_id]
-        return dof_vel
-
-    def get_dof_forces(self, obj_id):
-        return self._dof_forces[obj_id]
-
-    def get_body_pos(self, obj_id):
-        body_pos = self._sim_state.body_pos[obj_id]
-        return body_pos
-
-    def get_body_rot(self, obj_id):
-        body_rot = self._sim_state.body_rot[obj_id]
-        return body_rot
-
-    def get_body_vel(self, obj_id):
-        body_vel = self._sim_state.body_vel[obj_id]
-        return body_vel
-
-    def get_body_ang_vel(self, obj_id):
-        body_ang_vel = self._sim_state.body_ang_vel[obj_id]
-        return body_ang_vel
-
-    def get_contact_forces(self, obj_id):
-        forces = self._contact_forces[obj_id]
-        return forces
-
-    def get_ground_contact_forces(self, obj_id):
-        forces = self._ground_contact_forces[obj_id]
-        return forces
-
-    def set_root_pos(self, env_id, obj_id, root_pos):
-        if (env_id is None):
-            self._sim_state.root_pos[obj_id][:, :] = root_pos
-        else:
-            self._sim_state.root_pos[obj_id][env_id, :] = root_pos
-        return
-
-    def set_root_rot(self, env_id, obj_id, root_rot):
-        if (env_id is None):
-            self._sim_state.root_rot[obj_id][:, :] = root_rot
-        else:
-            self._sim_state.root_rot[obj_id][env_id, :] = root_rot
-        return
-
-    def set_root_vel(self, env_id, obj_id, root_vel):
-        if (env_id is None):
-            self._sim_state.root_vel[obj_id][:, :] = root_vel
-        else:
-            self._sim_state.root_vel[obj_id][env_id, :] = root_vel
-        return
-
-    def set_root_ang_vel(self, env_id, obj_id, root_ang_vel):
-        if (env_id is None):
-            self._sim_state.root_ang_vel[obj_id][:, :] = root_ang_vel
-        else:
-            self._sim_state.root_ang_vel[obj_id][env_id, :] = root_ang_vel
-        return
-
-    def set_dof_pos(self, env_id, obj_id, dof_pos):
-        if (env_id is None):
-            self._sim_state.dof_pos[obj_id][:, :] = dof_pos
-        else:
-            self._sim_state.dof_pos[obj_id][env_id, :] = dof_pos
-        return
-
-    def set_dof_vel(self, env_id, obj_id, dof_vel):
-        if (env_id is None):
-            self._sim_state.dof_vel[obj_id][:, :] = dof_vel
-        else:
-            self._sim_state.dof_vel[obj_id][env_id, :] = dof_vel
-        return
-
-    def set_body_pos(self, env_id, obj_id, body_pos):
-        if (env_id is None):
-            self._sim_state.body_pos[obj_id][:, :, :] = body_pos
-        else:
-            self._sim_state.body_pos[obj_id][env_id, :, :] = body_pos
-        return
-
-    def set_body_rot(self, env_id, obj_id, body_rot):
-        if (env_id is None):
-            self._sim_state.body_rot[obj_id][:, :, :] = body_rot
-        else:
-            self._sim_state.body_rot[obj_id][env_id, :, :] = body_rot
-        return
-
-    def set_body_vel(self, env_id, obj_id, body_vel):
-        if (env_id is None):
-            self._sim_state.body_vel[obj_id][:, :, :] = body_vel
-        else:
-            self._sim_state.body_vel[obj_id][env_id, :, :] = body_vel
-        return
-
-    def set_body_ang_vel(self, env_id, obj_id, body_ang_vel):
-        if (env_id is None):
-            self._sim_state.body_ang_vel[obj_id][:, :, :] = body_ang_vel
-        else:
-            self._sim_state.body_ang_vel[obj_id][env_id, :, :] = body_ang_vel
-        return
-
-    def set_body_forces(self, env_id, obj_id, body_id, forces):
-        if (env_id is None or len(env_id) > 0):
-            assert(len(forces.shape) == 2)
-            self._has_body_forces.fill_(1)
-
-            if (env_id is None):
-                self._sim_state.body_force[obj_id][:, body_id, :3] = forces
-            else:
-                self._sim_state.body_force[obj_id][env_id, body_id, :3] = forces
-        return
-
-    def get_obj_torque_limits(self, env_id, obj_id):
-        objs_per_env = self.get_objs_per_env()
-        obj_idx = env_id * objs_per_env + obj_id
-
-        articulation_start = self._sim_model.articulation_start.numpy()
-        joint_qd_start = self._sim_model.joint_qd_start.numpy()
-        effort_lim = self._sim_model.joint_effort_limit.numpy()
-
-        body_start = articulation_start[obj_idx]
-        body_end = articulation_start[obj_idx + 1]
-        qd_start = joint_qd_start[body_start + 1]
-        qd_end = joint_qd_start[body_end]
-
-        torque_lim = effort_lim[qd_start:qd_end]
-        return torque_lim
-
-    def get_obj_dof_limits(self, env_id, obj_id):
-        objs_per_env = self.get_objs_per_env()
-        obj_idx = env_id * objs_per_env + obj_id
-
-        articulation_start = self._sim_model.articulation_start.numpy()
-        joint_qd_start = self._sim_model.joint_qd_start.numpy()
-        lim_low = self._sim_model.joint_limit_lower.numpy()
-        lim_upper = self._sim_model.joint_limit_upper.numpy()
-
-        body_start = articulation_start[obj_idx]
-        body_end = articulation_start[obj_idx + 1]
-        qd_start = joint_qd_start[body_start + 1]
-        qd_end = joint_qd_start[body_end]
-
-        dof_low = lim_low[qd_start:qd_end]
-        dof_high = lim_upper[qd_start:qd_end]
-
-        return dof_low, dof_high
-
-    def get_obj_pd_gains(self, env_id, obj_id):
-        objs_per_env = self.get_objs_per_env()
-        obj_idx = env_id * objs_per_env + obj_id
-
-        articulation_start = self._sim_model.articulation_start.numpy()
-        joint_qd_start = self._sim_model.joint_qd_start.numpy()
-
-        body_start = articulation_start[obj_idx]
-        body_end = articulation_start[obj_idx + 1]
-        qd_start = joint_qd_start[body_start + 1]
-        qd_end = joint_qd_start[body_end]
-
-        kp = self._sim_model.joint_target_ke.numpy()[qd_start:qd_end]
-        kd = self._sim_model.joint_target_kd.numpy()[qd_start:qd_end]
-
-        return kp, kd
-
-    def find_obj_body_id(self, obj_id, body_name):
-        body_names = self.get_obj_body_names(obj_id)
-        body_id = body_names.index(body_name)
-        return  body_id
-
-    def get_obj_type(self, obj_id):
-        obj_type = self._obj_types[0][obj_id]
-        return obj_type
-
-    def get_obj_num_bodies(self, obj_id):
-        num_bodies = self._sim_state.body_pos[obj_id].shape[-2]
-        return num_bodies
-
-    def get_obj_num_dofs(self, obj_id):
-        num_dofs = self._sim_state.dof_pos[obj_id].shape[-1]
-        return num_dofs
-
-    def get_obj_body_names(self, obj_id):
-        articulation_start = self._sim_model.articulation_start.numpy()
-        body_start = articulation_start[obj_id]
-        body_end = articulation_start[obj_id + 1]
-        body_labels = self._sim_model.body_label[body_start:body_end]
-        body_names = [os.path.basename(l) for l in body_labels]
-        return body_names
-
-    def calc_obj_mass(self, env_id, obj_id):
-        objs_per_env = self.get_objs_per_env()
-        obj_idx = env_id * objs_per_env + obj_id
-
-        articulation_start = self._sim_model.articulation_start.numpy()
-        body_masses = self._sim_model.body_mass.numpy()
-
-        body_start = int(articulation_start[obj_idx])
-        body_end = int(articulation_start[obj_idx + 1])
-        masses = body_masses[body_start:body_end]
-        total_mass = float(masses.sum())
-        return total_mass
-
-    def get_control_mode(self):
-        return self._control_mode
-
-    def get_sim_model(self):
-        return self._sim_model
-
-    def get_sim_state(self):
-        return self._sim_state
-
-    def get_viewer(self):
-        """Expose the viewer to opt-in tool adapters without changing its owner."""
-        return self._viewer
-
     def set_viewer_world_offsets(self, offsets):
         """Change display placement only; preserve the picking array's identity."""
         offsets = np.asarray(offsets, dtype=np.float32)
@@ -845,7 +989,7 @@ class NewtonEngine(engine.Engine):
         return
 
     def set_body_color(self, env_id, obj_id, body_id, color, viewer=None):
-        objs_per_env = self.get_objs_per_env()
+        objs_per_env = len(self._obj_colors[0])
         articulation_start = self._sim_model.articulation_start.numpy()
 
         obj_idx = env_id * objs_per_env + obj_id
@@ -859,7 +1003,7 @@ class NewtonEngine(engine.Engine):
         return
 
     def init_viewer(self, viewer):
-        env_spacing = self._get_env_spacing()
+        env_spacing = self._env_spacing
         viewer.set_model(self._sim_model)
         viewer.show_particles = True
         viewer.set_world_offsets([env_spacing, env_spacing, 0.0])
@@ -918,157 +1062,189 @@ class NewtonEngine(engine.Engine):
                 self._viewer._paused = bool(paused)
         return
 
-    def _validate_envs(self):
-        num_envs = self.get_num_envs()
-        objs_per_env = len(self._obj_builders[0])
+    def enabled_record_video(self):
+        return self._record_video
 
-        for i in range(0, num_envs):
-            curr_objs = self._obj_builders[i]
-            num_objs = len(curr_objs)
-            assert(num_objs == objs_per_env), "All envs must have the same number of objects."
+    def get_video_recording(self):
+        return self._video_recorder.get_video()
+
+    def start_video_recording(self):
+        self._video_recorder.clear()
+        self._recording = True
         return
 
-    def _build_objs(self):
-        num_envs = self.get_num_envs()
-        objs_per_env = len(self._obj_builders[0])
-        total_objs = num_envs * objs_per_env
-
-        for env_id in range(num_envs):
-            self._scene_builder.begin_world()
-
-            for obj_id in range(objs_per_env):
-                obj_builder = self._obj_builders[env_id][obj_id]
-                self._scene_builder.add_builder(obj_builder)
-
-                num_created = env_id * objs_per_env + obj_id + 1
-                Logger.print("Building {:d}/{:d} objs".format(num_created, total_objs), end='\r')
-
-            self._fluid_scene.add_particles(self._scene_builder)
-            self._scene_builder.end_world()
-
-        Logger.print("")
+    def stop_video_recording(self):
+        self._recording = False
         return
 
-    def _apply_start_xform(self):
-        num_envs = self.get_num_envs()
-        objs_per_env = self.get_objs_per_env()
-        for env_id in range(num_envs):
-            for obj_id in range(objs_per_env):
-                start_pos = self._obj_start_pos[env_id][obj_id]
-                start_rot = self._obj_start_rot[env_id][obj_id]
-                start_pos = torch.tensor(start_pos, device=self._device)
-                start_rot = torch.tensor(start_rot, device=self._device)
+    def _build_viewer(self):
+        self._viewer = resource_util.construct(PBFViewer, headless=False)
+        self._draw_line_count = 0
 
-                self.set_root_pos(env_id, obj_id, start_pos)
-                self.set_root_rot(env_id, obj_id, start_rot)
-
-        self._sim_state.eval_fk()
-        return
-
-    def _build_controls(self):
-        kp = self._sim_model.mujoco.dof_passive_stiffness
-        kd = self._sim_model.joint_damping
-
-        if (self._control_mode == engine.ControlMode.none):
-            self._sim_model.joint_target_ke.fill_(0.0)
-            self._sim_model.joint_target_kd.fill_(0.0)
-            self._sim_model.joint_target_mode.fill_(int(newton.JointTargetMode.NONE))
-
-        elif (self._control_mode == engine.ControlMode.pos):
-            wp.copy(self._sim_model.joint_target_ke, kp)
-            wp.copy(self._sim_model.joint_target_kd, kd)
-            self._sim_model.joint_target_mode.fill_(int(newton.JointTargetMode.POSITION))
-
-        elif (self._control_mode == engine.ControlMode.vel):
-            self._sim_model.joint_target_ke.fill_(0.0)
-            wp.copy(self._sim_model.joint_target_kd, kd)
-            self._sim_model.joint_target_mode.fill_(int(newton.JointTargetMode.VELOCITY))
-
-        elif (self._control_mode == engine.ControlMode.torque):
-            self._sim_model.joint_target_ke.fill_(0.0)
-            self._sim_model.joint_target_kd.fill_(0.0)
-            self._sim_model.joint_target_mode.fill_(int(newton.JointTargetMode.EFFORT))
-
-        elif (self._control_mode == engine.ControlMode.pd_explicit):
-            self._sim_model.joint_target_ke.fill_(0.0)
-            self._sim_model.joint_target_kd.fill_(0.0)
-            self._kp_raw = wp.clone(kp)
-            self._kd_raw = wp.clone(kd)
-            self._torque_lim_raw = wp.clone(self._sim_model.joint_effort_limit)
-            self._pd_dof_pos = wp.zeros_like(self._sim_state.raw_state.joint_qd)
-            self._pd_dof_vel = wp.zeros_like(self._sim_state.raw_state.joint_qd)
-            self._sim_model.joint_target_mode.fill_(int(newton.JointTargetMode.EFFORT))
-
-        else:
-            assert(False), "Unsupported control mode: {}".format(self._control_mode)
-
-        self._sim_model.mujoco.dof_passive_stiffness.fill_(0.0)
-        self._sim_model.joint_damping.fill_(0.0)
-
-        # The root belongs to the state, not the object's command vector.
-        qd_start = self._sim_model.joint_qd_start.numpy()
-        root_joints = self._sim_model.articulation_start.numpy()[:-1]
-        modes = self._sim_model.joint_target_mode.numpy()
-        for root in root_joints:
-            modes[qd_start[root]:qd_start[root + 1]] = int(newton.JointTargetMode.NONE)
-        self._sim_model.joint_target_mode.assign(modes)
-
-        num_envs = self.get_num_envs()
-        self._controls = Controls(self._sim_model, num_envs)
-        return
-
-    def _build_solver(self):
-        rigid = newton.solvers.SolverMuJoCo(
-            self._sim_model,
-            solver="newton",
-            njmax=self._solver_njmax,
-            nconmax=self._solver_nconmax,
-            impratio=10,
-            iterations=100,
-            ls_iterations=50
-        )
-        body_ids = [body_id for obj_id, visual in enumerate(self._obj_visual[0])
-                    if not visual for body_id in self.get_obj_body_ids(obj_id)]
-        boundaries = self._fluid_scene.bind_model(self._sim_model, body_ids)
-        self._solver = SolverPBFMuJoCo(self._sim_model, config=self._fluid_scene.config,
-                                       boundaries=boundaries, rigid=rigid)
-        return
-
-    def _build_graphs(self):
-        self._graph = None
-        self._fluid_graphs = {}
-        if not self._enable_cuda_graph:
+        def on_keyboard_event(symbol, modifiers):
+            self._on_keyboard_event(symbol, modifiers)
             return
 
-        fluid = self._solver.fluid
-        for module in ("solvers.pbf.pbf_helper", "solvers.pbf.PBF",
-                       "solvers.pbf.boundary_model", "solvers.pbf.coupling"):
-            wp.load_module(module=module, device=self._sim_model.device)
-        fluid.grid.reserve(self._sim_model.particle_count)
-        prediction = (fluid.pre_Pos, fluid.temp_pPos)
-        rigid_step = self._solver.rigid._step
-        # PBF swaps prediction buffers as it spatially reorders particles.
-        # Odd substep counts need a graph for each starting buffer address.
-        starts = [prediction] if self._sim_steps % 2 == 0 else [prediction, prediction[::-1]]
-        try:
-            for buffers in starts:
-                fluid.pre_Pos, fluid.temp_pPos = buffers
-                with wp.ScopedCapture(device=self._sim_model.device) as capture:
-                    self._simulate()
-                self._fluid_graphs[buffers[0].ptr] = (capture.graph, (fluid.pre_Pos, fluid.temp_pPos))
-        finally:
-            fluid.pre_Pos, fluid.temp_pPos = prediction
-            self._solver.rigid._step = rigid_step
-        self._graph = self._fluid_graphs[prediction[0].ptr][0]
+        self._viewer.renderer.register_key_press(on_keyboard_event)
         return
+
+    def _apply_obj_colors(self, viewer):
+        num_envs = self._num_envs
+        objs_per_env = len(self._obj_colors[0])
+
+        for env_id in range(num_envs):
+            for obj_id in range(objs_per_env):
+                obj_col = self._obj_colors[env_id][obj_id]
+
+                if (obj_col is not None):
+                    num_bodies = self._body_counts[obj_id]
+                    for body_id in range(num_bodies):
+                        self.set_body_color(env_id, obj_id, body_id, obj_col, viewer)
+        return
+
+    def _on_keyboard_event(self, symbol, modifiers):
+        if (symbol in self._keyboard_callbacks):
+            callback = self._keyboard_callbacks[symbol]
+            callback()
+        return
+
+
+class NewtonEngine(engine.Engine):
+    """Coordinate component lifetimes and retain the physical execution flow.
+
+    ModelAssembly owns declarations, ObjectAccess borrows state views,
+    Actuation owns command processing, and Presentation owns display resources.
+    """
+
+    # Lifecycle and frame scheduling.
+    def __init__(self, config, num_envs, device, visualize, record_video=False):
+        super().__init__(visualize=visualize)
+
+        if num_envs != 1 or not wp.get_device(device).is_cuda:
+            raise ValueError("newton_pbf currently supports one CUDA environment")
+
+        self._device = device
+        self._num_envs = num_envs
+        self._env_spacing = config["env_spacing"]
+        # GSI can create contact-rich initial poses; keep historical defaults for existing tasks.
+        self._solver_njmax = int(config.get("newton_njmax", 450))
+        self._solver_nconmax = int(config.get("newton_nconmax", 150))
+        if self._solver_njmax <= 0 or self._solver_nconmax <= 0:
+            raise ValueError("Newton constraint/contact capacities must be positive.")
+
+        sim_freq = config.get("sim_freq", 60)
+        control_freq = config.get("control_freq", 10)
+        assert(sim_freq >= control_freq and sim_freq % control_freq == 0), \
+            "Simulation frequency must be a multiple of the control frequency"
+
+        self._timestep = 1.0 / control_freq
+        self._sim_steps = int(sim_freq / control_freq)
+        self._sim_timestep = 1.0 / sim_freq
+        self._sim_step_count = 0
+        self._enable_cuda_graph = bool(config.get("enable_cuda_graph", True))
+        self._fluid_scene = PBFScene(config.get("pbf_asset_dir", "output/sim_ready/pbf_play"),
+                                    device, self._timestep, self._sim_steps)
+
+        self._assembly = ModelAssembly(num_envs)
+
+        if ("control_mode" in config):
+            self._control_mode = engine.ControlMode[config["control_mode"]]
+        else:
+            self._control_mode = engine.ControlMode.none
+
+        self._assembly.build_ground()
+
+        self._presentation = resource_util.construct(
+            Presentation, num_envs, self._env_spacing, visualize, record_video)
+
+        return
+
+    def initialize_sim(self):
+        self._assembly.validate_envs()
+        self._fluid_scene.add_static(self._assembly.builder)
+        self._assembly.build_objects(self._fluid_scene.add_particles)
+        # Fluid contacts and pressure feedback belong exclusively to PBF.
+        for i in range(len(self._assembly.builder.shape_flags)):
+            self._assembly.builder.shape_flags[i] &= ~newton.ShapeFlags.COLLIDE_PARTICLES
+
+        Logger.print("Initializing simulation...")
+        self._sim_model = self._assembly.builder.finalize(device=self._device, requires_grad=False)
+
+        num_envs = self.get_num_envs()
+        self._sim_state = SimState(self._sim_model, num_envs)
+        self._state_swap_buffer = self._sim_model.state()
+        self._gravity = self._sim_model.gravity.numpy()[0]
+
+        self._objects = ObjectAccess(self._sim_model, self._sim_state)
+        self._assembly.apply_start_transforms(self._objects, self._device)
+
+        self._actuation = Actuation(self._sim_model, self._sim_state, self._control_mode, num_envs)
+        self._build_solver()
+        self._fluid_scene.initialize_particles(self._sim_state.raw_state, self._state_swap_buffer)
+        self._solver.boundaries.sync_body_poses(self._sim_state.raw_state)
+        self._build_contact_sensors()
+        self._collision_pipeline = newton.CollisionPipeline(
+            self._sim_model, rigid_contact_max=self._solver.get_max_contact_count(),
+            soft_contact_max=0)
+        self._contacts = self._collision_pipeline.contacts()
+        kinds = set(self._ground_contact_sensor.solver_observable_kinds)
+        if self._control_mode in (engine.ControlMode.pos, engine.ControlMode.vel):
+            kinds.add(self._solver.ObservableKind.QFRC_ACTUATOR)
+        self._observables = self._solver.observables(kinds, contacts=self._contacts)
+
+        self._build_sim_tensors()
+        self._build_dof_force_tensors()
+        self._objects.bind_feedback(self._dof_forces, self._contact_forces, self._ground_contact_forces)
+
+        self._presentation.initialize(
+            self._sim_model, self._assembly.colors,
+            [self.get_obj_num_bodies(i) for i in range(self.get_objs_per_env())])
+        if self.enabled_record_video():
+            self._presentation.attach_recorder(self._build_video_recorder())
+
+        self._build_graphs()
+        return
+
+    def step(self):
+        self._presentation.capture_before_step()
+
+        if (self._graph):
+            fluid = self._solver.fluid
+            graph, prediction = self._fluid_graphs[fluid.pre_Pos.ptr]
+            wp.capture_launch(graph)
+            fluid.pre_Pos, fluid.temp_pPos = prediction
+            self._solver.rigid._step += self._sim_steps
+        else:
+            self._simulate()
+
+        self._update_contact_sensors()
+        self._sim_step_count += 1
+        return
+
+    def render(self):
+        self._presentation.render(self.get_sim_time(), self._sim_state.raw_state,
+                                  self._fluid_scene.draw_pool)
+        super().render()
+        return
+
+    def close(self):
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        presentation = getattr(self, "_presentation", None)
+        resource_util.cleanup(presentation.close if presentation is not None else None)
+        return
+
+    # Scene declarations and the existing PBF scene integration.
+    def create_env(self):
+        return self._assembly.create_env()
+
+    def create_obj(self, env_id, obj_type, asset_file, name, is_visual=False, enable_self_collisions=True,
+                   fix_root=False, start_pos=None, start_rot=None, color=None, disable_motors=False):
+        return self._assembly.create_obj(env_id, obj_type, asset_file, name, is_visual, enable_self_collisions, fix_root, start_pos, start_rot, color, disable_motors)
 
     def get_play_scene(self):
         return self._fluid_scene
-
-    def get_obj_body_ids(self, obj_id):
-        starts = self._sim_model.articulation_start.numpy()
-        # As in SimState, this backend imports one joint per body.
-        return list(range(int(starts[obj_id]), int(starts[obj_id + 1])))
 
     def place_character(self, obj_id):
         self._sim_state.pre_step_update()
@@ -1079,23 +1255,141 @@ class NewtonEngine(engine.Engine):
         root.add_(torch.as_tensor(shift, device=self._device))
         return shift
 
-    def reset_play_scene(self):
-        self._sim_state.pre_step_update()
-        self._solver.reset(self._sim_state.raw_state)
-        self._state_swap_buffer.assign(self._sim_state.raw_state)
-        self._sim_state.clear_forces()
-        self._has_body_forces.zero_()
-        self._sim_step_count = 0
-        self._sim_state.post_step_update()
-        self._wp_dof_forces.zero_()
-        self._ground_contact_sensor.total_force.zero_()
-        self._ground_contact_sensor.force_matrix.zero_()
+    # Object state and property access.
+    def get_root_pos(self, obj_id):
+        return self._objects.get_root_pos(obj_id)
+
+    def get_root_rot(self, obj_id):
+        return self._objects.get_root_rot(obj_id)
+
+    def get_root_vel(self, obj_id):
+        return self._objects.get_root_vel(obj_id)
+
+    def get_root_ang_vel(self, obj_id):
+        return self._objects.get_root_ang_vel(obj_id)
+
+    def get_dof_pos(self, obj_id):
+        return self._objects.get_dof_pos(obj_id)
+
+    def get_dof_vel(self, obj_id):
+        return self._objects.get_dof_vel(obj_id)
+
+    def get_dof_forces(self, obj_id):
+        return self._objects.get_dof_forces(obj_id)
+
+    def get_body_pos(self, obj_id):
+        return self._objects.get_body_pos(obj_id)
+
+    def get_body_rot(self, obj_id):
+        return self._objects.get_body_rot(obj_id)
+
+    def get_body_vel(self, obj_id):
+        return self._objects.get_body_vel(obj_id)
+
+    def get_body_ang_vel(self, obj_id):
+        return self._objects.get_body_ang_vel(obj_id)
+
+    def set_root_pos(self, env_id, obj_id, root_pos):
+        return self._objects.set_root_pos(env_id, obj_id, root_pos)
+
+    def set_root_rot(self, env_id, obj_id, root_rot):
+        return self._objects.set_root_rot(env_id, obj_id, root_rot)
+
+    def set_root_vel(self, env_id, obj_id, root_vel):
+        return self._objects.set_root_vel(env_id, obj_id, root_vel)
+
+    def set_root_ang_vel(self, env_id, obj_id, root_ang_vel):
+        return self._objects.set_root_ang_vel(env_id, obj_id, root_ang_vel)
+
+    def set_dof_pos(self, env_id, obj_id, dof_pos):
+        return self._objects.set_dof_pos(env_id, obj_id, dof_pos)
+
+    def set_dof_vel(self, env_id, obj_id, dof_vel):
+        return self._objects.set_dof_vel(env_id, obj_id, dof_vel)
+
+    def set_body_pos(self, env_id, obj_id, body_pos):
+        return self._objects.set_body_pos(env_id, obj_id, body_pos)
+
+    def set_body_rot(self, env_id, obj_id, body_rot):
+        return self._objects.set_body_rot(env_id, obj_id, body_rot)
+
+    def set_body_vel(self, env_id, obj_id, body_vel):
+        return self._objects.set_body_vel(env_id, obj_id, body_vel)
+
+    def set_body_ang_vel(self, env_id, obj_id, body_ang_vel):
+        return self._objects.set_body_ang_vel(env_id, obj_id, body_ang_vel)
+
+    def get_obj_torque_limits(self, env_id, obj_id):
+        return self._objects.get_obj_torque_limits(env_id, obj_id)
+
+    def get_obj_dof_limits(self, env_id, obj_id):
+        return self._objects.get_obj_dof_limits(env_id, obj_id)
+
+    def get_obj_pd_gains(self, env_id, obj_id):
+        return self._objects.get_obj_pd_gains(env_id, obj_id)
+
+    def get_obj_type(self, obj_id):
+        return self._assembly.get_obj_type(obj_id)
+
+    def get_obj_num_bodies(self, obj_id):
+        return self._objects.get_obj_num_bodies(obj_id)
+
+    def get_obj_num_dofs(self, obj_id):
+        return self._objects.get_obj_num_dofs(obj_id)
+
+    def get_obj_body_names(self, obj_id):
+        return self._objects.get_obj_body_names(obj_id)
+
+    def get_obj_body_ids(self, obj_id):
+        return self._objects.get_obj_body_ids(obj_id)
+
+    def get_objs_per_env(self):
+        return self._objects.get_objs_per_env()
+
+    def get_contact_forces(self, obj_id):
+        return self._objects.get_contact_forces(obj_id)
+
+    def get_ground_contact_forces(self, obj_id):
+        return self._objects.get_ground_contact_forces(obj_id)
+
+    def find_obj_body_id(self, obj_id, body_name):
+        return self._objects.find_obj_body_id(obj_id, body_name)
+
+    def calc_obj_mass(self, env_id, obj_id):
+        return self._objects.calc_obj_mass(env_id, obj_id)
+
+    # Commands and externally supplied body forces.
+    def set_cmd(self, obj_id, cmd):
+        return self._actuation.set_cmd(obj_id, cmd)
+
+    def set_body_forces(self, env_id, obj_id, body_id, forces):
+        return self._actuation.set_body_forces(env_id, obj_id, body_id, forces)
+
+    def get_control_mode(self):
+        return self._control_mode
+
+    # Solver resources, physical execution and contact feedback.
+    def _build_solver(self):
+        rigid = newton.solvers.SolverMuJoCo(
+            self._sim_model,
+            solver="newton",
+            njmax=self._solver_njmax,
+            nconmax=self._solver_nconmax,
+            impratio=10,
+            iterations=100,
+            ls_iterations=50
+        )
+        body_ids = [body_id for obj_id, visual in enumerate(self._assembly.visual[0])
+                    if not visual for body_id in self.get_obj_body_ids(obj_id)]
+        boundaries = self._fluid_scene.bind_model(self._sim_model, body_ids)
+        self._solver = SolverPBFMuJoCo(self._sim_model, config=self._fluid_scene.config,
+                                       boundaries=boundaries, rigid=rigid)
         return
 
     def _build_sim_tensors(self):
         self._raw_dof_pos = torch.zeros_like(self._sim_state._torch_joint_q)
         self._obj_dof_pos = []
-        self._has_body_forces = wp.array([0], dtype=wp.int32, device=self._sim_model.device)
+        self._actuation.initialize_force_buffer()
 
         articulation_start = self._sim_model.articulation_start.numpy()
         joint_q_start = self._sim_model.joint_q_start.numpy()
@@ -1125,68 +1419,7 @@ class NewtonEngine(engine.Engine):
                 forces[:, qd_start[starts[obj] + 1]:qd_start[starts[obj + 1]]]
                 for obj in range(self.get_objs_per_env())]
         else:
-            self._dof_forces = self._controls.joint_force
-        return
-
-    def _create_obj_builder(self, asset_file, fix_root, is_visual, enable_self_collisions):
-        obj_cfg = ObjCfg(asset_file=asset_file, fix_root=fix_root, is_visual=is_visual,
-                         enable_self_collisions=enable_self_collisions)
-
-        if (obj_cfg in self._builder_cache):
-            obj_builder = self._builder_cache[obj_cfg]
-        else:
-            obj_builder = self._create_model_builder()
-
-            _, asset_ext = os.path.splitext(asset_file)
-            if (asset_ext == ".xml"):
-                obj_builder.add_mjcf(
-                    asset_file,
-                    floating=not fix_root,
-                    ignore_inertial_definitions=False,
-                    collapse_fixed_joints=False,
-                    enable_self_collisions=enable_self_collisions,
-                    convert_3d_hinge_to_ball_joints=True
-                )
-            elif (asset_ext == ".urdf"):
-                obj_builder.add_urdf(
-                    asset_file,
-                    floating=not fix_root,
-                    ignore_inertial_definitions=False,
-                    collapse_fixed_joints=False,
-                    enable_self_collisions=enable_self_collisions,
-                    joint_ordering="dfs"
-                )
-            else:
-                assert(False), "Unsupported asset format: {:s}".format(asset_ext)
-
-            if (is_visual):
-                for i in range(len(obj_builder.shape_flags)):
-                    obj_builder.shape_flags[i] &= ~newton.ShapeFlags.COLLIDE_SHAPES
-
-            self._builder_cache[obj_cfg] = obj_builder
-
-        return obj_builder
-
-    def _create_model_builder(self):
-        builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-        builder.default_shape_cfg.mu = 1.0
-        return builder
-
-    def _build_viewer(self):
-        self._viewer = resource_util.construct(PBFViewer, headless=False)
-        self._draw_line_count = 0
-
-        def on_keyboard_event(symbol, modifiers):
-            self._on_keyboard_event(symbol, modifiers)
-            return
-
-        self._viewer.renderer.register_key_press(on_keyboard_event)
-        return
-
-    def _build_ground(self):
-        shape_cfg = self._scene_builder.ShapeConfig(mu=1.0, restitution=0)
-        self._scene_builder.add_ground_plane(cfg=shape_cfg)
+            self._dof_forces = self._actuation.controls.joint_force
         return
 
     def _build_contact_sensors(self):
@@ -1222,16 +1455,41 @@ class NewtonEngine(engine.Engine):
             offset_idx += num_bodies
         return
 
-    def _get_env_spacing(self):
-        return self._env_spacing
+    def _build_graphs(self):
+        self._graph = None
+        self._fluid_graphs = {}
+        if not self._enable_cuda_graph:
+            return
+
+        fluid = self._solver.fluid
+        for module in ("solvers.pbf.pbf_helper", "solvers.pbf.PBF",
+                       "solvers.pbf.boundary_model", "solvers.pbf.coupling"):
+            wp.load_module(module=module, device=self._sim_model.device)
+        fluid.grid.reserve(self._sim_model.particle_count)
+        prediction = (fluid.pre_Pos, fluid.temp_pPos)
+        rigid_step = self._solver.rigid._step
+        # PBF swaps prediction buffers as it spatially reorders particles.
+        # Odd substep counts need a graph for each starting buffer address.
+        starts = [prediction] if self._sim_steps % 2 == 0 else [prediction, prediction[::-1]]
+        try:
+            for buffers in starts:
+                fluid.pre_Pos, fluid.temp_pPos = buffers
+                with wp.ScopedCapture(device=self._sim_model.device) as capture:
+                    self._simulate()
+                self._fluid_graphs[buffers[0].ptr] = (capture.graph, (fluid.pre_Pos, fluid.temp_pPos))
+        finally:
+            fluid.pre_Pos, fluid.temp_pPos = prediction
+            self._solver.rigid._step = rigid_step
+        self._graph = self._fluid_graphs[prediction[0].ptr][0]
+        return
 
     def _simulate(self):
         state0 = self._sim_state.raw_state
         state1 = self._state_swap_buffer
-        control = self._controls.control
+        control = self._actuation.controls.control
 
         self._sim_state.pre_step_update()
-        self._update_control_targets()
+        self._actuation.update_targets()
 
         for i in range(self._sim_steps):
             self._pre_sim_step(state0, control)
@@ -1248,11 +1506,7 @@ class NewtonEngine(engine.Engine):
             self._sim_state.rotate_dof_vectors(state0.joint_q, self._wp_dof_forces,
                                                self._wp_dof_forces, to_newton=False)
 
-        def clear_body_forces():
-            self._sim_state.clear_forces()
-            self._has_body_forces.zero_()
-            return
-        wp.capture_if(self._has_body_forces, on_true=clear_body_forces)
+        self._actuation.finish_step()
 
         # The composed MuJoCo solver already writes joint coordinates.
         # Running the generic IK fallback here would overwrite that result.
@@ -1260,25 +1514,9 @@ class NewtonEngine(engine.Engine):
 
     def _pre_sim_step(self, raw_state, control):
         raw_state.clear_forces()
-
-        def apply_body_force():
-            wp.copy(raw_state.body_f, self._sim_state._wp_body_force)
-            return
-        wp.capture_if(self._has_body_forces, on_true=apply_body_force)
-
-        if (self._visualize()):
-            self._viewer.apply_forces(raw_state)
-
-        if (self._control_mode == engine.ControlMode.pd_explicit):
-            self._apply_pd_explicit_torque(raw_state, control)
-        elif self._control_mode == engine.ControlMode.vel:
-            wp.copy(control.joint_target_qd, self._controls.target_dof_vel)
-            self._sim_state.rotate_dof_vectors(raw_state.joint_q, self._controls.target_dof_vel,
-                                               control.joint_target_qd, to_newton=True)
-        elif self._control_mode == engine.ControlMode.torque:
-            wp.copy(control.joint_f, self._controls.dof_force)
-            self._sim_state.rotate_dof_vectors(raw_state.joint_q, self._controls.dof_force,
-                                               control.joint_f, to_newton=True)
+        self._actuation.apply_external_forces(raw_state)
+        self._presentation.apply_forces(raw_state)
+        self._actuation.apply_control(raw_state, control)
         return
 
     def _update_contact_sensors(self):
@@ -1286,85 +1524,102 @@ class NewtonEngine(engine.Engine):
                                            observables=self._observables)
         return
 
-    def _update_control_targets(self):
-        if self._control_mode != engine.ControlMode.pos:
-            return
-        state = self._sim_state
-        wp.launch(copy_indexed, dim=state._wp_nonsphere_joint_dof_idx.shape[0],
-                  inputs=[self._controls.target_dof_pos, state._wp_nonsphere_joint_dof_idx,
-                          state._wp_nonsphere_joint_q_idx, self._controls.control.joint_target_q],
-                  device=self._sim_model.device)
-        if state._has_spherical_joints():
-            wp.launch(exp_map_to_quat_indexed, dim=state._wp_sphere_dof_start.shape[0],
-                      inputs=[self._controls.target_dof_pos, state._wp_sphere_dof_start,
-                              state._wp_sphere_q_start, self._controls.control.joint_target_q],
-                      device=self._sim_model.device)
-
-    def _visualize(self):
-        return self._viewer is not None
-
-    def _apply_obj_colors(self, viewer):
-        num_envs = self.get_num_envs()
-        objs_per_env = self.get_objs_per_env()
-
-        for env_id in range(num_envs):
-            for obj_id in range(objs_per_env):
-                obj_col = self._obj_colors[env_id][obj_id]
-
-                if (obj_col is not None):
-                    num_bodies = self.get_obj_num_bodies(obj_id)
-                    for body_id in range(num_bodies):
-                        self.set_body_color(env_id, obj_id, body_id, obj_col, viewer)
+    def reset_play_scene(self):
+        self._sim_state.pre_step_update()
+        self._solver.reset(self._sim_state.raw_state)
+        self._state_swap_buffer.assign(self._sim_state.raw_state)
+        self._actuation.clear_external_forces()
+        self._sim_step_count = 0
+        self._sim_state.post_step_update()
+        self._wp_dof_forces.zero_()
+        self._ground_contact_sensor.total_force.zero_()
+        self._ground_contact_sensor.force_matrix.zero_()
         return
 
-    def _apply_pd_explicit_torque(self, sim_state, control):
-        state = self._sim_state
-        wp.copy(self._pd_dof_vel, sim_state.joint_qd)
-        state.rotate_dof_vectors(sim_state.joint_q, sim_state.joint_qd,
-                                 self._pd_dof_vel, to_newton=False)
-        wp.launch(copy_indexed, dim=state._wp_nonsphere_joint_q_idx.shape[0],
-                  inputs=[sim_state.joint_q, state._wp_nonsphere_joint_q_idx,
-                          state._wp_nonsphere_joint_dof_idx, self._pd_dof_pos],
-                  device=self._sim_model.device)
-        if state._has_spherical_joints():
-            wp.launch(quat_to_exp_map_indexed, dim=state._wp_sphere_q_start.shape[0],
-                      inputs=[sim_state.joint_q, state._wp_sphere_q_start,
-                              state._wp_sphere_dof_start, self._pd_dof_pos],
-                      device=self._sim_model.device)
-        wp.launch(apply_pd_torque, dim=self._sim_model.joint_dof_count,
-                  inputs=[self._controls.target_dof_pos, self._pd_dof_pos, self._pd_dof_vel,
-                          self._kp_raw, self._kd_raw, self._torque_lim_raw,
-                          self._sim_model.joint_target_mode, self._controls.dof_force],
-                  device=self._sim_model.device)
-        wp.copy(control.joint_f, self._controls.dof_force)
-        state.rotate_dof_vectors(sim_state.joint_q, self._controls.dof_force,
-                                 control.joint_f, to_newton=True)
-        return
+    # Display, input and recording through the existing public interface.
+    def get_viewer(self):
+        return self._presentation.get_viewer()
 
-    def _on_keyboard_event(self, symbol, modifiers):
-        if (symbol in self._keyboard_callbacks):
-            callback = self._keyboard_callbacks[symbol]
-            callback()
-        return
+    def set_camera_pose(self, pos, look_at):
+        return self._presentation.set_camera_pose(pos, look_at)
+
+    def get_camera_pos(self):
+        return self._presentation.get_camera_pos()
+
+    def get_camera_dir(self):
+        return self._presentation.get_camera_dir()
+
+    def set_viewer_world_offsets(self, offsets):
+        return self._presentation.set_viewer_world_offsets(offsets)
+
+    def set_body_color(self, env_id, obj_id, body_id, color, viewer=None):
+        return self._presentation.set_body_color(env_id, obj_id, body_id, color, viewer)
+
+    def init_viewer(self, viewer):
+        return self._presentation.init_viewer(viewer)
+
+    def draw_lines(self, env_id, start_verts, end_verts, cols, line_width):
+        return self._presentation.draw_lines(env_id, start_verts, end_verts, cols, line_width)
+
+    def register_keyboard_callback(self, key_str, callback_func):
+        return self._presentation.register_keyboard_callback(key_str, callback_func)
+
+    def register_ui_callback(self, callback_func, position="side"):
+        return self._presentation.register_ui_callback(callback_func, position)
+
+    def get_viewer_paused(self):
+        return self._presentation.get_viewer_paused()
+
+    def set_viewer_paused(self, paused):
+        return self._presentation.set_viewer_paused(paused)
 
     def enabled_record_video(self):
-        return self._record_video
+        return self._presentation.enabled_record_video()
 
     def get_video_recording(self):
-        return self._video_recorder.get_video()
+        return self._presentation.get_video_recording()
 
     def start_video_recording(self):
-        self._video_recorder.clear()
-        self._recording = True
-        return
+        return self._presentation.start_video_recording()
 
     def stop_video_recording(self):
-        self._recording = False
-        return
+        return self._presentation.stop_video_recording()
 
     def _build_video_recorder(self) -> PBFVideoRecorder:
         Logger.print("Video recording enabled")
         return resource_util.construct(PBFVideoRecorder, self)
+
+    def _visualize(self):
+        return self._presentation.get_viewer() is not None
+
+    def _get_env_spacing(self):
+        return self._env_spacing
+
+    # Engine metadata and shared simulation resources.
+    def get_name(self):
+        return "newton_pbf"
+
+    def get_timestep(self):
+        return self._timestep
+
+    def get_sim_timestep(self):
+        return self._sim_timestep
+
+    def get_sim_time(self):
+        time_step = self.get_timestep()
+        return time_step * self._sim_step_count
+
+    def get_num_envs(self):
+        return self._num_envs
+
+    def get_gravity(self):
+        return self._gravity
+
+    def get_sim_model(self):
+        return self._sim_model
+
+    def get_sim_state(self):
+        return self._sim_state
 
 
 @wp.kernel
