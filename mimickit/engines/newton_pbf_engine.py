@@ -1064,9 +1064,14 @@ class SimulationRuntime:
             iterations=100,
             ls_iterations=50
         )
+
         boundaries = scene.bind_boundaries(self._sim_model, self._state)
-        self._solver = SolverPBFMuJoCo(self._sim_model, config=scene.play_scene.config,
-                                       boundaries=boundaries, rigid=rigid)
+
+        self._solver = SolverPBFMuJoCo(
+            self._sim_model, 
+            config=scene.play_scene.config,
+            boundaries=boundaries, rigid=rigid
+        )
         return
 
 
@@ -1189,8 +1194,12 @@ class SimulationRuntime:
         self._state.post_step_update()
         if self._control.mode in (engine.ControlMode.pos, engine.ControlMode.vel):
             wp.copy(self._wp_dof_forces, self._observables.qfrc_actuator)
-            self._state.rotate_dof_vectors(state0.joint_q, self._wp_dof_forces,
-                                               self._wp_dof_forces, to_newton=False)
+            self._state.rotate_dof_vectors(
+                state0.joint_q, 
+                self._wp_dof_forces,
+                self._wp_dof_forces, 
+                to_newton=False
+            )
 
         self._control.finish_step()
 
