@@ -3,6 +3,8 @@ wp.config.enable_backward = False
 
 import newton
 import numpy as np
+import inspect
+import linecache
 import os
 import torch
 import pyglet
@@ -1109,6 +1111,77 @@ class Presentation:
         return
 
 
+# Explicit MimicKit API ownership; only these methods are delegated.
+_ENGINE_DELEGATES = (
+    ("_assembly", ModelAssembly, (
+        "create_env", "create_obj", "get_obj_type",
+    )),
+    ("_objects", ObjectAccess, (
+        "get_root_pos", "get_root_rot", "get_root_vel", "get_root_ang_vel",
+        "get_dof_pos", "get_dof_vel", "get_dof_forces",
+        "get_body_pos", "get_body_rot", "get_body_vel", "get_body_ang_vel",
+        "set_root_pos", "set_root_rot", "set_root_vel", "set_root_ang_vel",
+        "set_dof_pos", "set_dof_vel",
+        "set_body_pos", "set_body_rot", "set_body_vel", "set_body_ang_vel",
+        "get_obj_torque_limits", "get_obj_dof_limits", "get_obj_pd_gains",
+        "get_obj_num_bodies", "get_obj_num_dofs", "get_obj_body_names",
+        "get_obj_body_ids", "get_objs_per_env",
+        "get_contact_forces", "get_ground_contact_forces",
+        "find_obj_body_id", "calc_obj_mass",
+    )),
+    ("_actuation", Actuation, (
+        "set_cmd", "set_body_forces",
+    )),
+    ("_presentation", Presentation, (
+        "get_viewer", "set_camera_pose", "get_camera_pos", "get_camera_dir",
+        "set_viewer_world_offsets", "set_body_color", "init_viewer", "draw_lines",
+        "register_keyboard_callback", "register_ui_callback",
+        "get_viewer_paused", "set_viewer_paused", "enabled_record_video",
+        "get_video_recording", "start_video_recording", "stop_video_recording",
+    )),
+)
+
+
+def _delegate_engine_api(cls):
+    """Install ordinary, exact-signature forwards once, when the class loads.
+
+    The fixed declaration above is the only input. Calls use the same direct
+    attribute access as handwritten forwards, including after component changes.
+    """
+    declared = set()
+    methods = []
+    for attribute, component, names in _ENGINE_DELEGATES:
+        for name in names:
+            if name in declared or name in vars(cls):
+                raise ValueError(f"Duplicate or handwritten engine method: {name}")
+            target = getattr(component, name, None)
+            if not inspect.isfunction(target):
+                raise TypeError(f"Delegation target is not a method: {component.__name__}.{name}")
+            signature = inspect.signature(target)
+            parameters = tuple(signature.parameters.values())
+            if (not parameters or parameters[0].name != "self"
+                    or any(p.kind != inspect.Parameter.POSITIONAL_OR_KEYWORD for p in parameters)):
+                raise TypeError(f"Unsupported delegated method signature: {name}{signature}")
+            declared.add(name)
+            methods.append((attribute, name, target, signature, parameters))
+
+    for attribute, name, target, signature, parameters in methods:
+        arguments = ", ".join(p.name for p in parameters[1:])
+        source = f"def {name}{signature}:\n    return self.{attribute}.{name}({arguments})\n"
+        filename = f"<{cls.__module__}.{cls.__qualname__}.{name}>"
+        namespace = {}
+        exec(compile(source, filename, "exec"), globals(), namespace)
+        method = namespace[name]
+        method.__qualname__ = f"{cls.__qualname__}.{name}"
+        method.__doc__ = target.__doc__
+        method.__defaults__ = target.__defaults__
+        method.__annotations__ = target.__annotations__.copy()
+        linecache.cache[filename] = (len(source), None, source.splitlines(keepends=True), filename)
+        setattr(cls, name, method)
+    return cls
+
+
+@_delegate_engine_api
 class NewtonEngine(engine.Engine):
     """Coordinate component lifetimes and retain the physical execution flow.
 
@@ -1236,13 +1309,6 @@ class NewtonEngine(engine.Engine):
         return
 
     # Scene declarations and the existing PBF scene integration.
-    def create_env(self):
-        return self._assembly.create_env()
-
-    def create_obj(self, env_id, obj_type, asset_file, name, is_visual=False, enable_self_collisions=True,
-                   fix_root=False, start_pos=None, start_rot=None, color=None, disable_motors=False):
-        return self._assembly.create_obj(env_id, obj_type, asset_file, name, is_visual, enable_self_collisions, fix_root, start_pos, start_rot, color, disable_motors)
-
     def get_play_scene(self):
         return self._fluid_scene
 
@@ -1254,116 +1320,6 @@ class NewtonEngine(engine.Engine):
             self._sim_state.raw_state, self.get_obj_body_ids(obj_id), root[0].cpu().numpy())
         root.add_(torch.as_tensor(shift, device=self._device))
         return shift
-
-    # Object state and property access.
-    def get_root_pos(self, obj_id):
-        return self._objects.get_root_pos(obj_id)
-
-    def get_root_rot(self, obj_id):
-        return self._objects.get_root_rot(obj_id)
-
-    def get_root_vel(self, obj_id):
-        return self._objects.get_root_vel(obj_id)
-
-    def get_root_ang_vel(self, obj_id):
-        return self._objects.get_root_ang_vel(obj_id)
-
-    def get_dof_pos(self, obj_id):
-        return self._objects.get_dof_pos(obj_id)
-
-    def get_dof_vel(self, obj_id):
-        return self._objects.get_dof_vel(obj_id)
-
-    def get_dof_forces(self, obj_id):
-        return self._objects.get_dof_forces(obj_id)
-
-    def get_body_pos(self, obj_id):
-        return self._objects.get_body_pos(obj_id)
-
-    def get_body_rot(self, obj_id):
-        return self._objects.get_body_rot(obj_id)
-
-    def get_body_vel(self, obj_id):
-        return self._objects.get_body_vel(obj_id)
-
-    def get_body_ang_vel(self, obj_id):
-        return self._objects.get_body_ang_vel(obj_id)
-
-    def set_root_pos(self, env_id, obj_id, root_pos):
-        return self._objects.set_root_pos(env_id, obj_id, root_pos)
-
-    def set_root_rot(self, env_id, obj_id, root_rot):
-        return self._objects.set_root_rot(env_id, obj_id, root_rot)
-
-    def set_root_vel(self, env_id, obj_id, root_vel):
-        return self._objects.set_root_vel(env_id, obj_id, root_vel)
-
-    def set_root_ang_vel(self, env_id, obj_id, root_ang_vel):
-        return self._objects.set_root_ang_vel(env_id, obj_id, root_ang_vel)
-
-    def set_dof_pos(self, env_id, obj_id, dof_pos):
-        return self._objects.set_dof_pos(env_id, obj_id, dof_pos)
-
-    def set_dof_vel(self, env_id, obj_id, dof_vel):
-        return self._objects.set_dof_vel(env_id, obj_id, dof_vel)
-
-    def set_body_pos(self, env_id, obj_id, body_pos):
-        return self._objects.set_body_pos(env_id, obj_id, body_pos)
-
-    def set_body_rot(self, env_id, obj_id, body_rot):
-        return self._objects.set_body_rot(env_id, obj_id, body_rot)
-
-    def set_body_vel(self, env_id, obj_id, body_vel):
-        return self._objects.set_body_vel(env_id, obj_id, body_vel)
-
-    def set_body_ang_vel(self, env_id, obj_id, body_ang_vel):
-        return self._objects.set_body_ang_vel(env_id, obj_id, body_ang_vel)
-
-    def get_obj_torque_limits(self, env_id, obj_id):
-        return self._objects.get_obj_torque_limits(env_id, obj_id)
-
-    def get_obj_dof_limits(self, env_id, obj_id):
-        return self._objects.get_obj_dof_limits(env_id, obj_id)
-
-    def get_obj_pd_gains(self, env_id, obj_id):
-        return self._objects.get_obj_pd_gains(env_id, obj_id)
-
-    def get_obj_type(self, obj_id):
-        return self._assembly.get_obj_type(obj_id)
-
-    def get_obj_num_bodies(self, obj_id):
-        return self._objects.get_obj_num_bodies(obj_id)
-
-    def get_obj_num_dofs(self, obj_id):
-        return self._objects.get_obj_num_dofs(obj_id)
-
-    def get_obj_body_names(self, obj_id):
-        return self._objects.get_obj_body_names(obj_id)
-
-    def get_obj_body_ids(self, obj_id):
-        return self._objects.get_obj_body_ids(obj_id)
-
-    def get_objs_per_env(self):
-        return self._objects.get_objs_per_env()
-
-    def get_contact_forces(self, obj_id):
-        return self._objects.get_contact_forces(obj_id)
-
-    def get_ground_contact_forces(self, obj_id):
-        return self._objects.get_ground_contact_forces(obj_id)
-
-    def find_obj_body_id(self, obj_id, body_name):
-        return self._objects.find_obj_body_id(obj_id, body_name)
-
-    def calc_obj_mass(self, env_id, obj_id):
-        return self._objects.calc_obj_mass(env_id, obj_id)
-
-    # Commands and externally supplied body forces.
-    def set_cmd(self, obj_id, cmd):
-        return self._actuation.set_cmd(obj_id, cmd)
-
-    def set_body_forces(self, env_id, obj_id, body_id, forces):
-        return self._actuation.set_body_forces(env_id, obj_id, body_id, forces)
 
     def get_control_mode(self):
         return self._control_mode
@@ -1540,54 +1496,6 @@ class NewtonEngine(engine.Engine):
         return
 
     # Display, input and recording through the existing public interface.
-    def get_viewer(self):
-        return self._presentation.get_viewer()
-
-    def set_camera_pose(self, pos, look_at):
-        return self._presentation.set_camera_pose(pos, look_at)
-
-    def get_camera_pos(self):
-        return self._presentation.get_camera_pos()
-
-    def get_camera_dir(self):
-        return self._presentation.get_camera_dir()
-
-    def set_viewer_world_offsets(self, offsets):
-        return self._presentation.set_viewer_world_offsets(offsets)
-
-    def set_body_color(self, env_id, obj_id, body_id, color, viewer=None):
-        return self._presentation.set_body_color(env_id, obj_id, body_id, color, viewer)
-
-    def init_viewer(self, viewer):
-        return self._presentation.init_viewer(viewer)
-
-    def draw_lines(self, env_id, start_verts, end_verts, cols, line_width):
-        return self._presentation.draw_lines(env_id, start_verts, end_verts, cols, line_width)
-
-    def register_keyboard_callback(self, key_str, callback_func):
-        return self._presentation.register_keyboard_callback(key_str, callback_func)
-
-    def register_ui_callback(self, callback_func, position="side"):
-        return self._presentation.register_ui_callback(callback_func, position)
-
-    def get_viewer_paused(self):
-        return self._presentation.get_viewer_paused()
-
-    def set_viewer_paused(self, paused):
-        return self._presentation.set_viewer_paused(paused)
-
-    def enabled_record_video(self):
-        return self._presentation.enabled_record_video()
-
-    def get_video_recording(self):
-        return self._presentation.get_video_recording()
-
-    def start_video_recording(self):
-        return self._presentation.start_video_recording()
-
-    def stop_video_recording(self):
-        return self._presentation.stop_video_recording()
-
     def _build_video_recorder(self) -> PBFVideoRecorder:
         Logger.print("Video recording enabled")
         return resource_util.construct(PBFVideoRecorder, self)
