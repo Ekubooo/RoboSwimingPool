@@ -30,6 +30,9 @@ def build_env(env_file, engine_file, num_envs, device, visualize, record_video=F
     elif (env_name == "smp"):
         import envs.smp_env as smp_env
         env = resource_util.construct(smp_env.SMPEnv, env_config=env_config, engine_config=engine_config, num_envs=num_envs, device=device, visualize=visualize, record_video=record_video)
+    elif (env_name == "pbf_play"):
+        from envs.pbf_play_env import PBFPlayEnv
+        env = resource_util.construct(PBFPlayEnv, env_config=env_config, engine_config=engine_config, num_envs=num_envs, device=device, visualize=visualize, record_video=record_video)
     elif (env_name == "char_dof_test"):
         import envs.char_dof_test_env as char_dof_test_env
         env = resource_util.construct(char_dof_test_env.CharDofTestEnv, env_config=env_config, engine_config=engine_config, num_envs=num_envs, device=device, visualize=visualize)

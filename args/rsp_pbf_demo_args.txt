@@ -1,0 +1,12 @@
+# Run continuously until the window is closed or Ctrl+C is pressed.
+--mode test
+--num_envs 1
+--devices cuda:0
+--visualize true
+--video false
+--rand_seed 1234
+--engine_config data/engines/newton_pbf_engine.yaml
+--env_config data/envs/pbf_play_env.yaml
+--agent_config output/a5000_dodgeball_2048_full_r01/agent_config.yaml
+--model_file output/a5000_dodgeball_2048_full_r01/model.pt
+--out_dir output/pbf_play

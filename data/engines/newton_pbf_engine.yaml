@@ -1,0 +1,9 @@
+engine_name: newton_pbf
+control_mode: pos
+control_freq: 30
+sim_freq: 240
+env_spacing: 5
+enable_cuda_graph: true
+newton_njmax: 8192
+newton_nconmax: 2048
+pbf_asset_dir: output/sim_ready/pbf_play

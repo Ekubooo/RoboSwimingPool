@@ -23,6 +23,11 @@ def build_engine(config, num_envs, device, visualize, record_video=False):
     elif (eng_name == "newton_1_7"):
         import engines.newton_1_7_engine as newton_1_7_engine
         engine = resource_util.construct(newton_1_7_engine.NewtonEngine, config, num_envs, device, visualize, record_video=record_video)
+    elif (eng_name == "newton_pbf"):
+        from engines.newton_version import check_newton_version
+        from engines.newton_pbf_engine import NewtonEngine
+        check_newton_version("newton_1_7")
+        engine = resource_util.construct(NewtonEngine, config, num_envs, device, visualize, record_video=record_video)
     else:
         assert False, print("Unsupported engine: {:s}".format(eng_name))
 

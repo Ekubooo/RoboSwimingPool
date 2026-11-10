@@ -496,7 +496,7 @@ def _nvdb_io():
         root = str(Path(__file__).resolve().parents[1])
         if root not in sys.path:
             sys.path.insert(0, root)
-    from Sim_Ready import nvdb_io
+    from sim_ready import nvdb_io
     return nvdb_io
 
 

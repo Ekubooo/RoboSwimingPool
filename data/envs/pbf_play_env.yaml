@@ -1,0 +1,21 @@
+env_name: pbf_play
+char_file: data/assets/humanoid/humanoid.xml
+camera_mode: still
+# Required by the base environment; pbf_play never terminates on this value.
+episode_length: 20.0
+global_obs: false
+root_height_obs: true
+pose_termination: false
+enable_phase_obs: false
+enable_tar_obs: false
+disc_dof_vel_obs: false
+num_disc_obs_steps: 10
+rand_reset: true
+visualize_ref_char: false
+ref_char_offset: [2.0, 0.0, 0.0]
+init_pose: [0, 0, 0.882416, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.5708, 0, 0, 0, -1.5708, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+enable_early_termination: false
+key_bodies: [head, right_hand, left_hand, right_foot, left_foot]
+contact_bodies: [right_foot, left_foot]
+motion_file: data/datasets/dataset_humanoid_locomotion.yaml
+policy_use_scene_sphere: false
