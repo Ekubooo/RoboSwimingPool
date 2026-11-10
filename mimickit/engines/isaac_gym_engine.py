@@ -12,6 +12,7 @@ import engines.engine as engine
 import engines.isaac_gym_recorder as isaac_gym_recorder
 from util.logger import Logger
 import util.torch_util as torch_util
+import util.resource_util as resource_util
 
 def str_to_key_code(key_str):
     key_str = key_str.upper()
@@ -95,6 +96,24 @@ class IsaacGymEngine(engine.Engine):
 
     def get_name(self):
         return "isaac_gym"
+
+    def close(self):
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        gym = getattr(self, "_gym", None)
+        viewer = getattr(self, "_viewer", None)
+        sim = getattr(self, "_sim", None)
+        recorder = getattr(self, "_video_recorder", None)
+        resource_util.cleanup(
+            recorder.close if recorder is not None else None,
+            (lambda: gym.destroy_viewer(viewer)) if gym is not None and viewer is not None else None,
+            (lambda: gym.destroy_sim(sim)) if gym is not None and sim is not None else None,
+        )
+        self._viewer = None
+        self._sim = None
+        self._video_recorder = None
+        return
     
     def create_env(self):
         env_spacing = self._get_env_spacing() / 2.0
@@ -956,6 +975,6 @@ class IsaacGymEngine(engine.Engine):
         return
 
     def _build_video_recorder(self):
-        self._video_recorder = isaac_gym_recorder.IsaacGymVideoRecorder(self)
+        self._video_recorder = resource_util.construct(isaac_gym_recorder.IsaacGymVideoRecorder, self)
         Logger.print("Video recording enabled")
         return

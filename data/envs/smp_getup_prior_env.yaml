@@ -1,0 +1,9 @@
+# Feature specification for offline diffusion only, not a runnable Getup RL env.
+# The future RL environment must use the same observation conventions.
+char_file: "data/assets/humanoid/humanoid.xml"
+global_obs: False
+root_height_obs: True
+enable_tar_obs: False
+disc_dof_vel_obs: False
+num_disc_obs_steps: 10
+key_bodies: ["head", "right_hand", "left_hand", "right_foot", "left_foot"]

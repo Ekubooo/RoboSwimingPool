@@ -1,0 +1,12 @@
+--mode train
+--devices cuda:0
+--num_envs 2048
+--visualize false
+--engine_config data/engines/newton_engine.yaml
+--env_config data/envs/smp_spinkick_g1_env.yaml
+--agent_config data/agents/smp_spinkick_g1_agent.yaml
+--rand_seed 123
+--max_samples 380239872
+--save_int_models true
+--logger txt
+--out_dir output/a5000_g1_spinkick_2048_full_r01

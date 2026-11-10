@@ -1,0 +1,15 @@
+# Run from the repository root using the WarpSim environment.
+--mode test
+--num_envs 1
+--devices cuda:0
+--visualize true
+--video false
+--rand_seed 1234
+--test_episodes 3
+
+--engine_config data/engines/newton_1_7_engine.yaml
+--env_config output/a5000_dodgeball_2048_full_r01/env_config.yaml
+--agent_config output/a5000_dodgeball_2048_full_r01/agent_config.yaml
+--model_file output/a5000_dodgeball_2048_full_r01/model.pt
+
+--out_dir output/batch1_integration/demo_run

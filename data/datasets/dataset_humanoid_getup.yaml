@@ -1,0 +1,6 @@
+# Equal probability per clip; windows never cross from one clip into the other.
+motions:
+  - file: "data/motions/humanoid/humanoid_getup_faceup.pkl"
+    weight: 1.0
+  - file: "data/motions/humanoid/humanoid_getup_facedown.pkl"
+    weight: 1.0

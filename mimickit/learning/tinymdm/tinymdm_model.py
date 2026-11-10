@@ -130,13 +130,18 @@ class TinyMDMModel(KinematicBaseModel):
         return denoiser
 
     @torch.no_grad()
-    def _sample_with_scheduler(self, denoiser, scheduler, timesteps, shape, batch_size, device, **kwargs):
+    def _sample_with_scheduler(self, denoiser, scheduler, timesteps, shape, batch_size, device,
+                               trace_callback=None, **kwargs):
         x_t = torch.randn(batch_size, *shape, device=device)
 
         for t in timesteps:
             timestep = torch.full((batch_size,), int(t), dtype=torch.long, device=device)
             pred = denoiser(x_t, timestep, **kwargs)
             scheduler_output = scheduler.step(pred, t, x_t)
+            if trace_callback is not None:
+                # Observe the input state and clean estimate without changing
+                # the sampling trajectory, return value or random-number draws.
+                trace_callback(int(t), x_t, scheduler_output.pred_original_sample)
             x_t = scheduler_output.prev_sample
 
         x_0 = scheduler_output.pred_original_sample

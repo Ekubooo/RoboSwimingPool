@@ -138,6 +138,7 @@ def train(cfg_path, out_dir=None, device="cuda"):
     num_iters = config['num_iterations']
     curr_iters = 0
     loss_sum = 0
+    loss_steps = 0
 
     while curr_iters < num_iters:
         samples = dataset_env.fetch_obs_demo(batch_size).clone().detach()
@@ -146,6 +147,7 @@ def train(cfg_path, out_dir=None, device="cuda"):
 
         loss = model(samples)
         loss_sum += loss.item()
+        loss_steps += 1
 
         optimizer.zero_grad()
         loss.backward()
@@ -163,11 +165,12 @@ def train(cfg_path, out_dir=None, device="cuda"):
             model.train()
 
             log.log("Iteration", curr_iters, collection="0_Main")
-            log.log("Loss", loss_sum / output_iter, collection="0_Main")
+            log.log("Loss", loss_sum / loss_steps, collection="0_Main")
             log.print_log()
             log.write_log()
 
             loss_sum = 0
+            loss_steps = 0
 
         curr_iters += 1
 
@@ -181,9 +184,12 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--model_file", type=str, default="")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
     if args.mode == "train":
+        if args.seed is not None:
+            fixseed(args.seed)
         print("Training new model...")
         train(args.cfg_path, out_dir=args.out_dir, device=args.device)
     else:

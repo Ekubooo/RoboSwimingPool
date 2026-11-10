@@ -1,4 +1,5 @@
 import os
+import hashlib
 import numpy as np
 import torch
 import yaml
@@ -52,6 +53,12 @@ class SMPAgent(ppo_agent.PPOAgent):
         model_path = agent_config["smp_prior_model"]
         assert os.path.isfile(smp_cfg_path), "Missing SMP prior config: {}".format(smp_cfg_path)
         assert os.path.isfile(model_path), "Missing SMP prior model: {}".format(model_path)
+        expected_hash = agent_config.get("smp_prior_sha256")
+        if expected_hash:
+            with open(model_path, "rb") as stream:
+                actual_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+            if actual_hash != expected_hash:
+                raise ValueError("SMP prior SHA256 does not match the pinned released asset")
 
         with open(smp_cfg_path, "r") as stream:
             config = yaml.safe_load(stream)
@@ -100,6 +107,10 @@ class SMPAgent(ppo_agent.PPOAgent):
                 "SMP prior env mismatch for {}: prior={}, env={}".format(key, prior_val, env_val)
 
         prior_key_bodies = prior_env_config.get("key_bodies", [])
+        adapter = getattr(self._env, "_lafan_adapter", None)
+        if adapter is not None:
+            if prior_key_bodies != list(adapter.KEY_BODIES) or prior_env_config.get("char_file") != "data/assets/humanoid/humanoid.xml":
+                raise ValueError("LaFAN adapter requires the original Humanoid skeleton and key-body order")
         env_num_key_bodies = len(self._env._key_body_ids)
         assert len(prior_key_bodies) == env_num_key_bodies, \
             "SMP prior env mismatch for key_bodies: prior={}, env={}".format(len(prior_key_bodies), env_num_key_bodies)

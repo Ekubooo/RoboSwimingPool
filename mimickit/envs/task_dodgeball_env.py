@@ -25,6 +25,9 @@ class TaskDodgeballEnv(smp_env.SMPEnv):
         self._proj_trigger_time_min = float(env_config.get("proj_trigger_time_min", 1.0))
         self._proj_trigger_time_max = float(env_config.get("proj_trigger_time_max", 4.0))
         self._proj_aim_noise_scale = float(env_config.get("proj_aim_noise_scale", 0.1))
+        self._dodge_reward_mode = env_config.get("dodge_reward_mode", "legacy")
+        if self._dodge_reward_mode not in ("legacy", "paper_v3"):
+            raise ValueError("Unknown dodge reward mode.")
         
         assert self._num_projectiles > 0
         assert self._proj_dist_min <= self._proj_dist_max
@@ -254,7 +257,10 @@ class TaskDodgeballEnv(smp_env.SMPEnv):
         root_vel = self._engine.get_root_vel(char_id)
         proj_pos, _ = self._get_proj_states()
 
-        self._reward_buf[:] = compute_dodge_reward(root_pos=root_pos, root_vel=root_vel, proj_pos=proj_pos)
+        if self._dodge_reward_mode == "paper_v3":
+            self._reward_buf[:] = compute_paper_dodge_reward(root_pos, proj_pos)
+        else:
+            self._reward_buf[:] = compute_dodge_reward(root_pos=root_pos, root_vel=root_vel, proj_pos=proj_pos)
         return
 
     def _update_done(self):
@@ -324,6 +330,13 @@ def compute_dodgeball_fail_flags(body_pos, proj_pos, proj_vel, prev_proj_vel, pr
     hit_fail = torch.any(hit_detected, dim=-1)
 
     return hit_fail
+
+@torch.jit.script
+def compute_paper_dodge_reward(root_pos, proj_pos):
+    # SMP arXiv:2512.03028v3, Appendix D.4, Eq. 27. Negative near-ball rewards are intentional.
+    distance = torch.linalg.norm(proj_pos - root_pos.unsqueeze(-2), dim=-1).min(dim=-1).values
+    return 1.0 - torch.exp(-0.3 * (distance - 1.5))
+
 
 @torch.jit.script
 def compute_dodge_reward(root_pos, root_vel, proj_pos):

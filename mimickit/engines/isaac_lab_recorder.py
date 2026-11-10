@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 import engines.video_recorder as video_recorder
 from util import display
 from util.logger import Logger
+import util.resource_util as resource_util
 
 if TYPE_CHECKING:
     import engines.isaac_lab_engine as isaac_lab_engine
@@ -52,6 +53,18 @@ class IsaacLabVideoRecorder(video_recorder.VideoRecorder):
             frame = frame[:, :, :3]  # drop alpha channel
 
         return frame
+
+    def close(self):
+        annotator = getattr(self, "_annotator", None)
+        render_product = getattr(self, "_render_product", None)
+        self._annotator = None
+        self._render_product = None
+        resource_util.cleanup(
+            (lambda: annotator.detach([render_product])) if annotator is not None else None,
+            render_product.destroy if render_product is not None else None,
+            super().close,
+        )
+        return
     
     def _build_annotator(self):
         import omni.replicator.core as rep

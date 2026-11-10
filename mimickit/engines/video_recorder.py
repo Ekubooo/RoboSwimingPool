@@ -9,6 +9,11 @@ class VideoRecorder:
         self._cam_target = cam_target
         self._video = video.Video(fps)
         return
+
+    def close(self):
+        if getattr(self, "_video", None) is not None:
+            self._video.clear()
+        return
     
     def clear(self):
         self._video.clear()

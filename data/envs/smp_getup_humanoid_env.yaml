@@ -1,0 +1,44 @@
+env_name: "task_getup"
+char_file: "data/assets/humanoid/humanoid.xml"
+camera_mode: "track"
+episode_length: 20.0
+global_obs: False
+root_height_obs: True
+pose_termination: False
+enable_phase_obs: False
+enable_tar_obs: False
+disc_dof_vel_obs: False
+num_disc_obs_steps: 10
+rand_reset: True
+visualize_ref_char: False
+ref_char_offset: [2.0, 0.0, 0.0]
+init_pose: [0, 0, 0.882416, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.5708, 0, 0, 0, -1.5708, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+enable_early_termination: False
+key_bodies: ["head", "right_hand", "left_hand", "right_foot", "left_foot"]
+contact_bodies: []
+motion_file: "data/datasets/dataset_humanoid_getup.yaml"
+
+# Paper D.5: 90% random reference frames, 10% augmented fallen states.
+# The exact augmentation distribution is our implementation choice; see docs.
+augmented_reset_probability: 0.1
+augmented_motion_time_max: 0.4
+augmented_joint_noise: 0.10
+reset_ground_clearance: 0.005
+getup_test_init: "starts"
+
+# Positive deficits implement the written objective. For the equation as
+# printed in D.5, explicitly select paper_literal (see docs for the sign issue).
+getup_reward_mode: "deficit"
+getup_target_head_height: 1.2
+getup_low_head_height: 0.6
+getup_target_up_speed: 0.25
+getup_height_scale: 6.0
+getup_speed_scale: 100.0
+
+# Diagnostic success criteria, NOT additional rewards or early termination.
+success_hold_seconds: 5.0
+success_root_height: 0.75
+success_torso_up_dot: 0.8
+success_max_root_speed: 0.5
+success_max_root_ang_speed: 1.0
+max_root_distance: 20.0

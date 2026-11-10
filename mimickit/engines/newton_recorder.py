@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import engines.video_recorder as video_recorder
 from util.logger import Logger
+import util.resource_util as resource_util
 
 if TYPE_CHECKING:
     import engines.newton_engine as newton_engine
@@ -32,9 +33,15 @@ class NewtonVideoRecorder(video_recorder.VideoRecorder):
         self._cam_offset = self._viewer.world_offsets.numpy()[self._env_id]
         return
 
+    def close(self):
+        viewer = getattr(self, "_viewer", None)
+        self._viewer = None
+        resource_util.cleanup(lambda: resource_util.close_viewer(viewer), super().close)
+        return
+
     def _build_viewer(self):
         """Create a separate headless viewer specifically for video recording."""
-        self._viewer = newton.viewer.ViewerGL(
+        self._viewer = resource_util.construct(newton.viewer.ViewerGL,
             width=self._resolution[0],
             height=self._resolution[1],
             headless=True

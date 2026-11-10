@@ -10,6 +10,8 @@ import util.arg_parser as arg_parser
 from util.logger import Logger
 import util.mp_util as mp_util
 import util.util as util
+import util.resource_util as resource_util
+import util.display as display
 
 import torch
 
@@ -111,25 +113,42 @@ def run(rank, num_procs, device, master_port, args):
     set_np_formatting()
     create_output_dir(out_dir)
 
-    env = build_env(args, num_envs, device, visualize)
-    agent = build_agent(args, env, device)
+    env = None
+    agent = None
+    try:
+        env = build_env(args, num_envs, device, visualize)
+        agent = build_agent(args, env, device)
 
-    if (model_file != ""):
-        agent.load(model_file)
+        if (model_file != ""):
+            agent.load(model_file)
 
-    if (mode == "train"):
-        save_config_files(args, out_dir)
-        train(agent=agent, max_samples=max_samples, out_dir=out_dir, 
-              save_int_models=save_int_models, logger_type=logger_type)
-        
-    elif (mode == "test"):
-        test_episodes = args.parse_int("test_episodes", np.iinfo(np.int64).max)
-        test(agent=agent, test_episodes=test_episodes)
+        if (mode == "train"):
+            save_config_files(args, out_dir)
+            train(agent=agent, max_samples=max_samples, out_dir=out_dir,
+                  save_int_models=save_int_models, logger_type=logger_type)
 
-    else:
-        assert(False), "Unsupported mode: {}".format(mode)
+        elif (mode == "test"):
+            test_episodes = args.parse_int("test_episodes", np.iinfo(np.int64).max)
+            test(agent=agent, test_episodes=test_episodes)
+
+        else:
+            assert(False), "Unsupported mode: {}".format(mode)
+    finally:
+        resource_util.cleanup(
+            env.close if env is not None else None,
+            agent.close if agent is not None else None,
+            display.close_virtual_display,
+        )
 
     return
+
+def _run_worker(*args):
+    try:
+        run(*args)
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    finally:
+        resource_util.cleanup(mp_util.shutdown)
 
 def main(argv):
     root_rank = 0
@@ -147,19 +166,37 @@ def main(argv):
     torch.multiprocessing.set_start_method("spawn")
 
     processes = []
-    for rank in range(1, num_workers):
-        curr_device = devices[rank]
-        proc = torch.multiprocessing.Process(target=run, args=[rank, num_workers, curr_device, master_port, args])
-        proc.start()
-        processes.append(proc)
-    
-    root_device = devices[0]
-    run(root_rank, num_workers, root_device, master_port, args)
+    try:
+        for rank in range(1, num_workers):
+            curr_device = devices[rank]
+            proc = torch.multiprocessing.Process(target=_run_worker, args=[rank, num_workers, curr_device, master_port, args])
+            proc.start()
+            processes.append(proc)
 
-    for proc in processes:
-        proc.join()
+        root_device = devices[0]
+        run(root_rank, num_workers, root_device, master_port, args)
+        # All ranks release their process group before the parent joins workers.
+        mp_util.shutdown()
+
+        for proc in processes:
+            proc.join()
+    finally:
+        # A viewer exit or interrupt must not leave workers blocked in collectives.
+        for proc in processes:
+            if (proc.is_alive()):
+                proc.terminate()
+        for proc in processes:
+            proc.join(timeout=5)
+            if (proc.is_alive()):
+                proc.kill()
+                proc.join()
+        resource_util.cleanup(mp_util.shutdown)
        
     return
 
 if __name__ == "__main__":
-    main(sys.argv)
+    try:
+        main(sys.argv)
+    except KeyboardInterrupt:
+        Logger.print("Interrupted. Exiting.")
+        sys.exit(130)

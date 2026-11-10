@@ -6,50 +6,55 @@ import numpy as np
 
 def vis_body_pos_anim(body_pos, parents, speedup=1, fps=30):
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    speedup = int(speedup)
-    body_pos = body_pos[::speedup]
-    ax, ani_obj = plot_ani(fig, ax, body_pos, parents)
-    
-    ax.set_xlabel('$X$')
-    ax.set_ylabel('$Y$')
-    ax.set_zlabel('$Z$')
-    ax.set_xlim(-1.0, 1.0)
-    ax.set_ylim(-1.0, 1.0)
-    ax.set_zlim(0, 2.0)
+    try:
+        ax = fig.add_subplot(111, projection='3d')
+        speedup = int(speedup)
+        body_pos = body_pos[::speedup]
+        ax, ani_obj = plot_ani(fig, ax, body_pos, parents)
 
-    plt.show()
+        ax.set_xlabel('$X$')
+        ax.set_ylabel('$Y$')
+        ax.set_zlabel('$Z$')
+        ax.set_xlim(-1.0, 1.0)
+        ax.set_ylim(-1.0, 1.0)
+        ax.set_zlim(0, 2.0)
+
+        plt.show()
+    finally:
+        plt.close(fig)
     return
 
 def output_body_pos_anim(body_pos, parents, save_path, speedup=1, fps=30):
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    speedup = int(speedup)
-    body_pos = body_pos[::speedup]
-    ax, ani_obj = plot_ani(fig, ax, body_pos, parents)
-    
-    ax.set_xlabel('$X$')
-    ax.set_ylabel('$Y$')
-    ax.set_zlabel('$Z$')
+    try:
+        ax = fig.add_subplot(111, projection='3d')
+        speedup = int(speedup)
+        body_pos = body_pos[::speedup]
+        ax, ani_obj = plot_ani(fig, ax, body_pos, parents)
 
-    def update_view(frame_idx):
-        root = body_pos[frame_idx, 0]
-        ax.set_xlim(root[0] - 1, root[0] + 1)
-        ax.set_ylim(root[1] - 1, root[1] + 1)
-        ax.set_zlim(0, 2)
+        ax.set_xlabel('$X$')
+        ax.set_ylabel('$Y$')
+        ax.set_zlabel('$Z$')
 
-    original_update = ani_obj._func
+        def update_view(frame_idx):
+            root = body_pos[frame_idx, 0]
+            ax.set_xlim(root[0] - 1, root[0] + 1)
+            ax.set_ylim(root[1] - 1, root[1] + 1)
+            ax.set_zlim(0, 2)
 
-    def update_frame(frame_idx, *args):
-        original_update(frame_idx, *args)
-        update_view(frame_idx)
+        original_update = ani_obj._func
 
-    ani_obj._func = update_frame
-    update_view(0)
+        def update_frame(frame_idx, *args):
+            original_update(frame_idx, *args)
+            update_view(frame_idx)
 
-    writergif = animation.PillowWriter(fps=fps)
-    ani_obj.save(save_path + '.gif', writer=writergif)
-    plt.close(fig)
+        ani_obj._func = update_frame
+        update_view(0)
+
+        writergif = animation.PillowWriter(fps=fps)
+        ani_obj.save(save_path + '.gif', writer=writergif)
+    finally:
+        plt.close(fig)
     return
    
 def plot_ani(fig, ax, body_pos, parents, fps=60, colors=None):

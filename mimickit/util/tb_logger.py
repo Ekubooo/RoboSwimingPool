@@ -5,6 +5,7 @@ import tensorboardX
 
 import util.logger as logger
 import util.video as video
+import util.resource_util as resource_util
 
 class TBLogger(logger.Logger):
     MISC_TAG = "Misc"
@@ -68,6 +69,12 @@ class TBLogger(logger.Logger):
         if (name not in self._collections):
             self._collections[name] = []
         self._collections[name].append(key)
+        return
+
+    def close(self):
+        writer = self._writer
+        self._writer = None
+        resource_util.cleanup(writer.close if writer is not None else None, super().close)
         return
     
     def _build_key_tags(self):

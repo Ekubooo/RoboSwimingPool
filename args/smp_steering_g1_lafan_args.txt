@@ -1,0 +1,9 @@
+--num_envs 4096
+--visualize false
+--engine_config data/engines/newton_1_7_g1_dodgeball_engine.yaml
+--env_config data/envs/smp_steering_g1_lafan_env.yaml
+--agent_config data/agents/smp_steering_g1_lafan_agent.yaml
+--max_samples 2267676672
+--rand_seed 123
+--save_int_models true
+--out_dir output/smp_steering_g1_lafan

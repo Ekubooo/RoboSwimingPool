@@ -5,6 +5,7 @@ import numbers
 import torch
 
 import util.mp_util as mp_util
+import util.resource_util as resource_util
 
 class Logger:
     class Entry:
@@ -48,13 +49,14 @@ class Logger:
         """
         Set output directory to d, or to /tmp/somerandomnumber if d is None
         """
+        self.close()
         self._row_count = 0
         self.log_headers = []
         self.log_current_row = {}
 
         output_path = filename or "output/log_%i.txt"%int(time.time())
         
-        out_dir = os.path.dirname(output_path)
+        out_dir = os.path.dirname(output_path) or "."
 
         is_root = Logger.is_root()
         if (is_root):
@@ -64,7 +66,7 @@ class Logger:
             if (Logger.is_root()):
                 self.output_file = open(output_path, 'w')
                 assert os.path.exists(output_path)
-                atexit.register(self.output_file.close)
+                atexit.register(self.close)
 
                 Logger.print("Logging data to " + self.output_file.name)
 
@@ -72,6 +74,13 @@ class Logger:
 
     def set_step_key(self, var_key):
         self._step_key = var_key
+        return
+
+    def close(self):
+        atexit.unregister(self.close)
+        output_file = self.output_file
+        self.output_file = None
+        resource_util.close_resources(output_file)
         return
 
     def log(self, key, val, collection=None, quiet=False):

@@ -15,6 +15,7 @@ from util.logger import Logger
 import util.mp_util as mp_util
 import util.torch_util as torch_util
 import util.logger as logger
+import util.resource_util as resource_util
 import util.tb_logger as tb_logger
 import util.wandb_logger as wandb_logger
 
@@ -88,6 +89,13 @@ class BaseAgent(torch.nn.Module):
             
             self._iter += 1
 
+        return
+
+    def close(self):
+        """Close logging resources, leaving policy and training logic untouched."""
+        log = getattr(self, "_logger", None)
+        self._logger = None
+        resource_util.close_resources(log)
         return
 
     def test_model(self, num_episodes):
@@ -209,7 +217,11 @@ class BaseAgent(torch.nn.Module):
 
         log.set_step_key("Samples")
         if (mp_util.is_root_proc()):
-            log.configure_output_file(log_file)
+            try:
+                log.configure_output_file(log_file)
+            except BaseException:
+                resource_util.close_resources(log)
+                raise
         
         return log
 

@@ -43,6 +43,16 @@ def init(rank, num_procs, device, master_port):
 def get_num_procs():
     return global_num_procs
 
+def shutdown():
+    """Release a process group without adding synchronization to training."""
+    global global_mp_device
+    global global_num_procs
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+    global_mp_device = None
+    global_num_procs = 0
+    return
+
 def get_proc_rank():
     if (enable_mp()):
         proc_rank = torch.distributed.get_rank()

@@ -1,4 +1,5 @@
 from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
+import util.resource_util as resource_util
 
 class Video:
     def __init__(self, fps):
@@ -41,5 +42,8 @@ class Video:
     
     def save(self, file_path):
         clip = ImageSequenceClip(self._frames, fps=self._fps)
-        clip.write_videofile(file_path, logger=None)
+        try:
+            clip.write_videofile(file_path, logger=None)
+        finally:
+            resource_util.close_resources(clip)
         return

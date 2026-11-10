@@ -1,0 +1,41 @@
+{
+  "checked_date": "2026-10-29",
+  "description": "Locally downloaded public MimicKit weights/logs; counters are evidence, not proof of every unpublished setting.",
+  "priors": {
+    "spinkick": {
+      "path": "data/models/smp_priors/smp_prior_spinkick.pt",
+      "sha256": "86d19ae21efda6d494e4d13801d4a82a41ac1ca4ad971243fba955ea2f71e064",
+      "ema_step": 50000,
+      "normalizer_frame_count": 100000,
+      "window_frames": 10,
+      "equivalent_stat_windows": 10000
+    },
+    "lafan": {
+      "path": "data/models/smp_priors/smp_prior_lafan.pt",
+      "sha256": "93f14378cc9501e7ec2d52387c930320fcccc341580cbe69e17d5a61c667142f",
+      "ema_step": 200000,
+      "normalizer_frame_count": 200000,
+      "window_frames": 10,
+      "equivalent_stat_windows": 20000
+    },
+    "locomotion": {
+      "path": "data/models/smp_priors/smp_prior_locomotion.pt",
+      "sha256": "d57a06a77355698ce40f42ac2ecc5321ff744b64d85f58428b3cf994f63f2ae5",
+      "ema_step": 200000,
+      "normalizer_frame_count": 200000,
+      "window_frames": 10,
+      "equivalent_stat_windows": 20000
+    }
+  },
+  "rl_reference": {
+    "path": "data/logs/smp_humanoid_spinkick_log.txt",
+    "sha256": "78bbf547f7cebe1224fe13b5bc3b79ad7343f0438e70e4ecab64fb225efe51fd",
+    "last_logged_iteration": 2900,
+    "last_logged_samples": 380239872,
+    "source_envs": 4096,
+    "rollout_steps": 32,
+    "g1_envs": 2048,
+    "g1_updates": 5802,
+    "note": "Aligns the last recorded public log sample count, not an inferred undocumented final budget."
+  }
+}

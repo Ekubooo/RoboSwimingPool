@@ -1,0 +1,44 @@
+{
+  "checked_date": "2026-10-31",
+  "priors": {
+    "lafan": {
+      "path": "data/models/smp_priors/smp_prior_lafan.pt",
+      "sha256": "93f14378cc9501e7ec2d52387c930320fcccc341580cbe69e17d5a61c667142f",
+      "ema_step": 200000,
+      "normalizer_frame_count": 200000,
+      "window_frames": 10,
+      "equivalent_stat_windows": 20000
+    },
+    "locomotion": {
+      "path": "data/models/smp_priors/smp_prior_locomotion.pt",
+      "sha256": "d57a06a77355698ce40f42ac2ecc5321ff744b64d85f58428b3cf994f63f2ae5",
+      "ema_step": 200000,
+      "normalizer_frame_count": 200000,
+      "window_frames": 10,
+      "equivalent_stat_windows": 20000
+    }
+  },
+  "g1_prior": {
+    "updates": 200000,
+    "batch_size": 512,
+    "num_samples_stat_windows": 20000,
+    "learning_rate": 0.0002,
+    "dataset": "G1 walk/run at equal sampling weights; not LaFAN1 retargeting"
+  },
+  "rl_reference": {
+    "path": "data/logs/smp_dodgeball_humanoid_log.txt",
+    "sha256": "c519759b1ba569181d9f5457ccff34469252ac5e2ad317088e1b1294a4537b89",
+    "last_logged_iteration": 10200,
+    "last_logged_samples": 1337065472,
+    "source_envs": 4096,
+    "rollout_steps": 32,
+    "g1_envs": 2048,
+    "g1_updates": 20402,
+    "note": "Exact last recorded public log budget; not an undocumented final budget."
+  },
+  "sources": [
+    "https://raw.githubusercontent.com/xbpeng/MimicKit/main/data/agents/smp_task_humanoid_agent.yaml",
+    "https://raw.githubusercontent.com/xbpeng/MimicKit/main/data/envs/smp_dodgeball_humanoid_env.yaml",
+    "https://raw.githubusercontent.com/xbpeng/MimicKit/main/tools/diffusion_model/config/tinymdm_multi_clip.yaml"
+  ]
+}

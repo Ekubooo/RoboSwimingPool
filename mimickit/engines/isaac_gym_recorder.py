@@ -55,14 +55,17 @@ class IsaacGymVideoRecorder(video_recorder.VideoRecorder):
         gym.render_all_camera_sensors(sim)
         gym.start_access_image_tensors(sim)
 
-        env_ptr = self._engine.get_env(self._env_id)
+        try:
+            env_ptr = self._engine.get_env(self._env_id)
 
-        rgb_data = gym.get_camera_image(sim, env_ptr, self._camera_ptr, gymapi.IMAGE_COLOR)
-        assert(rgb_data is not None), "Failed to render image."
+            rgb_data = gym.get_camera_image(sim, env_ptr, self._camera_ptr, gymapi.IMAGE_COLOR)
+            assert(rgb_data is not None), "Failed to render image."
 
-        frame = np.frombuffer(rgb_data, dtype=np.uint8).reshape(self._resolution[1], self._resolution[0], 4)
-        frame = frame[:, :, :3]  # drop alpha channel
-        return frame
+            frame = np.frombuffer(rgb_data, dtype=np.uint8).reshape(self._resolution[1], self._resolution[0], 4)
+            frame = frame[:, :, :3]  # drop alpha channel
+            return frame
+        finally:
+            gym.end_access_image_tensors(sim)
     
     def _set_camera_pose(self, cam_pos, cam_target):
         gym_cam_pos = gymapi.Vec3(cam_pos[0], cam_pos[1], cam_pos[2])

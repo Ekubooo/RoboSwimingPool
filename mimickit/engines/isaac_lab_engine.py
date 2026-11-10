@@ -11,6 +11,7 @@ import engines.engine as engine
 import engines.isaac_lab_recorder as isaac_lab_recorder
 from util.logger import Logger
 import util.torch_util as torch_util
+import util.resource_util as resource_util
 
 ROT_WXYZ_TO_XYZW = [1, 2, 3, 0]
 ROT_XYZW_TO_WXYZ = [3, 0, 1, 2]
@@ -106,6 +107,24 @@ class IsaacLabEngine(engine.Engine):
     
     def get_name(self):
         return "isaac_lab"
+
+    def close(self):
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        recorder = getattr(self, "_video_recorder", None)
+        subscription = getattr(self, "_sub_keyboard", None)
+        launcher = getattr(self, "_app_launcher", None)
+        resource_util.cleanup(
+            recorder.close if recorder is not None else None,
+            (lambda: self._input.unsubscribe_to_keyboard_events(self._keyboard, subscription))
+                if subscription is not None else None,
+            launcher.app.close if launcher is not None else None,
+        )
+        self._sub_keyboard = None
+        self._app_launcher = None
+        self._video_recorder = None
+        return
     
     def create_env(self):
         env_id = len(self._obj_cfgs)
@@ -225,7 +244,11 @@ class IsaacLabEngine(engine.Engine):
         return cam_dir
     
     def render(self):
+        if not self._app_launcher.app.is_running():
+            raise SystemExit(0)
         self._sim.render()
+        if not self._app_launcher.app.is_running():
+            raise SystemExit(0)
         self._draw_interface.clear_lines()
         super().render()
         return
@@ -1238,6 +1261,6 @@ class IsaacLabEngine(engine.Engine):
         return
 
     def _build_video_recorder(self):
-        self._video_recorder = isaac_lab_recorder.IsaacLabVideoRecorder(self)
+        self._video_recorder = resource_util.construct(isaac_lab_recorder.IsaacLabVideoRecorder, self)
         Logger.print("Video recording enabled")
         return

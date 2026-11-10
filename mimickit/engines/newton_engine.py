@@ -9,6 +9,7 @@ import pyglet
 
 import engines.engine as engine
 import engines.newton_recorder as newton_recorder
+import util.resource_util as resource_util
 from util.logger import Logger
 
 def str_to_key_code(key_str):
@@ -311,6 +312,11 @@ class NewtonEngine(engine.Engine):
         self._device = device
         self._num_envs = num_envs
         self._env_spacing = config["env_spacing"]
+        # GSI can create contact-rich initial poses; keep historical defaults for existing tasks.
+        self._solver_njmax = int(config.get("newton_njmax", 450))
+        self._solver_nconmax = int(config.get("newton_nconmax", 150))
+        if self._solver_njmax <= 0 or self._solver_nconmax <= 0:
+            raise ValueError("Newton constraint/contact capacities must be positive.")
 
         sim_freq = config.get("sim_freq", 60)
         control_freq = config.get("control_freq", 10)
@@ -350,6 +356,22 @@ class NewtonEngine(engine.Engine):
     
     def get_name(self):
         return "newton"
+
+    def close(self):
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        self._recording = False
+        # Keep viewers and their event-handler owners alive until GL windows close.
+        viewer = getattr(self, "_viewer", None)
+        recorder = getattr(self, "_video_recorder", None)
+        resource_util.cleanup(
+            recorder.close if recorder is not None else None,
+            lambda: resource_util.close_viewer(viewer),
+        )
+        self._viewer = None
+        self._video_recorder = None
+        return
     
     def create_env(self):
         env_id = len(self._obj_builders)
@@ -479,9 +501,16 @@ class NewtonEngine(engine.Engine):
         return cam_dir
     
     def render(self):
+        if (not self._viewer.is_running()):
+            raise SystemExit(0)
+
         sim_time = self.get_sim_time()
 
         self._viewer.end_frame()
+        # Window events can destroy the GL context during end_frame().
+        if (not self._viewer.is_running()):
+            raise SystemExit(0)
+
         self._viewer.begin_frame(sim_time)
         self._viewer.log_state(self._sim_state.raw_state)
 
@@ -742,6 +771,20 @@ class NewtonEngine(engine.Engine):
     
     def get_sim_state(self):
         return self._sim_state
+
+    def get_viewer(self):
+        """Expose the viewer to opt-in tool adapters without changing its owner."""
+        return self._viewer
+
+    def set_viewer_world_offsets(self, offsets):
+        """Change display placement only; preserve the picking array's identity."""
+        offsets = np.asarray(offsets, dtype=np.float32)
+        if offsets.shape != (self._num_envs, 3) or not np.isfinite(offsets).all():
+            raise ValueError("Viewer offsets must be finite with shape [num_envs, 3].")
+        if self._viewer is not None:
+            self._viewer.world_offsets.assign(offsets)
+            self._camera_offsets = offsets.copy()
+        return
     
     def set_body_color(self, env_id, obj_id, body_id, color, viewer=None):
         if (viewer is None):
@@ -764,6 +807,13 @@ class NewtonEngine(engine.Engine):
         viewer.set_model(self._sim_model)
         viewer.set_world_offsets([env_spacing, env_spacing, 0.0])
         self._apply_obj_colors(viewer)
+        # Set the default for the whole Newton UI, including tool callbacks.
+        # Keep this in MimicKit so the installed Newton package stays untouched.
+        ui = viewer.ui
+        if ui is not None and ui.is_available:
+            font_config = ui.imgui.ImFontConfig()
+            font_config.size_pixels = 18.0
+            ui.io.font_default = ui.io.fonts.add_font_default(font_config)
         return
 
     def draw_lines(self, env_id, start_verts, end_verts, cols, line_width):
@@ -786,6 +836,29 @@ class NewtonEngine(engine.Engine):
         key_code = str_to_key_code(key_str)
         assert(key_code not in self._keyboard_callbacks)
         self._keyboard_callbacks[key_code] = callback_func
+        return
+
+    def register_ui_callback(self, callback_func, position="side"):
+        """Expose Newton's optional UI extension without exposing its viewer."""
+        viewer = self._viewer
+        if viewer is None or viewer.ui is None or not viewer.ui.is_available:
+            raise RuntimeError("Interactive PCA controls require Newton's imgui-bundle viewer UI.")
+        viewer.register_ui_callback(callback_func, position=position)
+        return
+
+    def get_viewer_paused(self):
+        """Read the viewer's pause control for an opt-in playback controller."""
+        return self._viewer is not None and self._viewer.is_paused()
+
+    def set_viewer_paused(self, paused):
+        """Keep opt-in playback controls synchronized with Newton's pause UI."""
+        if self._viewer is not None:
+            # Current Newton exposes is_paused(), but no public setter.
+            setter = getattr(self._viewer, "set_paused", None)
+            if callable(setter):
+                setter(bool(paused))
+            else:
+                self._viewer._paused = bool(paused)
         return
     
     def _validate_envs(self):
@@ -880,8 +953,8 @@ class NewtonEngine(engine.Engine):
         self._solver = newton.solvers.SolverMuJoCo(
             self._sim_model,
             solver="newton",
-            njmax=450,
-            nconmax=150,
+            njmax=self._solver_njmax,
+            nconmax=self._solver_nconmax,
             impratio=10,
             iterations=100,
             ls_iterations=50
@@ -990,7 +1063,7 @@ class NewtonEngine(engine.Engine):
         return builder
     
     def _build_viewer(self):
-        self._viewer = newton.viewer.ViewerGL(headless=False)
+        self._viewer = resource_util.construct(newton.viewer.ViewerGL, headless=False)
         self._draw_line_count = 0
 
         def on_keyboard_event(symbol, modifiers):
@@ -1138,7 +1211,7 @@ class NewtonEngine(engine.Engine):
 
     def _build_video_recorder(self) -> newton_recorder.NewtonVideoRecorder:
         Logger.print("Video recording enabled")
-        return newton_recorder.NewtonVideoRecorder(self)
+        return resource_util.construct(newton_recorder.NewtonVideoRecorder, self)
 
 
 @wp.kernel

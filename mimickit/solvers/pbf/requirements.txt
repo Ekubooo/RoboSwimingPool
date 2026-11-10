@@ -1,0 +1,11 @@
+# Python 3.11; static and pressure-coupled PBF validation environment.
+newton==1.7.0
+warp-lang==1.18.0
+mujoco==3.15.0
+mujoco-warp==3.15.0
+numpy==2.4.6
+pyglet==2.1.16
+trimesh==5.1.1
+usd-core==26.8
+# Screenshot verification only.
+pillow==11.3.0

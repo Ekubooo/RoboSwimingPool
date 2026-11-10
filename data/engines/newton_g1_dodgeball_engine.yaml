@@ -1,0 +1,8 @@
+engine_name: "newton"
+control_mode: "pos"
+control_freq: 30
+sim_freq: 240
+env_spacing: 5
+# Buffer capacities, not motor gains or physical parameters. GSI produced nefc>450 in a local probe.
+newton_njmax: 1024
+newton_nconmax: 256

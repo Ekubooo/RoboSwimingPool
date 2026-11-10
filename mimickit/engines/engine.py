@@ -16,8 +16,14 @@ class ObjType(enum.Enum):
 
 class Engine:
     def __init__(self, visualize):
+        self._closed = False
         if (visualize):
             self._prev_frame_time = 0.0
+        return
+
+    def close(self):
+        """Release backend resources; safe after partial initialization."""
+        self._closed = True
         return
     
     @abc.abstractmethod

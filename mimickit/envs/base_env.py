@@ -22,6 +22,10 @@ class BaseEnv(abc.ABC):
         self._action_space = None
         self._diagnostics = dict()
         return
+
+    def close(self):
+        """Release resources owned by this environment."""
+        return
     
     @abc.abstractmethod
     def reset(self, env_ids=None):

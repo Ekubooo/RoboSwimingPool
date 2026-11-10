@@ -9,6 +9,7 @@ import torch
 import envs.base_env as base_env
 import util.torch_util as torch_util
 import util.camera as camera
+import util.resource_util as resource_util
 
 class PlayMode(enum.Enum):
     PLAY = 0
@@ -39,6 +40,10 @@ class SimEnv(base_env.BaseEnv):
 
         return
     
+    def close(self):
+        resource_util.close_resources(getattr(self, "_engine", None))
+        return
+
     def get_obs_space(self):
         obs = self._compute_obs()
         obs_shape = list(obs.shape[1:])
