@@ -1531,7 +1531,10 @@ class NewtonEngine(engine.Engine):
         self._actuation.clear_external_forces()
         self._sim_step_count = 0
         self._sim_state.post_step_update()
-        self._wp_dof_forces.zero_()
+        if self._control_mode in (engine.ControlMode.pos, engine.ControlMode.vel):
+            self._wp_dof_forces.zero_()
+        else:
+            self._actuation.controls.dof_force.zero_()
         self._ground_contact_sensor.total_force.zero_()
         self._ground_contact_sensor.force_matrix.zero_()
         return
