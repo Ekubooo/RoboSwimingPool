@@ -106,6 +106,64 @@ class BackendContracts(unittest.TestCase):
                     if not name.startswith("_") or name == "__init__"}
         self.assertEqual(signatures(original.NewtonEngine), signatures(current.NewtonEngine))
 
+    def test_api_delegation(self):
+        eng = current.NewtonEngine.__new__(current.NewtonEngine)
+        root = torch.zeros((1, 3))
+        eng._state = SimpleNamespace(model=object(), get_root_pos=Mock(return_value=root),
+                                      set_root_pos=Mock(return_value=None))
+        eng._control = Mock(spec=current.Actuation)
+        eng._scene = Mock(spec=current.SceneBuilder)
+        eng._scene.create_obj.return_value = 7
+        eng._presentation = Mock(spec=current.Presentation)
+
+        self.assertIs(eng.get_root_pos(obj_id=2), root)
+        eng._state.get_root_pos.assert_called_once_with(2)
+        self.assertIs(eng.get_sim_state(), eng._state)
+        self.assertIs(eng.get_sim_model(), eng._state.model)
+        self.assertIsNone(eng.set_root_pos(env_id=None, obj_id=2, root_pos=root))
+        eng._state.set_root_pos.assert_called_once_with(None, 2, root)
+        eng.set_cmd(obj_id=2, cmd=root)
+        eng._control.set_cmd.assert_called_once_with(2, root)
+
+        self.assertEqual(eng.create_obj(0, engine.ObjType.rigid, "asset.xml", "box"), 7)
+        eng._scene.create_obj.assert_called_once_with(
+            0, engine.ObjType.rigid, "asset.xml", "box", False, True, False, None, None, None, False)
+        callback = Mock()
+        eng.register_ui_callback(callback_func=callback)
+        eng._presentation.register_ui_callback.assert_called_once_with(callback, "side")
+        eng._presentation.register_ui_callback.reset_mock()
+        eng.register_ui_callback(callback, position="overlay")
+        eng._presentation.register_ui_callback.assert_called_once_with(callback, "overlay")
+
+    def test_base_initialization(self):
+        # Exercise the real constructor without allocating a scene or a viewer.
+        runtime = SimpleNamespace(timestep=1. / 30., _sim_steps=8, env_spacing=5.)
+        with patch.object(current, "SimulationRuntime", return_value=runtime), \
+                patch.object(current, "SceneBuilder"), \
+                patch.object(resource_util, "construct"):
+            eng = current.NewtonEngine({}, 1, "cuda:0", visualize=True)
+        self.assertIsInstance(eng, engine.Engine)
+        self.assertFalse(eng._closed)
+        self.assertEqual(eng._prev_frame_time, 0.)
+        eng.close()
+
+    def test_render_preserves_base_timing(self):
+        eng = current.NewtonEngine.__new__(current.NewtonEngine)
+        engine.Engine.__init__(eng, visualize=True)
+        eng._runtime = SimpleNamespace(timestep=.1, get_sim_time=Mock(return_value=.5))
+        eng._state = SimpleNamespace(raw_state=object())
+        eng._scene = SimpleNamespace(play_scene=SimpleNamespace(draw_pool=Mock()))
+        eng._presentation = Mock(spec=current.Presentation)
+        eng._prev_frame_time = 10.
+        with patch.object(engine.time, "time", return_value=10.05), \
+                patch.object(engine.time, "sleep") as sleep:
+            eng.render()
+        eng._presentation.render.assert_called_once_with(
+            .5, eng._state.raw_state, eng._scene.play_scene.draw_pool)
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], .05)
+        self.assertEqual(eng._prev_frame_time, 10.05)
+
     def test_state_and_control_modes(self):
         for with_ball in (False, True):
             for mode in engine.ControlMode:
