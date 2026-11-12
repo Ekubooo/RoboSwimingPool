@@ -1,23 +1,19 @@
-当前仓库是克隆了最新原版的mimickit。
+当前仓库是克隆了最新mimickit，在Newton引擎层初步接入自定流体求解器。
 
-已经有适配最新稳定版本的：Newton引擎/warp dsl/mujoco warp。现在将要进行自定义流体的流固耦合求解器的接入。
-具体可以参考另一个项目: 
-1. 流体求解器。 D:\ComputerScience\PROJECT\WarpLab
-2. 适配新newton的mimickit以及一些工具，一些修复等。 /D:/ComputerScience/PROJECT/MimicKit
-3. 描述文档以及约定记录。D:\ComputerScience\PROJECT\MimicKit\NEWTON_PBF_SIMREADY_INTEGRATION_PLAN.md
+已经有适配最新稳定版本的 Newton引擎/warp dsl/mujoco warp。当前使用conda环境 warpsim。
 
-主要参考其根目录下的PBF与simready，忽略demo文件夹，那个是归档过往代码。
-1. 首先PBF流体程序将以自定义solver接入，在体积图方法下和刚体进行弱流固耦合，当前PBF已经实现此功能。
-2. 其次SimRead资产管线需要接入，且需要扩展，不仅负责PBF相关，还需要适配承担人形导入的资产校验功能。
-3. 最后会需要将所有上述资产管线与PBF的参数部分接入到Mimickit当前使用的Newton渲染器与GUI，让GUI可以调整流体参数，以及资产的加载选取，资产场景的组装等。
-项目整体需要保持良好的工程结构、良好的代码可读性。
+接入的实验性实现可以参考另其他的两个项目: 
+1. 流体求解器。 D:\ComputerScience\PROJECT\WarpLab 。流体项目主要参考其根目录下的PBF与simready。忽略demo文件夹，是归档过往代码。
+2. 适配新newton的mimickit及其工具、mimickit newton修复。D:/ComputerScience/PROJECT/MimicKit
+3. 过往的项目结构描述文档，以及粗略的约定。D:\ComputerScience\PROJECT\MimicKit\NEWTON_PBF_SIMREADY_INTEGRATION_PLAN.md
 
-不破坏/减少破坏：当前Mimickit newton后端的架构、PBF py以及调用到的下属相关的主要求解器架构。
+当前状态与任务：
+1. PBF流体程序当前以自定义solver接入，在volume map方法下和刚体进行弱流固双向耦合。
+2. 当前Newton引擎的自定义solver这一后端已经基本完备，上层由零时的胶水层进行组合组装。接下来准备逐步拆除胶水层，重构资产管线，渲染器，完善程序整体流程。
+3. 当前运行目标，主要是运行mimickit的SMP路径下的躲避球task相关，加载已有RL策略进入流体环境，以观察人形机器人行为表现。主要以视觉呈现、程序运行为主，暂不考虑机器学习训练相关，暂不考虑多环境运行。 
 
-渲染器，资产管线可能需要小幅度架构结构重构与整理。
 
-分析项目情况，给出整合建议，给出合理的分步骤实现计划。
-
-注：文字描述可能会失准，项目文档/记录仅供参考，必须分析、核对实际代码。
-
-详叙简述，暂不修改代码。
+重要信息：
+1. 不破坏/减少破坏/非必要不破坏：当前Mimickit newton后端的架构、PBF算法求解器以及调用到的下属相关的主要求解器方法的架构。
+2. 文字描述可能会失准，所有项目文档、记录仅供参考，必须分析核对实际代码。
+3. 不参考已有代码，仅从newton引擎规范、newton相关开源库、其他开源机器人仿真软件等角度考虑架构设计与代码实现。也即以各大开源库的做法与要求为标准，分析给出建议。
