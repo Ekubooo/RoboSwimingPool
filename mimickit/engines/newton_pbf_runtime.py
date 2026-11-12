@@ -7,8 +7,8 @@ import numpy as np
 import trimesh
 import warp as wp
 
-from sim_ready.pipelines import pbf_play as assets
-from sim_ready.asset_io import generated_root
+from sim_ready.pipelines.scenes import pbf_play as assets
+from sim_ready.lib.storage.store import AssetStore
 from solvers.pbf import boundary_model, pbf_helper
 
 
@@ -33,19 +33,19 @@ def runtime_config(control_dt, substeps):
 
 class PBFScene:
     def __init__(self, directory, device, control_dt, substeps):
-        self.directory = generated_root(directory)
-        self.directory.mkdir(parents=True, exist_ok=True)
+        self.store = AssetStore(directory)
+        self.directory = self.store.root
         self.device = device
         self.config = runtime_config(control_dt, substeps)
         self.particles = SimpleNamespace(config=self.config)
         pbf_helper.init_scene_parameters(self.particles)
-        self.primitive_files = assets.primitive_files(self.directory)
+        self.primitive_files = assets.primitive_files(self.store)
         self.body_meshes = {}
         self.boundaries = None
 
     def add_static(self, builder):
         self.static_path, self.bunny, hulls = assets.prepare_static(
-            self.directory, self.device, self.particles.smoothing_length)
+            self.store, self.device, self.particles.smoothing_length)
         self.initial_clearances = self._validate_initial_layout()
         assets.add_static_collisions(builder, self.bunny, hulls)
         self.static_hull_count = len(hulls)
@@ -82,7 +82,7 @@ class PBFScene:
         masses = model.body_mass.numpy()
         paths, mapped_ids, entries = [], [], []
         for body_id, mesh, checked in assets.body_meshes(model, body_ids):
-            path = assets.prepare_boundary(mesh, checked, self.directory, self.device,
+            path = assets.prepare_boundary(mesh, checked, self.store, self.device,
                                             support_radius=self.particles.smoothing_length,
                                             provenance={"source_kind": "newton_collision_geometry"})
             self.body_meshes[body_id] = mesh
@@ -115,7 +115,7 @@ class PBFScene:
                              particle_radius=self.config.particle_radius,
                              support_radius=self.particles.smoothing_length,
                              control_dt=self.config.frame_dt, physics_dt=self.config.frame_dt / self.config.substeps)
-        (self.directory / "scene_manifest.json").write_text(
+        self.store.path("scene_manifest.json").write_text(
             json.dumps(self.manifest, indent=2) + "\n", encoding="utf-8")
         return self.boundaries
 

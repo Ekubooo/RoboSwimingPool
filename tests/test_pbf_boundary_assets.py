@@ -1,4 +1,4 @@
-"""Boundary artifact contracts; all generated fixtures stay under output/."""
+"""Boundary artifact contracts; all generated fixtures stay under data/assets_RSP/tests."""
 
 from dataclasses import replace
 import json
@@ -16,12 +16,19 @@ import warp as wp
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "mimickit"))
-OUTPUT = ROOT / "output/pbf_asset_stage1_checks"
+OUTPUT = ROOT / "data/assets_RSP/tests/boundary"
 wp.config.kernel_cache_dir = str(OUTPUT / "warp_cache")
 
-from sim_ready import asset_io, nvdb_io, pbf_boundary_asset as assets, sdf, validation
+from sim_ready.lib.storage import fingerprints as asset_io, nvdb_io
+from sim_ready.lib.storage.store import AssetStore
+from sim_ready.lib.volume import sdf
+from sim_ready.lib.mesh import validation
+from sim_ready.pipelines.boundary import prepare as assets
+from sim_ready.pipelines.boundary.load import load_boundary_asset
+from sim_ready.pipelines.boundary.schema import check_volume_map_layout
+from sim_ready.pipelines import rigid
 from sim_ready.config import BakeOptions
-from sim_ready.pbf_volume_map import precompute_volume_map
+from sim_ready.lib.volume.pbf_volume_map import precompute_volume_map
 from solvers.pbf import boundary_model
 
 
@@ -43,12 +50,12 @@ class BoundaryAssets(unittest.TestCase):
 
     def prepare(self, *, h=.06, q=3, mesh=None, options=None):
         mesh = self.mesh if mesh is None else mesh
-        return assets.prepare_boundary_asset(mesh, validation.validate_solid(mesh), root=self.root,
+        return assets.prepare_boundary_asset(mesh, validation.validate_solid(mesh), store=AssetStore(self.root),
                                              bake_options=options or self.options, support_radius=h,
                                              quadrature_points=q, provenance={"source_kind": "procedural_box"})
 
     def load(self, artifact, *, h=.06, q=3):
-        return assets.load_boundary_asset(artifact, support_radius=h, quadrature_points=q, device="cuda:0")
+        return load_boundary_asset(artifact, support_radius=h, quadrature_points=q, device="cuda:0")
 
     def files(self):
         return {p.relative_to(self.root).as_posix(): (p.stat().st_mtime_ns, asset_io.file_digest(p))
@@ -172,7 +179,7 @@ class BoundaryAssets(unittest.TestCase):
                                              translation=info.translation, bg_value=0.)
         self.assertEqual(distance.get_tile_count(), wrong.get_tile_count())
         with self.assertRaisesRegex(ValueError, "coverage"):
-            assets.check_volume_map_layout(distance, wrong)
+            check_volume_map_layout(distance, wrong)
 
     def test_shared_resources_keep_independent_instances_and_graph_buffers(self):
         artifact = self.prepare()
@@ -204,19 +211,34 @@ class BoundaryAssets(unittest.TestCase):
     def test_failed_publication_preserves_existing_variant(self):
         original = self.prepare()
         before = self.files()
-        with patch.object(assets, "publish_files", side_effect=RuntimeError("injected publication failure")):
+        with patch.object(AssetStore, "publish", side_effect=RuntimeError("injected publication failure")):
             with self.assertRaisesRegex(RuntimeError, "injected"):
                 self.prepare(q=4)
         self.assertEqual(before, self.files())
         self.load(original)
+
+    def test_generic_rigid_build_respects_store_and_retains_obj_precision(self):
+        store = AssetStore(self.root)
+        with self.assertRaises(ValueError):
+            rigid.build(self.mesh, ".", store=store, bake_options=self.options)
+        self.assertEqual(self.files(), {})
+        mesh_path, volume_path, hulls = rigid.build(self.mesh, "rigid/box", store=store,
+                                                    bake_options=self.options, device="cuda:0")
+        self.assertEqual(mesh_path, store.path("rigid/box.obj"))
+        self.assertEqual(volume_path, store.path("rigid/box.nvdb"))
+        self.assertEqual(hulls, ())
+        self.assertEqual(nvdb_io.grid_count(volume_path), 1)
+        persisted = trimesh.load(mesh_path, force="mesh", process=False)
+        np.testing.assert_array_equal(persisted.vertices, self.mesh.vertices)
+        np.testing.assert_array_equal(persisted.faces, self.mesh.faces)
 
     def test_invalid_inputs_create_no_assets_and_sources_are_protected(self):
         for h, q in ((0., 3), (float("nan"), 3), (.06, 0), (.06, True)):
             with self.subTest(h=h, q=q), self.assertRaises(ValueError):
                 self.prepare(h=h, q=q)
         self.assertEqual(self.files(), {})
-        with self.assertRaisesRegex(ValueError, "output/"):
-            assets.prepare_boundary_asset(self.mesh, self.checked, root=ROOT / "mimickit/sim_ready/Assets",
+        with self.assertRaisesRegex(ValueError, "assets_RSP"):
+            assets.prepare_boundary_asset(self.mesh, self.checked, store=AssetStore(ROOT / "data/assets_RSP/origin"),
                                           support_radius=.06, bake_options=self.options)
         artifact = self.prepare()
         paths = [str(p.relative_to(ROOT)) for p in self.root.rglob("*") if p.is_file()]
@@ -224,7 +246,7 @@ class BoundaryAssets(unittest.TestCase):
                                 capture_output=True, text=True, check=True)
         self.assertEqual(len(result.stdout.splitlines()), len(paths))
         for name in ("bunny_flat_bottom.obj", "spot_triangulated_good.obj"):
-            result = subprocess.run(["git", "check-ignore", "--no-index", "--", f"mimickit/sim_ready/Assets/{name}"],
+            result = subprocess.run(["git", "check-ignore", "--no-index", "--", f"data/assets_RSP/origin/{name}"],
                                     cwd=ROOT, capture_output=True)
             self.assertEqual(result.returncode, 1)
 

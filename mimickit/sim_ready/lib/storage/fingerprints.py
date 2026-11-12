@@ -1,16 +1,15 @@
-"""Content identities for published geometry, independent of mutable volume maps."""
+"""Stable content identities shared by asset pipelines."""
 
 import hashlib
+import json
 from pathlib import Path
 
+import numpy as np
 
-def generated_root(path):
-    """Keep repository-local generated assets in the ignored output tree."""
-    root = Path(path).expanduser().resolve()
-    project = Path(__file__).resolve().parents[2]
-    if root.is_relative_to(project) and not root.is_relative_to(project / "output"):
-        raise ValueError("Generated assets inside this repository must be under output/")
-    return root
+
+def recipe_digest(value, *, allow_nan=False):
+    """Retain the existing sorted-JSON encoding used by cache recipes."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=allow_nan).encode()).hexdigest()
 
 
 def file_digest(path):
@@ -34,3 +33,8 @@ def sdf_digest(volume):
     return digest.hexdigest()
 
 
+def mesh_digest(mesh):
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(mesh.vertices, dtype=np.float64).tobytes())
+    digest.update(np.ascontiguousarray(mesh.faces, dtype=np.int32).tobytes())
+    return digest.hexdigest()

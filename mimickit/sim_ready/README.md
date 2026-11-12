@@ -1,74 +1,137 @@
-# PBF boundary assets
+# RSP asset pipeline
 
-The active play scene separates asset preparation from read-only runtime loading.
-The existing geometry, SDF, volume integration and coupling algorithms are retained.
+Asset preparation, storage and read-only runtime loading have separate owners.
+Geometry, SDF baking, volume integration and coupling retain their existing methods.
 
-## Source assets and outputs
+## Source and output layout
 
-The fluid-side source meshes are `Assets/bunny_flat_bottom.obj` and
-`Assets/spot_triangulated_good.obj`. They are never overwritten. MimicKit keeps
-its existing model, motion and policy inputs and their existing ignore rules.
-Pool geometry, primitive MJCFs, collision hulls, processed meshes, SDFs, volume
-maps and manifests are generated outputs. Hand-authored configuration and build
-recipes remain source files.
+```text
+data/assets_RSP/
+├── .gitignore
+├── origin/
+│   ├── .gitignore
+│   ├── bunny_flat_bottom.obj
+│   └── spot_triangulated_good.obj
+├── pbf_play/
+│   ├── boundaries-v3/
+│   ├── collision/
+│   ├── primitives/
+│   └── scene_manifest.json
+└── tests/
+```
 
-Repository-local output roots must be below `output/`. The play scene defaults
-to `output/sim_ready/pbf_play`; external output roots are also accepted by the
-tools. The source-mesh directory has a Git whitelist for its two OBJ files.
+The two OBJ files are the RSP source meshes. Both retain their filenames and
+original SHA-256 values after relocation from `mimickit/sim_ready/Assets`.
+The asset-root ignore rule excludes outputs; `origin` whitelists only the two
+OBJs and its ignore rule. Code, hand-authored configs and recipes stay versioned
+in their code/config directories. MimicKit models, motions, policies, paths and
+ignore rules are unchanged. Training outputs, recordings and backend check
+reports still use their existing locations.
 
-Boundary artifacts use a new `boundaries-v3` directory. Old `boundaries` caches
-and existing policies are retained and are not migrated or removed. The first
-run builds the new artifacts; later runs validate and reuse them.
+The demo defaults to `data/assets_RSP/pbf_play`. Repository-local asset output
+roots must be proper subdirectories of `assets_RSP`, excluding `origin` and its
+descendants. The root itself is not an output directory. Explicit external
+output roots are supported. Paths are resolved before checking containment.
+No caches are migrated: the new root is built from source on its first run.
+After validation, only the obsolete `output/sim_ready/pbf_play/boundaries` is
+removed. Other legacy outputs remain, outside the default demo's asset path.
 
-## APIs and ownership
+## Code layers
 
-- `pbf_volume_map.precompute_volume_map(sdf, support_radius, quadrature_points=16)`
-  computes an independent CUDA volume on the input SDF's grid. It performs no
-  file IO and does not modify the SDF. `quadrature_points` is keyword-only.
-- `pbf_boundary_asset.prepare_boundary_asset(mesh, checked, ...)` takes local
-  geometry, its validation result, bake options, `container`, the requested
-  support radius, quadrature settings, output root, device and source provenance.
-  It returns a `BoundaryArtifact` referencing the published JSON manifest.
-- `pbf_boundary_asset.load_boundary_asset(artifact, ...)` accepts that reference
-  or its manifest path and validates the requested radius and quadrature. It
-  returns GPU volumes, local bounds and a visual-mesh reference. It never writes
-  or rebuilds files, and does not require the visual OBJ to exist.
-- `solvers.pbf.boundary_model.load_boundaries` takes one static artifact and an
-  ordered sequence of dynamic artifacts. It shares GPU resources for repeated
-  references and creates independent instance transforms. The runtime owns
-  body binding, pose synchronization and queries.
+```text
+sim_ready/
+├── config.py                         shared parameter constraints
+├── paths.py                          source locations and output rules
+├── lib/
+│   ├── mesh/                         geometry, validation, convex algorithms
+│   ├── volume/                       SDF baking and volume-map quadrature
+│   └── storage/                      OBJ/NVDB/hull IO, fingerprints,
+│                                     rollback publication, AssetStore
+└── pipelines/
+    ├── collision.py                  convex recipe, cache reuse and preparation
+    ├── rigid.py                      primitive/rigid asset preparation
+    ├── container.py                  terrain/container placement and preparation
+    ├── boundary/
+    │   ├── schema.py                 references, manifests and grid metadata
+    │   ├── prepare.py                SDF selection, map construction, publication
+    │   └── load.py                   read-only validation and GPU loading
+    ├── scenes/pbf_play.py            active scene recipe and native geometry
+    └── preset/                       historical internal references only
+```
 
-The play-scene pipeline chooses geometry and bake resolution. Its temporary
-runtime adapter prepares static assets before Newton model finalization, then
-prepares dynamic assets from the finalized bodies' collision geometry. Runtime
-body IDs, masses and placements belong to `scene_manifest.json`, not cached
-asset identities. Historical presets are not restored by this stage.
+`lib.mesh.convex` provides `decompose_convex`, `validate_hulls` and
+`measure_hull_error`. These operate in memory. `pipelines.collision.prepare_hulls`
+owns the CoACD recipe and cache decisions, using storage's NPZ IO and publication.
+Container-specific stairs, placement and wall recipes live in the container
+pipeline; generic transforms, Boolean operations and geometry validation stay
+in `lib.mesh`.
 
-## Cache and publication
+`AssetStore(output_root)` centralizes validated output paths, category directories,
+recipe keys, temporary staging and group publication with rollback. It does not
+decide whether an SDF covers a radius or whether collision data are valid.
+Scene assembly creates a store and explicitly passes it to preparation calls.
+Generic `rigid.build` and `container.build` take a relative `stem` and a `store`.
+No compatibility modules are retained at the previous import paths.
 
-Within each geometry family, `sdfs/<key>` stores a single-grid SDF, processed OBJ
-and `sdf.json`; `maps/<key>` stores a dual-grid `boundary.nvdb` and `boundary.json`.
-References inside manifests are relative, so the artifact tree can be moved.
+## Active call sequence and interfaces
 
-SDF families identify geometry, container/solid treatment, bake settings and
-tool/algorithm versions. Preparation chooses the smallest existing SDF support
-range covering both the requested radius and `BakeOptions.max_support_radius`.
-If none is valid, it bakes a new SDF variant. Volume-map keys identify persisted
-SDF contents, radius, quadrature and integration algorithm version. Changing only
-quadrature or radius within the selected SDF's support range reuses the SDF.
+```text
+PBFScene creates AssetStore
+  → pipelines.scenes.pbf_play: primitive MJCFs and static geometry
+    → pipelines.boundary.prepare.prepare_boundary_asset(..., store=store)
+    → pipelines.collision.prepare_hulls(mesh, name, store)
+  → Newton model assembly with the existing native collision shapes
+  → actual body geometry → dynamic boundary preparation with the same store
+  → solvers.pbf.boundary_model.load_boundaries
+    → pipelines.boundary.load.load_boundary_asset(artifact, runtime requirements)
+  → body binding, independent instance transforms, pose sync and initialization
+```
 
-Manifests record content fingerprints, grid transforms, actual tile coverage and
-local bounding boxes/radii. Loading verifies the NVDB, manifest, SDF identity,
-grid names, support range and matching SDF/map coverage. Preparation rebuilds
-missing or invalid generated caches; read-only loading reports an error instead.
-Staging uses the existing atomic writers and rollback-capable group publisher,
-with the completed manifest published last. Construction/publication runs before
-simulation; concurrent writers to the same artifact are outside the single-world
-workflow supported here.
+`lib.volume.pbf_volume_map.precompute_volume_map(sdf, support_radius,
+quadrature_points=16)` returns an independent CUDA volume on the SDF grid.
+Quadrature is keyword-only. The function performs no file IO and leaves the
+input unchanged.
+
+`prepare_boundary_asset(mesh, checked, *, store, ...)` accepts validated local
+geometry, bake settings, container/solid treatment, support radius, quadrature,
+device and provenance, and returns a `BoundaryArtifact` manifest reference.
+`load_boundary_asset(artifact, ...)` validates and returns GPU grids, local bounds
+and a visual mesh reference. It never writes or imports build algorithms, and
+does not require the visual OBJ to exist. Runtime body IDs and placements belong
+to the separate `scene_manifest.json`, not shared cache identities.
+
+## Cache contracts
+
+Within `boundaries-v3/<geometry-key>`, `sdfs/<key>` stores a single-grid SDF,
+processed OBJ and `sdf.json`; `maps/<key>` stores a dual-grid NVDB and
+`boundary.json`. Relative manifest references allow the artifact tree to move.
+Preparation selects the smallest valid SDF support range covering both the
+requested radius and `BakeOptions.max_support_radius`. Map keys include the
+persisted SDF fingerprint, radius, quadrature and algorithm version.
+
+Boundary loading checks file/content fingerprints, support metadata, transforms,
+actual tile coordinates and local bounds. Preparation rebuilds invalid boundary
+caches; loading reports an error. The completed manifest is published last.
+
+Collision retains the existing CoACD options, version check, 20-character recipe
+keys and `hulls.npz` / `metrics.json` format. Repeated preparation validates and
+reuses hulls. Corrupt hull caches still raise; this phase adds no integrity
+manifest, automatic collision repair or cache-format migration. Metrics are
+published before hulls. Construction runs before simulation; concurrent writers
+to the same artifact are outside the supported workflow.
 
 ## Verification
 
-Run `python -m unittest discover -s tests -p test_pbf_boundary_assets.py -v` in the
-Newton/Warp CUDA environment. Fixtures, compilation caches and logs stay under
-`output/pbf_asset_stage1_checks`. Backend regression and demo checks use
-`tests/test_newton_pbf_refactor.py` and `tools/check_newton_pbf_refactor.py`.
+From the repository root in the WarpSim CUDA environment:
+
+```powershell
+conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_asset_pipeline.py -v
+conda run -n WarpSim python -m unittest discover -s tests -p test_pbf_boundary_assets.py -v
+conda run -n WarpSim python -m unittest discover -s tests -p test_newton_pbf_refactor.py -v
+```
+
+Asset fixtures and their compilation caches live under `data/assets_RSP/tests`.
+`tools/check_newton_pbf_refactor.py` captures demo state, compares snapshots and
+checks existing-policy playback, reset and recording using the original backend
+report/recording locations. Historical preset runtime restoration and package
+launch normalization remain separate tasks.

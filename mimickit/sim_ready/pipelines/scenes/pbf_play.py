@@ -1,19 +1,23 @@
 """Temporary assets for the single-world PBF play scene.
 
-The existing producers retain their conventions. Only this scene adapter knows
-the pool layout, the Y-up to Z-up conversion, and the publication directory.
+The existing producers retain their conventions. This scene adapter chooses
+the pool layout, the Y-up to Z-up conversion and asset recipes. An explicit
+AssetStore supplies output locations.
 """
 from dataclasses import dataclass
-from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import numpy as np
 import trimesh
 import warp as wp
 
-from .. import asset_io, collision, geometry, validation
-from ..config import BakeOptions
-from ..pbf_boundary_asset import prepare_boundary_asset
+from ...lib.mesh import geometry, validation
+from ...lib.storage.fingerprints import file_digest
+from ...lib.storage.store import AssetStore
+from ...paths import ORIGIN_ROOT
+from .. import collision
+from ...config import BakeOptions
+from ..boundary.prepare import prepare_boundary_asset
 
 
 POOL_SIZE = np.array([3.0, 2.0, 5.0])
@@ -41,10 +45,9 @@ RIGIDS = (
 )
 
 
-def primitive_files(root):
+def primitive_files(store: AssetStore):
     """Use ordinary MJCF objects so MimicKit retains its object bookkeeping."""
-    directory = asset_io.generated_root(root) / "primitives"
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = store.directory("primitives")
     paths = []
     for spec in RIGIDS:
         document = ET.Element("mujoco", model=spec.name)
@@ -77,7 +80,7 @@ def static_geometry():
     container_y = trimesh.util.concatenate([outer, inner])
     validation.validate_container(container_y, outer.bounds)
 
-    source = Path(__file__).resolve().parents[1] / "Assets/bunny_flat_bottom.obj"
+    source = ORIGIN_ROOT / "bunny_flat_bottom.obj"
     bunny = geometry.prepare_rigid(source, obj_up_axis="Y")
     parts = validation.validate_rigid_parts(bunny)
     if len(parts) != 1:
@@ -99,7 +102,7 @@ def static_geometry():
     faces = np.concatenate([container_data.faces, bunny_data.faces + len(container_data.vertices)])
     combined = trimesh.Trimesh(vertices, faces, process=False)
     checked = validation.ValidatedMesh(vertices, faces, container_data.bounds, container_data.cavity_bounds)
-    provenance = dict(source=str(source), source_sha256=asset_io.file_digest(source),
+    provenance = dict(source=str(source), source_sha256=file_digest(source),
                       input_up_axis="Y", world_up_axis="Z", transform=SCENE_TRANSFORM.tolist(),
                       bunny_height=.6, bunny_center=[2.15, 1., .5],
                       pool_size=POOL_SIZE.tolist(), wall_thickness=WALL_THICKNESS,
@@ -107,19 +110,19 @@ def static_geometry():
     return combined, checked, bunny, provenance
 
 
-def prepare_boundary(mesh, checked, root, device, *, support_radius, container=False, provenance=None):
+def prepare_boundary(mesh, checked, store, device, *, support_radius, container=False, provenance=None):
     """Select scene-specific bake resolution and prepare a complete artifact."""
     options = BakeOptions(voxel_size=.0075 if container else .005,
                           max_support_radius=support_radius)
-    return prepare_boundary_asset(mesh, checked, root=root, device=device, bake_options=options,
+    return prepare_boundary_asset(mesh, checked, store=store, device=device, bake_options=options,
                                   support_radius=support_radius, container=container, provenance=provenance)
 
 
-def prepare_static(root, device, support_radius):
+def prepare_static(store: AssetStore, device, support_radius):
     mesh, checked, bunny, provenance = static_geometry()
-    path = prepare_boundary(mesh, checked, root, device,
+    path = prepare_boundary(mesh, checked, store, device,
                             support_radius=support_radius, container=True, provenance=provenance)
-    hulls = collision.prepare_hulls(bunny, "suspended_bunny", Path(root) / "collision")
+    hulls = collision.prepare_hulls(bunny, "suspended_bunny", store)
     return path, bunny, hulls
 
 

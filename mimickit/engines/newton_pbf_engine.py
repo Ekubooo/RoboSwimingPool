@@ -11,6 +11,7 @@ import engines.engine as engine
 import util.resource_util as resource_util
 from engines.newton_pbf_api import NewtonEngineAPI
 from engines.newton_pbf_runtime import PBFScene
+from sim_ready.paths import PBF_PLAY_ROOT
 from engines.newton_pbf_viewer import PBFViewer, PBFVideoRecorder
 from solvers.pbf.coupling import SolverPBFMuJoCo
 from util.logger import Logger
@@ -594,7 +595,7 @@ class SceneBuilder:
 
     def __init__(self, config, num_envs, device, timestep, substeps):
         self.device = device
-        self.play_scene = PBFScene(config.get("pbf_asset_dir", "output/sim_ready/pbf_play"),
+        self.play_scene = PBFScene(config.get("pbf_asset_dir", PBF_PLAY_ROOT),
                                    device, timestep, substeps)
         self.num_envs = num_envs
         self.builder = self._create_model_builder()

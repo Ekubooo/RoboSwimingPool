@@ -113,3 +113,19 @@ def save_volumes(volumes, path, *, grid_names=None):
         if os.path.exists(temporary):
             os.unlink(temporary)
     return path
+
+
+def save_volume(volume, path):
+    """Write beside the destination, replacing an existing file only on success."""
+    grid_name = getattr(volume, "_pbf_sdf_grid_name", None)
+    if grid_name is not None:
+        return save_volumes([volume], path, grid_names=[grid_name])
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=path.stem + ".", suffix=".nvdb.tmp", dir=path.parent)
+    os.close(descriptor)
+    try:
+        volume.save_to_nvdb(temporary, codec="none")
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)

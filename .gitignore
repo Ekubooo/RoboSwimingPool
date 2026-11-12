@@ -6,6 +6,6 @@ output/
 .vscode/
 wandb/
 
-# Historical PBF output locations (original meshes live in sim_ready/Assets).
+# Historical PBF output locations (RSP originals live in data/assets_RSP/origin).
 /mimickit/PBF/Assets/
 /mimickit/solvers/pbf/Assets/

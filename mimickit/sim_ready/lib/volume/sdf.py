@@ -1,15 +1,12 @@
 """CUDA SDF baking with complete solid distances and a sparse positive band."""
 
 import math
-import os
 from dataclasses import replace
-from pathlib import Path
-import tempfile
 
 import numpy as np
 import warp as wp
 
-from .config import BakeOptions
+from ...config import BakeOptions
 
 wp.set_module_options({"enable_backward": False})
 
@@ -130,20 +127,3 @@ def bake(mesh, *, options=BakeOptions(), device="cuda:0"):
         raise RuntimeError(f"Distance query failed at {int(failures.numpy()[0])} voxels")
     volume._pbf_sdf_grid_name = f"PBF_SDF|v=1|hmax={float(options.max_support_radius).hex()}"
     return volume
-
-
-def save_volume(volume, path):
-    """Write beside the destination, replacing an existing file only on success."""
-    grid_name = getattr(volume, "_pbf_sdf_grid_name", None)
-    if grid_name is not None:
-        from .nvdb_io import save_volumes
-        return save_volumes([volume], path, grid_names=[grid_name])
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=path.stem + ".", suffix=".nvdb.tmp", dir=path.parent)
-    os.close(descriptor)
-    try:
-        volume.save_to_nvdb(temporary, codec="none")
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)

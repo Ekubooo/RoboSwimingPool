@@ -6,19 +6,19 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 import shutil
-import tempfile
 
-from ...asset_io import file_digest, sdf_digest
+from ...lib.storage.fingerprints import file_digest, sdf_digest
 from ...config import GeometryOptions, BakeOptions
-from ...publish import publish_files
+from ...lib.storage.publish import publish_files
+from ...lib.storage.store import AssetStore
+from ...lib.storage.hull_io import load_hulls, save_hulls
+from ...paths import ASSET_ROOT, ORIGIN_ROOT
 from PBF.scene_data import RIGID_ASSETS
 
 
-ROOT = Path(__file__).resolve().parents[2]
-PROJECT = ROOT.parent
-SOURCE = ROOT / "Assets" / "bunny_flat_bottom.obj"
-OUTPUT = PROJECT / "PBF" / "Assets"
-CACHE = PROJECT / ".cache" / "sim-ready" / "pbf"
+SOURCE = ORIGIN_ROOT / "bunny_flat_bottom.obj"
+OUTPUT = ASSET_ROOT / "preset"
+CACHE = ASSET_ROOT / "preset_cache"
 BUILD_VERSION = 1
 LAYOUT_VERSION = 2
 
@@ -35,7 +35,7 @@ def _has_collision(name):
 
 
 def build_recipe(scene, config):
-    from ...collision import COACD_OPTIONS, COACD_VERSION
+    from ...lib.mesh.convex import COACD_OPTIONS, COACD_VERSION
 
     support = max(.05, 4. * config.particle_radius)
     geometry = {"boundary/stairs_scene": dict(kind="stairs", version=1),
@@ -43,7 +43,7 @@ def build_recipe(scene, config):
     selected = {name: geometry[name] for name in asset_names(scene)}
     recipe = dict(version=BUILD_VERSION, layout_version=LAYOUT_VERSION, source=file_digest(SOURCE),
         geometry=selected,
-        mesh_sources={name: file_digest(ROOT / "Assets" / description["source"])
+        mesh_sources={name: file_digest(ORIGIN_ROOT / description["source"])
                       for name, description in selected.items() if description["kind"] == "mesh"},
         terrain=asdict(GeometryOptions()),
         static_bake=asdict(BakeOptions(max_support_radius=support)),
@@ -57,13 +57,13 @@ def build_recipe(scene, config):
 def prepare_geometry(recipe):
     import numpy as np
     from .. import container, rigid
-    from ... import geometry, validation
+    from ...lib.mesh import geometry, validation
 
     scene, visible, static_boxes = container.prepare(SOURCE, options=GeometryOptions(**recipe["terrain"]))
     meshes = {"boundary/stairs_scene": visible}
     for name, description in recipe["geometry"].items():
         if description["kind"] == "mesh":
-            source = geometry.prepare_rigid(ROOT / "Assets" / description["source"],
+            source = geometry.prepare_rigid(ORIGIN_ROOT / description["source"],
                 scale=description["scale"], obj_up_axis=description["obj_up_axis"])
             meshes[name] = geometry.union(validation.validate_rigid_parts(source))
         elif name != "boundary/stairs_scene":
@@ -78,7 +78,7 @@ def validate_asset(root, name, description, device):
     import warp as wp
     import numpy as np
     import trimesh
-    from ...collision import _validate_hulls
+    from ...lib.mesh.convex import validate_hulls
     from PBF.boundary_model import _read_boundary_volumes, _check_volume_map_layout
 
     stem = root / name
@@ -102,10 +102,7 @@ def validate_asset(root, name, description, device):
         path = stem.with_suffix(".collision.npz")
         if file_digest(path) != metadata["collision_sha256"]:
             raise ValueError(f"Collision digest differs: {stem}")
-        with np.load(path, allow_pickle=False) as data:
-            hulls = [trimesh.Trimesh(data[f"vertices_{i}"], data[f"faces_{i}"], process=False)
-                     for i in range(int(data["count"]))]
-        _validate_hulls(hulls)
+        validate_hulls(load_hulls(path))
     if name == "boundary/stairs_scene":
         boxes = np.asarray(metadata["static_boxes"])
         if boxes.shape != (24, 2, 3) or not np.isfinite(boxes).all() or np.any(boxes[:, 1] <= 0):
@@ -196,16 +193,17 @@ def generate_assets(stage, recipe, scene, meshes, static_boxes, device):
     import warp as wp
     from .. import container, rigid
 
+    store = AssetStore(stage)
     products = {}
     if "boundary/stairs_scene" in meshes:
-        products["boundary/stairs_scene"] = container.build(scene, meshes["boundary/stairs_scene"], stage / "boundary/stairs_scene",
+        products["boundary/stairs_scene"] = container.build(scene, meshes["boundary/stairs_scene"], "boundary/stairs_scene", store=store,
             geometry_options=GeometryOptions(**recipe["terrain"]), bake_options=BakeOptions(**recipe["static_bake"]),
-            collision_cache=stage / "collision-cache", collision_name="bunny", device=device)
+            collision_name="bunny", device=device)
     for name, mesh in meshes.items():
         if name == "boundary/stairs_scene":
             continue
-        products[name] = rigid.build(mesh, stage / name, bake_options=BakeOptions(**recipe["rigid_bake"]),
-                                     collision_cache=stage / "collision-cache" if _has_collision(name) else None,
+        products[name] = rigid.build(mesh, name, store=store, bake_options=BakeOptions(**recipe["rigid_bake"]),
+                                     collision=_has_collision(name),
                                      device=device)
     # The preset owns the published attachment format and the scene-wide transaction.
     for name, (mesh_path, sdf_path, hulls) in products.items():
@@ -225,11 +223,7 @@ def generate_assets(stage, recipe, scene, meshes, static_boxes, device):
                   dict(asdict(bake), decomposition=recipe["decomposition"] if _has_collision(name) else None,
                        dependencies=recipe["dependencies"]))
         if _has_collision(name):
-            arrays = dict(count=np.asarray(len(hulls), dtype=np.int32))
-            for i, hull in enumerate(hulls):
-                arrays[f"vertices_{i}"] = np.asarray(hull.vertices, dtype=np.float64)
-                arrays[f"faces_{i}"] = np.asarray(hull.faces, dtype=np.int32)
-            np.savez_compressed(stem.with_suffix(".collision.npz"), **arrays)
+            save_hulls(hulls, stem.with_suffix(".collision.npz"))
             metadata["collision_sha256"] = file_digest(stem.with_suffix(".collision.npz"))
         if is_static:
             metadata["static_boxes"] = static_boxes
@@ -243,21 +237,17 @@ def build_scene_assets(scene, config=None, *, device="cuda:0", output_dir=None,
     import warp as wp
     from PBF.pbf_helper import PBFConfig
     from PBF.boundary_model import load_boundary_volumes
-    from ...collision import cache_directory
 
     config = config or PBFConfig()
     recipe = build_recipe(scene, config)
-    root = Path(OUTPUT if output_dir is None else output_dir).resolve()
-    cache_root = Path(CACHE if cache_dir is None else cache_dir).resolve()
-    for target in (root, cache_root):
-        if target.is_relative_to(PROJECT / "demos") or target.is_relative_to(ROOT / "Assets"):
-            raise ValueError("Outputs must not overwrite demos, the archive or source assets")
-    cache = cache_directory(cache_root, scene, recipe)
+    store = AssetStore(OUTPUT if output_dir is None else output_dir)
+    cache_store = AssetStore(CACHE if cache_dir is None else cache_dir)
+    root = store.root
+    cache = cache_store.recipe_directory("scenes", recipe, name=scene, allow_nan=True)
     if root == cache or root.is_relative_to(cache) or cache.is_relative_to(root):
         raise ValueError("Published assets and the build cache must be separate directories")
     names = tuple(recipe["geometry"])
-    with wp.ScopedDevice(device), tempfile.TemporaryDirectory(prefix="build-", dir=cache.parent) as temporary:
-        stage = Path(temporary)
+    with wp.ScopedDevice(device), cache_store.staging(cache, prefix="build-") as stage:
         if not rebuild and (cache / "recipe.json").is_file():
             if json.loads((cache / "recipe.json").read_text(encoding="utf-8")) != recipe:
                 raise ValueError("Cached recipe differs; use --rebuild")
@@ -286,7 +276,7 @@ def build_scene_assets(scene, config=None, *, device="cuda:0", output_dir=None,
         targets += [(recipe_path, cache / "recipe.json")]
         targets += [(path, root / path.relative_to(stage)) for path in files]
         # Retain new decomposition diagnostics in the offline cache only.
-        for path in (stage / "collision-cache").rglob("*.json"):
+        for path in (stage / "collision").rglob("*.json"):
             targets.append((path, cache / path.relative_to(stage)))
         publish_files(targets)
     print(f"Published {scene}: {root}", flush=True)

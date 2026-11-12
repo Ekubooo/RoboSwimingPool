@@ -13,21 +13,11 @@ def _temporary(path):
     return Path(filename)
 
 
-def save_mesh_obj(mesh, path, *, digits=8):
-    """Atomically save geometry; containers retain their original precision."""
-    temporary = _temporary(path)
-    try:
-        temporary.write_text(mesh.export(file_type="obj", digits=digits), encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def publish_files(destinations):
     """Publish explicit (source, target) pairs as one rollback-protected group.
 
     Supports OBJ/NVDB plus physical/collision attachments across subdirectories.
-    Like publish_pair, consumers must be stopped during publication.
+    Consumers must be stopped during publication.
     """
     prepared, replaced, recovery_files, rollback_errors = [], [], set(), []
     try:
@@ -62,5 +52,3 @@ def publish_files(destinations):
             temporary.unlink(missing_ok=True)
             if backup is not None and backup not in recovery_files:
                 backup.unlink(missing_ok=True)
-
-

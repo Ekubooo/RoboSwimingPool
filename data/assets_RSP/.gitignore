@@ -1,0 +1,4 @@
+# Only RSP originals and these ignore rules are versioned here.
+/*
+!/.gitignore
+!/origin/

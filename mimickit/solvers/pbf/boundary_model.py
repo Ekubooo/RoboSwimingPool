@@ -10,8 +10,9 @@ from pathlib import Path
 import numpy as np
 import warp as wp
 
-from sim_ready.pbf_boundary_asset import BoundaryArtifact, load_boundary_asset
-from sim_ready.pbf_volume_map import check_volume_options
+from sim_ready.pipelines.boundary.schema import BoundaryArtifact
+from sim_ready.pipelines.boundary.load import load_boundary_asset
+from sim_ready.config import check_volume_options
 
 wp.set_module_options({"enable_backward": False})
 
