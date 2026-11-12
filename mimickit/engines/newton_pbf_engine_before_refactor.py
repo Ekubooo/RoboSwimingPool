@@ -12,7 +12,7 @@ import pyglet
 import engines.engine as engine
 import util.resource_util as resource_util
 from engines.newton_pbf_runtime import PBFScene
-from sim_ready.paths import PBF_PLAY_ROOT
+from RSP.sim_ready.paths import PBF_PLAY_ROOT
 from engines.newton_pbf_viewer import PBFViewer, PBFVideoRecorder
 from solvers.pbf.coupling import SolverPBFMuJoCo
 from util.logger import Logger

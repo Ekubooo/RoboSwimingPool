@@ -1,6 +1,6 @@
 """Load shared boundary assets and manage static/rigid instances.
 
-Artifacts are prepared by sim_ready before this read-only runtime is created.
+Artifacts are prepared by RSP.sim_ready before this read-only runtime is created.
 This module owns boundary resources and instances, not construction or rendering.
 """
 
@@ -10,9 +10,9 @@ from pathlib import Path
 import numpy as np
 import warp as wp
 
-from sim_ready.pipelines.boundary.schema import BoundaryArtifact
-from sim_ready.pipelines.boundary.load import load_boundary_asset
-from sim_ready.config import check_volume_options
+from RSP.sim_ready.pipelines.boundary.schema import BoundaryArtifact
+from RSP.sim_ready.pipelines.boundary.load import load_boundary_asset
+from RSP.sim_ready.config import check_volume_options
 
 wp.set_module_options({"enable_backward": False})
 

@@ -13,14 +13,13 @@ import numpy as np
 import trimesh
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "mimickit"))
 
-from sim_ready.paths import ASSET_ROOT, ORIGIN_ROOT, TEST_ROOT
-from sim_ready.lib.mesh import geometry, convex
-from sim_ready.lib.storage.fingerprints import mesh_digest
-from sim_ready.lib.storage.store import AssetStore
-from sim_ready.lib.storage import publish
-from sim_ready.pipelines import collision
+from RSP.sim_ready.paths import ASSET_ROOT, ORIGIN_ROOT, TEST_ROOT
+from RSP.sim_ready.lib.mesh import geometry, convex
+from RSP.sim_ready.lib.storage.fingerprints import mesh_digest
+from RSP.sim_ready.lib.storage.store import AssetStore
+from RSP.sim_ready.lib.storage import publish
+from RSP.sim_ready.pipelines import collision
 
 
 class AssetPipeline(unittest.TestCase):
@@ -91,16 +90,45 @@ class AssetPipeline(unittest.TestCase):
         self.assertEqual(list(self.store.root.iterdir()), [destination])
 
     def test_read_only_loader_does_not_import_build_algorithms(self):
-        code = f"""
+        code = """
 import sys
-sys.path.insert(0, {str(ROOT / 'mimickit')!r})
-from sim_ready.pipelines.boundary.load import load_boundary_asset
-for name in ('sim_ready.lib.volume.sdf', 'sim_ready.lib.volume.pbf_volume_map',
-             'sim_ready.lib.mesh.convex', 'sim_ready.pipelines.boundary.prepare', 'coacd'):
+from RSP.sim_ready.pipelines.boundary.load import load_boundary_asset
+for name in ('RSP.sim_ready.lib.volume.sdf', 'RSP.sim_ready.lib.volume.pbf_volume_map',
+             'RSP.sim_ready.lib.mesh.convex', 'RSP.sim_ready.pipelines.boundary.prepare', 'coacd'):
     assert name not in sys.modules, name
 """
-        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, "-I", "-c", code], cwd=ROOT.parent,
+                                capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_editable_package_imports_outside_checkout_with_unchanged_paths(self):
+        code = """
+from importlib.metadata import distribution
+import json
+from pathlib import Path
+import RSP.sim_ready
+from RSP.sim_ready.paths import PROJECT_ROOT, ASSET_ROOT, ORIGIN_ROOT, PBF_PLAY_ROOT, TEST_ROOT
+
+dist = distribution('roboswimmingpool-rsp')
+print(json.dumps(dict(source=str(Path(RSP.sim_ready.__file__).resolve()),
+                     project=str(PROJECT_ROOT), assets=str(ASSET_ROOT), origin=str(ORIGIN_ROOT),
+                     play=str(PBF_PLAY_ROOT), tests=str(TEST_ROOT),
+                     packages=dist.read_text('top_level.txt').split(), requires=dist.requires)))
+"""
+        result = subprocess.run([sys.executable, "-I", "-c", code], cwd=ROOT.parent,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        installed = json.loads(result.stdout)
+        self.assertEqual(Path(installed["source"]), ROOT / "RSP/sim_ready/__init__.py")
+        self.assertEqual(Path(installed["project"]), ROOT)
+        self.assertEqual(Path(installed["assets"]), ASSET_ROOT)
+        self.assertEqual(Path(installed["origin"]), ORIGIN_ROOT)
+        self.assertEqual(Path(installed["play"]), ASSET_ROOT / "pbf_play")
+        self.assertEqual(Path(installed["tests"]), TEST_ROOT)
+        self.assertEqual(installed["packages"], ["RSP"])
+        requirements = (ROOT / "RSP/sim_ready/requirements.txt").read_text(encoding="utf-8")
+        expected = {line.strip() for line in requirements.splitlines() if line.strip() and not line.startswith("#")}
+        self.assertEqual(set(installed["requires"]), expected)
 
     def test_convex_compute_cache_format_reuse_and_corruption_behavior(self):
         first = trimesh.creation.box(extents=[.3, .1, .12])

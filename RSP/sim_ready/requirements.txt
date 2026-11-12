@@ -1,4 +1,4 @@
-# Offline production only; install alongside PBF/requirements.txt.
+# RSP asset package dependencies; retain the pinned WarpSim versions.
 newton==1.7.0
 warp-lang==1.18.0
 numpy==2.4.6

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roboswimmingpool-rsp"
+version = "0.1.0"
+description = "RSP simulation asset tools for the RoboSwimingPool source checkout"
+readme = "RSP/sim_ready/README.md"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+include-package-data = false
+py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["RSP", "RSP.*"]
+namespaces = false
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["RSP/sim_ready/requirements.txt"]}

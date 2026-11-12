@@ -5,7 +5,7 @@ import torch
 from engines.engine import ObjType
 from envs.smp_env import SMPEnv
 from envs.task_dodgeball_env import compute_dodgeball_observations
-from sim_ready.pipelines.scenes.pbf_play import RIGIDS
+from RSP.sim_ready.pipelines.scenes.pbf_play import RIGIDS
 from util.camera import Camera, CameraMode
 
 

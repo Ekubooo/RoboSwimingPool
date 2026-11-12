@@ -55,6 +55,20 @@ pip install -r requirements.txt
 
 3. Download assets and motion data from [here](https://1sfu-my.sharepoint.com/:u:/g/personal/xbpeng_sfu_ca/EclKq9pwdOBAl-17SogfMW0Bved4sodZBQ_5eZCiz9O--w?e=bqXBaa), then extract the contents into [`data/`](data/).
 
+### RSP asset tools (Newton-PBF)
+
+The project-owned asset package is `RSP.sim_ready`. In the existing pinned
+WarpSim environment, install this checkout from the repository root:
+
+```powershell
+conda run -n WarpSim python -m pip install -e . --no-deps --no-build-isolation
+```
+
+This registers the RSP package without changing the environment's dependencies.
+The Newton-PBF backend, solver and MimicKit launcher remain in `mimickit`;
+assets remain in `data/assets_RSP`. See the [RSP asset pipeline guide](RSP/sim_ready/README.md)
+for Python imports, cache contracts and checks without recording video.
+
 
 ---
 

@@ -7,8 +7,8 @@ import numpy as np
 import trimesh
 import warp as wp
 
-from sim_ready.pipelines.scenes import pbf_play as assets
-from sim_ready.lib.storage.store import AssetStore
+from RSP.sim_ready.pipelines.scenes import pbf_play as assets
+from RSP.sim_ready.lib.storage.store import AssetStore
 from solvers.pbf import boundary_model, pbf_helper
 
 

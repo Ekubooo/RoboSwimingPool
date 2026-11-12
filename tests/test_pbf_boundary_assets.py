@@ -19,16 +19,16 @@ sys.path.insert(0, str(ROOT / "mimickit"))
 OUTPUT = ROOT / "data/assets_RSP/tests/boundary"
 wp.config.kernel_cache_dir = str(OUTPUT / "warp_cache")
 
-from sim_ready.lib.storage import fingerprints as asset_io, nvdb_io
-from sim_ready.lib.storage.store import AssetStore
-from sim_ready.lib.volume import sdf
-from sim_ready.lib.mesh import validation
-from sim_ready.pipelines.boundary import prepare as assets
-from sim_ready.pipelines.boundary.load import load_boundary_asset
-from sim_ready.pipelines.boundary.schema import check_volume_map_layout
-from sim_ready.pipelines import rigid
-from sim_ready.config import BakeOptions
-from sim_ready.lib.volume.pbf_volume_map import precompute_volume_map
+from RSP.sim_ready.lib.storage import fingerprints as asset_io, nvdb_io
+from RSP.sim_ready.lib.storage.store import AssetStore
+from RSP.sim_ready.lib.volume import sdf
+from RSP.sim_ready.lib.mesh import validation
+from RSP.sim_ready.pipelines.boundary import prepare as assets
+from RSP.sim_ready.pipelines.boundary.load import load_boundary_asset
+from RSP.sim_ready.pipelines.boundary.schema import check_volume_map_layout
+from RSP.sim_ready.pipelines import rigid
+from RSP.sim_ready.config import BakeOptions
+from RSP.sim_ready.lib.volume.pbf_volume_map import precompute_volume_map
 from solvers.pbf import boundary_model
 
 

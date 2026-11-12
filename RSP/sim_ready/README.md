@@ -3,6 +3,36 @@
 Asset preparation, storage and read-only runtime loading have separate owners.
 Geometry, SDF baking, volume integration and coupling retain their existing methods.
 
+## Package installation and imports
+
+The package lives in `RSP/sim_ready`, with the case-sensitive import name
+`RSP.sim_ready`. From the repository root in the existing pinned WarpSim environment:
+
+```powershell
+conda run -n WarpSim python -m pip install -e . --no-deps --no-build-isolation
+```
+
+The `roboswimmingpool-rsp` distribution requires Python 3.11 or newer and uses
+the six existing pins in `RSP/sim_ready/requirements.txt` as its dependency source.
+Only RSP Python packages are included; MimicKit and asset data are not packaged.
+This workflow supports an editable source checkout. Asset paths remain relative
+to the repository, and standalone wheel data lookup is outside its scope.
+
+```python
+from RSP.sim_ready.paths import PBF_PLAY_ROOT
+from RSP.sim_ready.lib.storage.store import AssetStore
+from RSP.sim_ready.pipelines.boundary.prepare import prepare_boundary_asset
+from RSP.sim_ready.pipelines.boundary.load import load_boundary_asset
+
+store = AssetStore(PBF_PLAY_ROOT)
+# Pass store=store to asset preparation; loading only needs an artifact reference.
+```
+
+The existing MimicKit launcher, backend and solver remain in place. Install the
+RSP package before using the Newton-PBF backend or running the tests. The old
+top-level `sim_ready` imports have been replaced; no compatibility package or
+new command-line entry point is provided.
+
 ## Source and output layout
 
 ```text
@@ -32,14 +62,16 @@ The demo defaults to `data/assets_RSP/pbf_play`. Repository-local asset output
 roots must be proper subdirectories of `assets_RSP`, excluding `origin` and its
 descendants. The root itself is not an output directory. Explicit external
 output roots are supported. Paths are resolved before checking containment.
-No caches are migrated: the new root is built from source on its first run.
-After validation, only the obsolete `output/sim_ready/pbf_play/boundaries` is
-removed. Other legacy outputs remain, outside the default demo's asset path.
+The phase-two asset migration built this root from source and removed only the
+obsolete `output/sim_ready/pbf_play/boundaries` directory after validation.
+The subsequent move of Python code to `RSP.sim_ready` preserves these existing
+assets and cache identities. Other legacy outputs remain outside the default
+demo's asset path.
 
 ## Code layers
 
 ```text
-sim_ready/
+RSP/sim_ready/
 ├── config.py                         shared parameter constraints
 ├── paths.py                          source locations and output rules
 ├── lib/
@@ -131,7 +163,9 @@ conda run -n WarpSim python -m unittest discover -s tests -p test_newton_pbf_ref
 ```
 
 Asset fixtures and their compilation caches live under `data/assets_RSP/tests`.
-`tools/check_newton_pbf_refactor.py` captures demo state, compares snapshots and
-checks existing-policy playback, reset and recording using the original backend
-report/recording locations. Historical preset runtime restoration and package
-launch normalization remain separate tasks.
+`tools/check_newton_pbf_refactor.py snapshot` and `compare` check demo state,
+model mappings and reset without recording video. Backend reports retain their
+existing output location. The optional `integration` command still checks policy
+playback and recording, but is not part of routine asset/package migration checks.
+Historical preset runtime restoration and application launch normalization remain
+separate tasks.

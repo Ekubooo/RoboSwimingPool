@@ -6,6 +6,11 @@ output/
 .vscode/
 wandb/
 
+# Local RSP package builds and editable-install metadata.
+/build/
+/dist/
+/*.egg-info/
+
 # Historical PBF output locations (RSP originals live in data/assets_RSP/origin).
 /mimickit/PBF/Assets/
 /mimickit/solvers/pbf/Assets/
