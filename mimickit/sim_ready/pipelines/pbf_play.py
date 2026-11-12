@@ -3,9 +3,7 @@
 The existing producers retain their conventions. Only this scene adapter knows
 the pool layout, the Y-up to Z-up conversion, and the publication directory.
 """
-from dataclasses import asdict, dataclass
-from importlib.metadata import version
-import json
+from dataclasses import dataclass
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -13,9 +11,9 @@ import numpy as np
 import trimesh
 import warp as wp
 
-from .. import asset_io, collision, geometry, sdf, validation
+from .. import asset_io, collision, geometry, validation
 from ..config import BakeOptions
-from ..publish import save_mesh_obj
+from ..pbf_boundary_asset import prepare_boundary_asset
 
 
 POOL_SIZE = np.array([3.0, 2.0, 5.0])
@@ -45,7 +43,7 @@ RIGIDS = (
 
 def primitive_files(root):
     """Use ordinary MJCF objects so MimicKit retains its object bookkeeping."""
-    directory = Path(root) / "primitives"
+    directory = asset_io.generated_root(root) / "primitives"
     directory.mkdir(parents=True, exist_ok=True)
     paths = []
     for spec in RIGIDS:
@@ -109,48 +107,17 @@ def static_geometry():
     return combined, checked, bunny, provenance
 
 
-def publish_boundary(mesh, checked, name, root, device, *, support_radius, container=False,
-                     provenance=None):
-    """Content-addressed SDF cache. VM contents may later be appended by PBF."""
+def prepare_boundary(mesh, checked, root, device, *, support_radius, container=False, provenance=None):
+    """Select scene-specific bake resolution and prepare a complete artifact."""
     options = BakeOptions(voxel_size=.0075 if container else .005,
                           max_support_radius=support_radius)
-    recipe = dict(layout=2, mesh_sha256=collision.mesh_digest(mesh),
-                  options=asdict(options), container=container,
-                  dependencies={p: version(p) for p in ("newton", "warp-lang", "trimesh")})
-    directory = collision.cache_directory(Path(root) / "boundaries", name, recipe)
-    stem = directory / name
-    metadata_path = stem.with_suffix(".json")
-    mesh_path, volume_path = stem.with_suffix(".obj"), stem.with_suffix(".nvdb")
-    if metadata_path.is_file() and mesh_path.is_file() and volume_path.is_file():
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if metadata["recipe"] != recipe or metadata["mesh_file_sha256"] != asset_io.file_digest(mesh_path):
-            raise ValueError(f"Published boundary does not match its recipe: {stem}")
-        with volume_path.open("rb") as stream:
-            published = wp.Volume.load_from_nvdb(stream, device=device)
-        if asset_io.sdf_digest(published) != metadata["sdf_sha256"]:
-            raise ValueError(f"Published SDF content has changed: {volume_path}")
-        return volume_path
-    print(f"Baking PBF boundary: {name}", flush=True)
-    volume = sdf.bake(checked, options=options, device=device) if container else sdf.bake_rigid(
-        checked, options=options, device=device)
-    save_mesh_obj(mesh, mesh_path, digits=17)
-    sdf.save_volume(volume, volume_path)
-    # Publishing assigns the grid's support-radius name. Hash the persisted
-    # SDF, not the unnamed intermediate volume returned by the baker.
-    with volume_path.open("rb") as stream:
-        published = wp.Volume.load_from_nvdb(stream, device=device)
-    metadata = dict(recipe=recipe, provenance=provenance or {},
-                    mesh_file_sha256=asset_io.file_digest(mesh_path),
-                    sdf_sha256=asset_io.sdf_digest(published),
-                    bounds=mesh.bounds.tolist(), voxel_size=volume.get_voxel_size(),
-                    tiles=volume.get_tile_count())
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    return volume_path
+    return prepare_boundary_asset(mesh, checked, root=root, device=device, bake_options=options,
+                                  support_radius=support_radius, container=container, provenance=provenance)
 
 
 def prepare_static(root, device, support_radius):
     mesh, checked, bunny, provenance = static_geometry()
-    path = publish_boundary(mesh, checked, "pool", root, device,
+    path = prepare_boundary(mesh, checked, root, device,
                             support_radius=support_radius, container=True, provenance=provenance)
     hulls = collision.prepare_hulls(bunny, "suspended_bunny", Path(root) / "collision")
     return path, bunny, hulls

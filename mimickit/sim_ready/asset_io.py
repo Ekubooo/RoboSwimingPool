@@ -4,6 +4,15 @@ import hashlib
 from pathlib import Path
 
 
+def generated_root(path):
+    """Keep repository-local generated assets in the ignored output tree."""
+    root = Path(path).expanduser().resolve()
+    project = Path(__file__).resolve().parents[2]
+    if root.is_relative_to(project) and not root.is_relative_to(project / "output"):
+        raise ValueError("Generated assets inside this repository must be under output/")
+    return root
+
+
 def file_digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()

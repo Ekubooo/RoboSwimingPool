@@ -5,3 +5,7 @@ __pycache__/
 output/
 .vscode/
 wandb/
+
+# Historical PBF output locations (original meshes live in sim_ready/Assets).
+/mimickit/PBF/Assets/
+/mimickit/solvers/pbf/Assets/

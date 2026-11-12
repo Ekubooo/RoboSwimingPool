@@ -1,7 +1,6 @@
 """Scene assembly and lifecycle glue for the copied Newton-PBF backend."""
 from dataclasses import replace
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -9,6 +8,7 @@ import trimesh
 import warp as wp
 
 from sim_ready.pipelines import pbf_play as assets
+from sim_ready.asset_io import generated_root
 from solvers.pbf import boundary_model, pbf_helper
 
 
@@ -33,7 +33,7 @@ def runtime_config(control_dt, substeps):
 
 class PBFScene:
     def __init__(self, directory, device, control_dt, substeps):
-        self.directory = Path(directory).resolve()
+        self.directory = generated_root(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.device = device
         self.config = runtime_config(control_dt, substeps)
@@ -82,9 +82,9 @@ class PBFScene:
         masses = model.body_mass.numpy()
         paths, mapped_ids, entries = [], [], []
         for body_id, mesh, checked in assets.body_meshes(model, body_ids):
-            path = assets.publish_boundary(mesh, checked, "body", self.directory, self.device,
+            path = assets.prepare_boundary(mesh, checked, self.directory, self.device,
                                             support_radius=self.particles.smoothing_length,
-                                            provenance={"body_label": model.body_label[body_id]})
+                                            provenance={"source_kind": "newton_collision_geometry"})
             self.body_meshes[body_id] = mesh
             mapped_ids.append(body_id)
             paths.append(path)
