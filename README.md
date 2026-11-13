@@ -78,7 +78,7 @@ To train a model, run the following command:
 ```
 python mimickit/run.py --mode train --num_envs 4096 --engine_config data/engines/isaac_gym_engine.yaml --env_config data/envs/deepmimic_humanoid_env.yaml --agent_config data/agents/deepmimic_humanoid_ppo_agent.yaml --visualize true --out_dir output/
 ```
-- `--mode` selects `train` or `test`; the single-world PBF scene also supports continuous `play` without episode evaluation.
+- `--mode` selects either `train` or `test` mode.
 - `--num_envs` the number of parallel environments used for simulation. Not all environments support parallel envs, this is mainly used for Isaac Gym envs and other environments, like DeepMind Control Suite does not support this feature and should therefore use 1 for the number of envs.
 - `--engine_config` configuration file for the engine to select between different simulator backends.
 - `--env_config` configuration file for the environment.
@@ -102,16 +102,6 @@ To test a model, run the following command:
 python mimickit/run.py --arg_file args/deepmimic_humanoid_ppo_args.txt --num_envs 4 --visualize true --mode test --model_file data/models/deepmimic_humanoid_spinkick_model.pt
 ```
 - `--model_file` specifies the `.pt` file that contains the parameters of the trained model. Pretrained models are available in [`data/models/`](data/models/), and the corresponding training log files are available in [`data/logs/`](data/logs/).
-
-The PBF demo uses continuous policy playback:
-```
-python mimickit/run.py --arg_file args/rsp_pbf_demo_args.txt
-```
-Its `--mode play` keeps manual reset, pause, single-step and video recording, while skipping episode evaluation and unused discriminator observations. The PBF engine's `realtime` setting defaults to `true`; the demo sets it to `false` to remove wall-clock pacing. Policy and physics frequencies remain 30 Hz and 240 Hz in simulation time. Training and evaluation remain available through `--mode train` and `--mode test`.
-
-The demo advances fluid twice per policy period (`pbf_substeps: 2`), with `pbf_pressure_iterations: 3`, while retaining all eight 1/240 s rigid/PD steps. Its `pbf_time_scale: 0.5` makes each fluid step 1/120 s: fluid time advances at half the rigid/humanoid rate. The scale defaults to 1.0 and must be finite and positive; it is fixed when the engine is constructed. Fluid pressure forces and torques are scaled by the same ratio and held over each group of four rigid steps, preserving the fluid impulse over the rigid interval. Both clocks reset together; rendering, policy timing and recording retain the rigid clock. Omitting `pbf_substeps` retains one fluid update per rigid step; it must otherwise be a positive divisor of the rigid step count.
-
-The 195525-particle block (79 x 75 x 33) starts near the floor on the right, with particle centers from `(1.025, 0.075, 0.025)` to `(2.975, 1.925, 0.825)` m; particles inside the fixed bunny are allowed. The demo's `play_init_mode: standing` uses the existing `init_pose` at `(0.5, 1.0, 0.882416)` m with zero velocities, leaving the humanoid in the wider dry strip on the left. This setting applies only to `play`; its default `sampled` and the ordinary training/evaluation paths retain motion/GSI initialization. Pool walls extend 0.25 m outward without changing the inner dimensions; the existing asset pipeline rebuilds the static SDF and volume map when this geometry changes.
 
 
 ## Distributed Training

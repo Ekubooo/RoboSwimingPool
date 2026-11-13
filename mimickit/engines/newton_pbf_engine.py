@@ -2,7 +2,6 @@ import warp as wp
 wp.config.enable_backward = False
 
 import newton
-from numbers import Real
 import numpy as np
 import os
 import torch
@@ -597,10 +596,7 @@ class SceneBuilder:
     def __init__(self, config, num_envs, device, timestep, substeps):
         self.device = device
         self.play_scene = PBFScene(config.get("pbf_asset_dir", PBF_PLAY_ROOT),
-                                   device, timestep, substeps,
-                                   fluid_substeps=config.get("pbf_substeps"),
-                                   pressure_iterations=config.get("pbf_pressure_iterations"),
-                                   fluid_time_scale=config.get("pbf_time_scale", 1.0))
+                                   device, timestep, substeps)
         self.num_envs = num_envs
         self.builder = self._create_model_builder()
         self._builder_cache = {}
@@ -962,19 +958,7 @@ class SimulationRuntime:
         self.timestep = 1.0 / control_freq
         self._sim_steps = int(sim_freq / control_freq)
         self.sim_timestep = 1.0 / sim_freq
-        self._fluid_steps = config.get("pbf_substeps", self._sim_steps)
-        if (isinstance(self._fluid_steps, bool) or not isinstance(self._fluid_steps, int)
-                or self._fluid_steps < 1 or self._sim_steps % self._fluid_steps != 0):
-            raise ValueError("pbf_substeps must be a positive integer divisor of the rigid step count")
-        self._fluid_time_scale = config.get("pbf_time_scale", 1.0)
-        if (isinstance(self._fluid_time_scale, bool) or not isinstance(self._fluid_time_scale, Real)
-                or not np.isfinite(self._fluid_time_scale) or self._fluid_time_scale <= 0):
-            raise ValueError("pbf_time_scale must be finite and positive")
-        self._fluid_time_scale = float(self._fluid_time_scale)
-        self.fluid_timestep = self.timestep * self._fluid_time_scale / self._fluid_steps
-        self._rigid_steps_per_fluid_step = self._sim_steps // self._fluid_steps
         self._sim_step_count = 0
-        self._fluid_step_count = 0
         self._enable_cuda_graph = bool(config.get("enable_cuda_graph", True))
 
     def initialize(self, state, control, scene, interaction_forces):
@@ -1002,14 +986,9 @@ class SimulationRuntime:
         self._ground_contact_sensor.update(self._state.raw_state, self._contacts,
                                            observables=self._observables)
         self._sim_step_count += 1
-        self._fluid_step_count += self._fluid_steps
 
     def get_sim_time(self):
         return self.timestep * self._sim_step_count
-
-    def get_fluid_time(self):
-        """Fluid elapsed time; the public engine clock remains the rigid clock."""
-        return self.fluid_timestep * self._fluid_step_count
 
     def reset_solver(self):
         # The composed solver preserves the freshly sampled GSI joint state.
@@ -1017,7 +996,6 @@ class SimulationRuntime:
 
     def reset_clock(self):
         self._sim_step_count = 0
-        self._fluid_step_count = 0
 
     def clear_feedback(self):
         if self._control.mode in (engine.ControlMode.pos, engine.ControlMode.vel):
@@ -1106,8 +1084,7 @@ class SimulationRuntime:
             return
         # Compile adapter kernels before capture, including scalar-only scenes.
         wp.load_module(module=__name__, device=self._sim_model.device)
-        self._graph = self._solver.capture_step_graph(
-            self._simulate, self._sim_steps, fluid_substeps=self._fluid_steps)
+        self._graph = self._solver.capture_step_graph(self._simulate, self._sim_steps)
         return
 
 
@@ -1121,10 +1098,7 @@ class SimulationRuntime:
         for i in range(self._sim_steps):
             self._pre_sim_step(state0, control)
             self._solver.step(state0, state1, control, self._contacts, self.sim_timestep,
-                              observables=self._observables if i == self._sim_steps - 1 else None,
-                              advance_fluid=i % self._rigid_steps_per_fluid_step == 0,
-                              fluid_dt=self.fluid_timestep,
-                              fluid_force_scale=self._fluid_time_scale)
+                              observables=self._observables if i == self._sim_steps - 1 else None)
             state0, state1 = state1, state0
 
         self._finish_simulation(state0)
@@ -1410,7 +1384,6 @@ class NewtonEngine(NewtonEngineAPI):
 
     def __init__(self, config, num_envs, device, visualize, record_video=False):
         super().__init__(visualize=visualize)
-        self._realtime = config.get("realtime", True)
         self._runtime = SimulationRuntime(config, num_envs, device)
         self._scene = SceneBuilder(config, num_envs, device,
                                    self._runtime.timestep, self._runtime._sim_steps)
@@ -1451,8 +1424,7 @@ class NewtonEngine(NewtonEngineAPI):
     def render(self):
         self._presentation.render(self.get_sim_time(), self._state.raw_state,
                                   self._scene.play_scene.draw_pool)
-        if self._realtime:
-            super().render()
+        super().render()
 
     def close(self):
         if getattr(self, "_closed", False):

@@ -7,10 +7,9 @@ from .PBF import PBF
 
 @wp.kernel
 def add_boundary_forces(forces: wp.array(dtype=wp.spatial_vector),
-                        time_scale: float,
                         body_f: wp.array(dtype=wp.spatial_vector)):
     index = wp.tid()
-    body_f[index] += forces[index] * time_scale
+    body_f[index] += forces[index]
 
 
 class CoupledStepGraph:
@@ -22,10 +21,9 @@ class CoupledStepGraph:
     Capturing restores host state even on failure; replay commits it once.
     """
 
-    def __init__(self, solver, step, substeps, *, fluid_substeps=None):
+    def __init__(self, solver, step, substeps):
         self._solver = solver
         self._substeps = substeps
-        fluid_substeps = substeps if fluid_substeps is None else fluid_substeps
         self._graphs = {}
         fluid = solver.fluid
         for module in ("solvers.pbf.pbf_helper", "solvers.pbf.PBF",
@@ -35,7 +33,7 @@ class CoupledStepGraph:
         prediction = (fluid.pre_Pos, fluid.temp_pPos)
         rigid_step = solver.rigid._step
         # Odd numbers of PBF substeps alternate the starting buffer address.
-        starts = [prediction] if fluid_substeps % 2 == 0 else [prediction, prediction[::-1]]
+        starts = [prediction] if substeps % 2 == 0 else [prediction, prediction[::-1]]
         try:
             for buffers in starts:
                 fluid.pre_Pos, fluid.temp_pPos = buffers
@@ -75,29 +73,17 @@ class SolverPBFMuJoCo(newton.solvers.SolverBase):
     def observables(self, kinds, *, contacts=None, requires_grad=None):
         return self.rigid.observables(kinds, contacts=contacts, requires_grad=requires_grad)
 
-    def capture_step_graph(self, step, substeps, *, fluid_substeps=None):
+    def capture_step_graph(self, step, substeps):
         """Capture the caller's full step without exposing solver-private state."""
-        return CoupledStepGraph(self, step, substeps, fluid_substeps=fluid_substeps)
+        return CoupledStepGraph(self, step, substeps)
 
-    def step(self, state_in, state_out, control, contacts, dt, *, observables=None,
-             advance_fluid=True, fluid_dt=None, fluid_force_scale=1.0):
+    def step(self, state_in, state_out, control, contacts, dt, *, observables=None):
         # The engine has already cleared forces and applied user inputs.
         self.boundaries.sync_body_poses(state_in)
-        if advance_fluid:
-            self.boundary_forces.zero_()
-            self.fluid.step(state_in, state_out, None, None, dt if fluid_dt is None else fluid_dt)
-        else:
-            # MuJoCo advances rigid state only; carry the latest particles across
-            # its ping-pong States without changing PBF's own prediction buffers.
-            wp.copy(state_out.particle_q, state_in.particle_q)
-            wp.copy(state_out.particle_qd, state_in.particle_qd)
-        # Spread the fluid impulse over the rigid interval between updates.
-        # scale = fluid_dt / (rigid_steps_per_fluid_step * rigid_dt), so held
-        # force and torque integrate to the same impulse on the rigid clock.
-        # Keep the raw fluid feedback intact for the remaining rigid steps.
+        self.boundary_forces.zero_()
+        self.fluid.step(state_in, state_out, None, None, dt)
         wp.launch(add_boundary_forces, self.model.body_count,
-                  inputs=[self.boundary_forces, fluid_force_scale], outputs=[state_in.body_f],
-                  device=self.model.device)
+                  inputs=[self.boundary_forces], outputs=[state_in.body_f], device=self.model.device)
         self.rigid.step(state_in, state_out, control, contacts, dt, observables=observables)
         self.boundaries.sync_body_poses(state_out)
 

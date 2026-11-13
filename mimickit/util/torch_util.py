@@ -79,7 +79,7 @@ def quat_to_axis_angle(q):
     axis = q[..., qx:qw] / length.unsqueeze(-1)
 
     default_axis = torch.zeros_like(axis)
-    default_axis[..., -1].fill_(1)
+    default_axis[..., -1] = 1
     mask = length > eps
 
     angle = torch.where(mask, angle, torch.zeros_like(angle))
@@ -216,11 +216,11 @@ def matrix_to_exp_map(R):
 def quat_to_tan_norm(q):
     # type: (Tensor) -> Tensor
     ref_tan = torch.zeros_like(q[..., 0:3])
-    ref_tan[..., 0].fill_(1)
+    ref_tan[..., 0] = 1
     tan = quat_rotate(q, ref_tan)
     
     ref_norm = torch.zeros_like(q[..., 0:3])
-    ref_norm[..., -1].fill_(1)
+    ref_norm[..., -1] = 1
     norm = quat_rotate(q, ref_norm)
     
     norm_tan = torch.cat([tan, norm], dim=len(tan.shape) - 1)
@@ -254,7 +254,7 @@ def exp_map_to_axis_angle(exp_map):
     angle = normalize_angle(angle)
 
     default_axis = torch.zeros_like(exp_map)
-    default_axis[..., -1].fill_(1)
+    default_axis[..., -1] = 1
 
     mask = torch.abs(angle) > min_theta
     angle = torch.where(mask, angle, torch.zeros_like(angle))
@@ -321,7 +321,7 @@ def slerp(q0, q1, t):
 def calc_heading(q):
     # type: (Tensor) -> Tensor
     ref_dir = torch.zeros_like(q[..., 0:3])
-    ref_dir[..., 0].fill_(1)
+    ref_dir[..., 0] = 1
     rot_dir = quat_rotate(q, ref_dir)
 
     heading = torch.atan2(rot_dir[..., 1], rot_dir[..., 0])
@@ -332,7 +332,7 @@ def calc_heading_quat(q):
     # type: (Tensor) -> Tensor
     heading = calc_heading(q)
     axis = torch.zeros_like(q[..., 0:3])
-    axis[..., 2].fill_(1)
+    axis[..., 2] = 1
 
     heading_q = axis_angle_to_quat(axis, heading)
     return heading_q
@@ -342,7 +342,7 @@ def calc_heading_quat_inv(q):
     # type: (Tensor) -> Tensor
     heading = calc_heading(q)
     axis = torch.zeros_like(q[..., 0:3])
-    axis[..., 2].fill_(1)
+    axis[..., 2] = 1
 
     heading_q = axis_angle_to_quat(axis, -heading)
     return heading_q

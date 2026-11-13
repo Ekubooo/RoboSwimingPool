@@ -24,30 +24,24 @@ def sample_sdf(volume: wp.uint64, points: wp.array(dtype=wp.vec3), distances: wp
     distances[i] = wp.volume_sample_f(volume, index, wp.Volume.LINEAR)
 
 
-def runtime_config(control_dt, substeps, *, pressure_iterations=None, time_scale=1.0):
-    """Keep physical scalars; use the play scene's Z-up particle layout."""
+def runtime_config(control_dt, substeps):
+    """Keep physical scalars; express the authored Y-up scene in the Z-up world."""
     original = pbf_helper.PBFConfig()
     transform = assets.SCENE_TRANSFORM
-    return replace(original, frame_dt=control_dt * time_scale, substeps=substeps,
-                   pressure_iterations=(original.pressure_iterations if pressure_iterations is None
-                                        else pressure_iterations),
+    endpoints = np.array([original.block_start, original.block_end]) @ transform[:3, :3].T + transform[:3, 3]
+    return replace(original, frame_dt=control_dt, substeps=substeps,
                    gravity=tuple(transform[:3, :3] @ original.gravity),
                    container_size=tuple(np.abs(transform[:3, :3]) @ original.container_size),
-                   block_start=assets.FLUID_BLOCK_START, block_end=assets.FLUID_BLOCK_END,
+                   block_start=tuple(endpoints.min(axis=0)), block_end=tuple(endpoints.max(axis=0)),
                    initial_velocity=tuple(transform[:3, :3] @ original.initial_velocity))
 
 
 class PBFScene:
-    def __init__(self, directory, device, control_dt, substeps, *, fluid_substeps=None,
-                 pressure_iterations=None, fluid_time_scale=1.0):
+    def __init__(self, directory, device, control_dt, substeps):
         self.store = AssetStore(directory)
         self.directory = self.store.root
         self.device = device
-        self.control_dt = control_dt
-        self.physics_dt = control_dt / substeps
-        self.fluid_time_scale = fluid_time_scale
-        self.config = runtime_config(control_dt, substeps if fluid_substeps is None else fluid_substeps,
-                                     pressure_iterations=pressure_iterations, time_scale=fluid_time_scale)
+        self.config = runtime_config(control_dt, substeps)
         self.particles = SimpleNamespace(config=self.config)
         pbf_helper.init_scene_parameters(self.particles)
         self.primitive_files = assets.primitive_files(self.store)
@@ -166,11 +160,7 @@ class PBFScene:
                              initial_clearances=self.initial_clearances,
                              particle_radius=self.config.particle_radius,
                              support_radius=self.particles.smoothing_length,
-                             control_dt=self.control_dt, physics_dt=self.physics_dt,
-                             fluid_frame_dt=self.config.frame_dt, fluid_time_scale=self.fluid_time_scale,
-                             fluid_dt=self.config.frame_dt / self.config.substeps,
-                             fluid_substeps=self.config.substeps,
-                             pressure_iterations=self.config.pressure_iterations)
+                             control_dt=self.config.frame_dt, physics_dt=self.config.frame_dt / self.config.substeps)
         self.manifest["asset_validation"] = self.validation.to_dict()
         destination = self.store.path("scene_manifest.json")
         with self.store.staging(destination) as stage:

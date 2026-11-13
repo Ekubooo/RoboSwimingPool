@@ -21,25 +21,10 @@ class PBFViewer(newton.viewer.ViewerGL):
     _cube_mesh = "/pbf/particle_cube"
     _cube_instances = "/model/particles"
 
-    def __init__(self, *args, **kwargs):
-        interop = self.CudaInterop
-        kwargs.setdefault("enable_cuda_interop", interop.DYNAMIC_MESH | interop.INSTANCES
-                          | interop.POINTS | interop.LINES)
-        super().__init__(*args, **kwargs)
-
-    def _clear_particle_buffers(self):
-        for name in ("_particle_transforms", "_particle_scales", "_particle_colors", "_particle_materials"):
-            if hasattr(self, name):
-                delattr(self, name)
-        self._particle_appearance_dirty = True
-
-    def clear_model(self):
-        super().clear_model()
-        self._clear_particle_buffers()
-
     def _log_particles(self, state):
-        n = self.model.particle_count
-        hidden = not n or not self.show_particles or self._layer_force_hidden()
+        if not self.model.particle_count:
+            return
+        hidden = not self.show_particles or self._layer_force_hidden()
         if hidden:
             if hasattr(self, "_particle_transforms"):
                 self.log_instances(self._cube_instances, self._cube_mesh,
@@ -53,29 +38,22 @@ class PBFViewer(newton.viewer.ViewerGL):
             indices = wp.array(np.arange(len(points)), dtype=wp.int32, device=self.device)
             normals = wp.array(np.repeat(mesh.face_normals, 3, axis=0), dtype=wp.vec3, device=self.device)
             self.log_mesh(self._cube_mesh, points, indices, normals=normals, hidden=True)
-        if not hasattr(self, "_particle_transforms") or len(self._particle_transforms) != n:
+            n = self.model.particle_count
             self._particle_transforms = wp.empty(n, dtype=wp.transform, device=self.device)
             self._particle_scales = wp.empty(n, dtype=wp.vec3, device=self.device)
             self._particle_colors = wp.full(n, wp.vec3(.7, .6, .4), dtype=wp.vec3, device=self.device)
             self._particle_materials = wp.full(n, wp.vec4(.5, 0., 0., 0.), dtype=wp.vec4, device=self.device)
-            self._particle_appearance_dirty = True
         points = self._apply_layer_transform_to_points(state.particle_q)
         wp.launch(particle_cubes, self.model.particle_count, inputs=[points, self.model.particle_radius],
                   outputs=[self._particle_transforms, self._particle_scales], device=self.device)
         self.log_instances(self._cube_instances, self._cube_mesh, self._particle_transforms,
-                           self._particle_scales,
-                           self._particle_colors if self._particle_appearance_dirty else None,
-                           self._particle_materials if self._particle_appearance_dirty else None)
-        self._particle_appearance_dirty = False
+                           self._particle_scales, self._particle_colors, self._particle_materials)
 
     def close(self):
-        if getattr(self, "_pbf_closed", False):
-            return
-        self._pbf_closed = True
-        try:
-            super().close()
-        finally:
-            self._clear_particle_buffers()
+        super().close()
+        for name in ("_particle_transforms", "_particle_scales", "_particle_colors", "_particle_materials"):
+            if hasattr(self, name):
+                delattr(self, name)
 
 
 class PBFVideoRecorder(NewtonVideoRecorder):

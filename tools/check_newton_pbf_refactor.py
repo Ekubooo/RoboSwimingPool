@@ -52,9 +52,6 @@ def snapshot(args):
         env_config = yaml.safe_load(f)
     config["enable_cuda_graph"] = args.graph
     config["sim_freq"] = config["control_freq"] * args.substeps
-    # This regression compares the original 1:1 fluid/rigid stepping contract.
-    config["pbf_substeps"] = args.substeps
-    config["pbf_time_scale"] = 1.0
     OUTPUT.mkdir(parents=True, exist_ok=True)
     name = args.name or f"{args.revision}_g{int(args.graph)}_s{args.substeps}"
     env = resources.construct(PBFPlayEnv, env_config, config, 1, "cuda:0", False)

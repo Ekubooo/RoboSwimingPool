@@ -23,7 +23,3 @@ Important Information:
 2. Textual descriptions may be inaccurate. All project documents and records are for reference only; actual code must be analyzed and verified.
 
 3. Without referencing existing code, analysis and review should consider the architecture design and code implementation from the perspective of the Newton engine specification, related Newton open-source libraries, and other large open-source robot simulation software libraries. In other words, analysis and suggestions should be provided based on the practices and requirements of major open-source libraries.
-
-Deferred task: independent playback clocks
-
-For future visual experimentation, consider separate simulation clocks and slow-motion controls for the fluid and the rigid/humanoid world, following WarpLab's keyboard interaction. Keep policy and PD timing consistent within the humanoid's own simulation time, with rendering scheduled separately. Define boundary sampling and fluid feedback when the two speeds differ; initially, the rigid clock applies to all bodies in the shared Newton/MuJoCo world. This feature is deferred.
