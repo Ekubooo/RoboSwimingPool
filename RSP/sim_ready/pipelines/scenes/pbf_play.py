@@ -22,11 +22,11 @@ from ..boundary.prepare import prepare_boundary_asset
 
 
 POOL_SIZE = np.array([3.0, 2.0, 5.0])
-# Z-up regular lattice: 99 x 79 x 25 particles at the original 0.025 m spacing.
-# The block may intersect the fixed bunny; the x > 2.5 strip starts dry.
-FLUID_BLOCK_START = (0.0, 0.0, 0.0)
-FLUID_BLOCK_END = (2.5, 2.0, 0.65)
-WALL_THICKNESS = 0.1
+# Z-up regular lattice: 79 x 75 x 33 particles at the original 0.025 m spacing.
+# The block may intersect the fixed bunny; the x < 1.0 strip starts dry.
+FLUID_BLOCK_START = (1.0, 0.05, 0.0)
+FLUID_BLOCK_END = (3.0, 1.95, 0.85)
+WALL_THICKNESS = 0.25
 Y_TO_Z = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
 SCENE_TRANSFORM = np.eye(4)
 SCENE_TRANSFORM[:3, :3] = Y_TO_Z

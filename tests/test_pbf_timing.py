@@ -31,17 +31,22 @@ class TimingContracts(unittest.TestCase):
         runtime = SimulationRuntime(self.config, 1, "cuda:0")
         self.assertEqual(runtime._fluid_steps, 8)
         self.assertEqual(runtime.fluid_timestep, runtime.sim_timestep)
+        self.assertEqual(runtime._fluid_time_scale, 1.0)
         for invalid in (0, -1, 3, 16, 2.5, True, None):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "pbf_substeps"):
                 SimulationRuntime(self.config | {"pbf_substeps": invalid}, 1, "cuda:0")
+        for invalid in (0, -1, float("nan"), float("inf"), True, None, "0.5"):
+            with self.subTest(scale=invalid), self.assertRaisesRegex(ValueError, "pbf_time_scale"):
+                SimulationRuntime(self.config | {"pbf_time_scale": invalid}, 1, "cuda:0")
         for invalid in (0, -1, 1.5, True):
             with self.assertRaisesRegex(ValueError, "pressure_iterations"):
                 runtime_config(1 / 30, 2, pressure_iterations=invalid)
 
     def test_runtime_schedule_preserves_rigid_control(self):
-        for steps in (1, 2, 4, 8):
-            with self.subTest(fluid_steps=steps):
-                runtime = SimulationRuntime(self.config | {"pbf_substeps": steps}, 1, "cuda:0")
+        for steps, scale in ((steps, scale) for steps in (1, 2, 4, 8) for scale in (.5, 1., 2.)):
+            with self.subTest(fluid_steps=steps, scale=scale):
+                runtime = SimulationRuntime(self.config | {"pbf_substeps": steps, "pbf_time_scale": scale},
+                                            1, "cuda:0")
                 a, b, control, contacts, observables = (object() for _ in range(5))
                 runtime._state = SimpleNamespace(raw_state=a, swap_state=b)
                 runtime._control = SimpleNamespace(controls=SimpleNamespace(control=control))
@@ -58,10 +63,26 @@ class TimingContracts(unittest.TestCase):
                     self.assertEqual(call.args, ((a, b) if i % 2 == 0 else (b, a)) +
                                      (control, contacts, 1 / 240))
                     self.assertEqual(call.kwargs["advance_fluid"], i % (8 // steps) == 0)
-                    self.assertEqual(call.kwargs["fluid_dt"], 1 / (30 * steps))
+                    self.assertEqual(call.kwargs["fluid_dt"], scale / (30 * steps))
+                    self.assertEqual(call.kwargs["fluid_force_scale"], scale)
                     self.assertIs(call.kwargs["observables"], observables if i == 7 else None)
                 self.assertEqual(sum(c.kwargs["advance_fluid"] for c in calls), steps)
-                self.assertAlmostEqual(steps * runtime.fluid_timestep, 8 * runtime.sim_timestep)
+                self.assertAlmostEqual(steps * runtime.fluid_timestep, 8 * runtime.sim_timestep * scale)
+
+    def test_independent_clocks_and_reset(self):
+        runtime = SimulationRuntime(self.config | {"pbf_substeps": 2, "pbf_time_scale": .5}, 1, "cuda:0")
+        runtime._state = SimpleNamespace(raw_state=object())
+        runtime._contacts, runtime._observables = object(), object()
+        runtime._ground_contact_sensor = Mock()
+        self.assertEqual(runtime.fluid_timestep, 1 / 120)
+        for frame in range(1, 901):
+            runtime.finish_step()
+            self.assertAlmostEqual(runtime.get_sim_time(), frame / 30)
+            self.assertAlmostEqual(runtime.get_fluid_time(), frame / 60)
+        self.assertEqual(runtime._fluid_step_count, 1800)
+        runtime.reset_clock()
+        self.assertEqual(runtime.get_sim_time(), 0.)
+        self.assertEqual(runtime.get_fluid_time(), 0.)
 
     def test_graph_uses_fluid_parity_and_rigid_counter(self):
         for steps in (1, 2, 4):
@@ -88,6 +109,11 @@ class TimingContracts(unittest.TestCase):
                         self.assertEqual(solver.rigid._step, 10 + frame * 8)
 
     def test_held_force_impulse_and_gpu_particle_continuity(self):
+        for scale in (1., .5, 2.):
+            with self.subTest(scale=scale):
+                self._check_held_force(scale)
+
+    def _check_held_force(self, scale):
         device = "cuda:0"
         def state():
             return SimpleNamespace(particle_q=wp.zeros(3, dtype=wp.vec3, device=device),
@@ -110,32 +136,38 @@ class TimingContracts(unittest.TestCase):
         def rigid_step(state_in, state_out, control, contacts, dt, **kwargs):
             # Each step also starts with an independent external body force.
             actual = state_in.body_f.numpy() - 7.
-            np.testing.assert_array_equal(actual, force * len(updates))
+            np.testing.assert_array_equal(actual, force * len(updates) * scale)
             impulses.append(actual * dt)
 
         solver.fluid.step.side_effect = fluid_step
         solver.rigid.step.side_effect = rigid_step
         for i in range(8):
             a.body_f.fill_(wp.spatial_vector(7., 7., 7., 7., 7., 7.))
+            kwargs = {} if scale == 1. else {"fluid_force_scale": scale}
             coupling.SolverPBFMuJoCo.step(solver, a, b, None, None, 1 / 240,
-                                         advance_fluid=i % 4 == 0, fluid_dt=1 / 60)
+                                         advance_fluid=i % 4 == 0, fluid_dt=scale / 60, **kwargs)
             a, b = b, a
+            np.testing.assert_array_equal(forces.numpy(), force * len(updates))
             np.testing.assert_array_equal(a.particle_q.numpy(), 1. if i < 4 else 2.)
             np.testing.assert_array_equal(a.particle_qd.numpy(), 11. if i < 4 else 12.)
-        self.assertEqual(updates, [1 / 60, 1 / 60])
-        np.testing.assert_allclose(np.sum(impulses, axis=0), force * 3 / 60, rtol=1e-6)
+        self.assertEqual(updates, [scale / 60, scale / 60])
+        np.testing.assert_allclose(np.sum(impulses, axis=0), force * 3 * scale / 60, rtol=1e-6)
 
     def test_scene_lattice_preserves_particle_count(self):
         config = runtime_config(1 / 30, 2)
         particles = SimpleNamespace(config=config)
         pbf_helper.init_scene_parameters(particles)
         self.assertEqual(particles.n, 195525)
-        self.assertEqual(tuple(particles.block_counts), (99, 79, 25))
-        np.testing.assert_allclose(np.array(config.block_start) + particles.particle_spacing, .025)
+        self.assertEqual(tuple(particles.block_counts), (79, 75, 33))
+        np.testing.assert_allclose(np.array(config.block_start) + particles.particle_spacing,
+                                   (1.025, .075, .025))
         np.testing.assert_allclose(np.array(config.block_start) +
                                    np.array(particles.block_counts) * particles.particle_spacing,
-                                   (2.475, 1.975, .625))
+                                   (2.975, 1.925, .825))
         self.assertEqual(config.pressure_iterations, 3)
+        self.assertEqual(config.frame_dt, 1 / 30)
+        slowed = runtime_config(1 / 30, 2, time_scale=.5)
+        self.assertEqual(slowed.frame_dt / slowed.substeps, 1 / 120)
 
 
 class StandingReset(unittest.TestCase):

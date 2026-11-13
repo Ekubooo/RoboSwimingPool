@@ -7,9 +7,10 @@ from .PBF import PBF
 
 @wp.kernel
 def add_boundary_forces(forces: wp.array(dtype=wp.spatial_vector),
+                        time_scale: float,
                         body_f: wp.array(dtype=wp.spatial_vector)):
     index = wp.tid()
-    body_f[index] += forces[index]
+    body_f[index] += forces[index] * time_scale
 
 
 class CoupledStepGraph:
@@ -79,7 +80,7 @@ class SolverPBFMuJoCo(newton.solvers.SolverBase):
         return CoupledStepGraph(self, step, substeps, fluid_substeps=fluid_substeps)
 
     def step(self, state_in, state_out, control, contacts, dt, *, observables=None,
-             advance_fluid=True, fluid_dt=None):
+             advance_fluid=True, fluid_dt=None, fluid_force_scale=1.0):
         # The engine has already cleared forces and applied user inputs.
         self.boundaries.sync_body_poses(state_in)
         if advance_fluid:
@@ -90,10 +91,13 @@ class SolverPBFMuJoCo(newton.solvers.SolverBase):
             # its ping-pong States without changing PBF's own prediction buffers.
             wp.copy(state_out.particle_q, state_in.particle_q)
             wp.copy(state_out.particle_qd, state_in.particle_qd)
-        # Hold the pressure force (not an impulse) until the next fluid update.
-        # Summing F * rigid_dt over the group then gives F * fluid_dt.
+        # Spread the fluid impulse over the rigid interval between updates.
+        # scale = fluid_dt / (rigid_steps_per_fluid_step * rigid_dt), so held
+        # force and torque integrate to the same impulse on the rigid clock.
+        # Keep the raw fluid feedback intact for the remaining rigid steps.
         wp.launch(add_boundary_forces, self.model.body_count,
-                  inputs=[self.boundary_forces], outputs=[state_in.body_f], device=self.model.device)
+                  inputs=[self.boundary_forces, fluid_force_scale], outputs=[state_in.body_f],
+                  device=self.model.device)
         self.rigid.step(state_in, state_out, control, contacts, dt, observables=observables)
         self.boundaries.sync_body_poses(state_out)
 

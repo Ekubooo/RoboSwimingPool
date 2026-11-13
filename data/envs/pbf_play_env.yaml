@@ -13,7 +13,7 @@ num_disc_obs_steps: 10
 rand_reset: true
 visualize_ref_char: false
 ref_char_offset: [2.0, 0.0, 0.0]
-init_pose: [2.75, 1.0, 0.882416, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.5708, 0, 0, 0, -1.5708, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+init_pose: [0.5, 1.0, 0.882416, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.5708, 0, 0, 0, -1.5708, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 play_init_mode: standing
 enable_early_termination: false
 key_bodies: [head, right_hand, left_hand, right_foot, left_foot]
