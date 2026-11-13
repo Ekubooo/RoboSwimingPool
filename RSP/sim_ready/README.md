@@ -75,11 +75,15 @@ RSP/sim_ready/
 ├── config.py                         shared parameter constraints
 ├── paths.py                          source locations and output rules
 ├── lib/
+│   ├── asset_validation.py           plain-data checks, descriptions, diagnostics
 │   ├── mesh/                         geometry, validation, convex algorithms
+│   │   └── shapes.py                 collision shapes → body-local solid meshes
 │   ├── volume/                       SDF baking and volume-map quadrature
 │   └── storage/                      OBJ/NVDB/hull IO, fingerprints,
 │                                     rollback publication, AssetStore
+├── adapters/newton.py                public importer/finalize reuse and model extraction
 └── pipelines/
+    ├── articulation.py               all-link checks, coverage, boundary preparation
     ├── collision.py                  convex recipe, cache reuse and preparation
     ├── rigid.py                      primitive/rigid asset preparation
     ├── container.py                  terrain/container placement and preparation
@@ -113,7 +117,13 @@ PBFScene creates AssetStore
     → pipelines.boundary.prepare.prepare_boundary_asset(..., store=store)
     → pipelines.collision.prepare_hulls(mesh, name, store)
   → Newton model assembly with the existing native collision shapes
-  → actual body geometry → dynamic boundary preparation with the same store
+    → adapters.newton: import + default finalize validation/correction + public DFS check
+    → plain physical descriptions + separate runtime body-ID bindings
+    → MimicKit skeleton/DOF compatibility checks before SimState and CUDA Graph creation
+  → pipelines.articulation.prepare_articulated_asset
+    → check every selected link before baking any link in that asset
+    → lib.mesh.shapes → existing solid validation / Boolean union
+    → pipelines.boundary.prepare with the same store and cache recipe
   → solvers.pbf.boundary_model.load_boundaries
     → pipelines.boundary.load.load_boundary_asset(artifact, runtime requirements)
   → body binding, independent instance transforms, pose sync and initialization
@@ -131,6 +141,58 @@ device and provenance, and returns a `BoundaryArtifact` manifest reference.
 and a visual mesh reference. It never writes or imports build algorithms, and
 does not require the visual OBJ to exist. Runtime body IDs and placements belong
 to the separate `scene_manifest.json`, not shared cache identities.
+
+## Physical asset validation
+
+`lib.asset_validation` only takes ordinary data/NumPy arrays. It has no dependency
+on Newton, MimicKit, an environment or an agent. Its report distinguishes `pass`,
+`warning`, `error`, `unsupported` and `not_checked`. Errors retain their underlying
+exception and body/shape context. It checks explicit units/up-axis/scale, names,
+finite values, dimensions, local transforms, coverage and consumer mappings.
+
+`adapters.newton.import_physical_asset` uses the existing MJCF/URDF importer options.
+`finalize_model` calls Newton's default `finalize()` and public
+`validate_joint_ordering()`; it records warnings and inertia changes without
+changing Newton's correction method. Source resource resolution and physical
+structure validation remain with Newton. `describe_articulations(model)` copies
+the actual `COLLIDE_SHAPES` geometry into local descriptions; runtime body IDs
+are returned separately. Visual-only geometry is never substituted.
+The current MimicKit backend requires one articulation per imported object and
+one joint per body in matching order; incompatible valid Newton models are
+reported as unsupported for this consumer before runtime state construction.
+
+`prepare_articulated_asset(asset, *, store, bake_options, support_radius,
+quadrature_points=16, device="cuda:0", excluded_links=())` returns dictionaries of
+boundary references and local meshes keyed by asset-local body index, plus the
+report. It accepts ordinary rigid bodies as one-link assets too. Sphere, box and
+capsule tessellation/transform order is unchanged. Triangle meshes, convex meshes
+and 32-section cylinders are supported. Mesh scale is applied once; nonuniform
+and mirrored scales work, zero scale is rejected and winding follows reflection.
+Imported solids reuse exact welding/validation and Manifold union; there is no
+hole repair, reorientation or automatic proxy. Rounded barrel cylinders and
+other unsupported geometry produce explicit diagnostics.
+
+Missing native collision geometry fails by default. Auxiliary bodies must be
+named in `excluded_links`; the demo exposes this as `pbf_excluded_links` in its
+environment config. Exclusions remain visible in the run report. Each asset's
+entire geometry is checked before its first boundary is baked. Static container
+and bunny checks and rigid results are included in the scene report, published
+only after successful loading/binding/sign checks. A failed preparation keeps
+the previous successful scene manifest.
+
+`PBFPlayEnv` supplies its already-loaded skeleton as `SkeletonDescription`.
+Checks compare body counts/order/names, parents, joint types and DOF segments.
+Floating-root coordinates and quaternion ball joints are handled separately
+from MimicKit's non-root scalar/exp-map DOFs. Only selected controlled DOFs and
+current control-mode restrictions are checked; passive/fixed joints do not need
+motors. Motion data, policies and observations remain MimicKit's responsibility.
+This is basic simulation-asset validation, not a self-intersection proof, automatic
+rigging/physicalization or a guarantee that an existing policy fits a new robot.
+
+The existing G1 MJCF passes structure/skeleton checks. Some G1 collision meshes
+are open, nonmanifold or contain duplicate/collapsed triangles and are deliberately
+rejected with link/shape names; valid limbs can be prepared independently.
+No SimReady Foundation, Isaac Sim or new dependency is needed.
 
 ## Cache contracts
 
@@ -160,6 +222,8 @@ From the repository root in the WarpSim CUDA environment:
 conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_asset_pipeline.py -v
 conda run -n WarpSim python -m unittest discover -s tests -p test_pbf_boundary_assets.py -v
 conda run -n WarpSim python -m unittest discover -s tests -p test_newton_pbf_refactor.py -v
+conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_asset_validation.py -v
+conda run -n WarpSim python -m unittest discover -s tests -p test_articulated_asset_pipeline.py -v
 ```
 
 Asset fixtures and their compilation caches live under `data/assets_RSP/tests`.

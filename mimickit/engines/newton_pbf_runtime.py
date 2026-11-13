@@ -9,6 +9,11 @@ import warp as wp
 
 from RSP.sim_ready.pipelines.scenes import pbf_play as assets
 from RSP.sim_ready.lib.storage.store import AssetStore
+from RSP.sim_ready.lib.asset_validation import (ValidationReport, diagnostic_scope,
+    validate_physical_asset, validate_skeleton)
+from RSP.sim_ready.adapters.newton import describe_articulations, validate_model_for_mimickit
+from RSP.sim_ready.pipelines.articulation import prepare_articulated_asset
+from RSP.sim_ready.config import BakeOptions
 from solvers.pbf import boundary_model, pbf_helper
 
 
@@ -42,10 +47,35 @@ class PBFScene:
         self.primitive_files = assets.primitive_files(self.store)
         self.body_meshes = {}
         self.boundaries = None
+        self.validation = ValidationReport()
+        self._skeletons = {}
+        self._excluded_links = {}
+        self._validated_model = None
+
+    def register_character(self, obj_id, skeleton, excluded_links=()):
+        self._skeletons[obj_id] = skeleton
+        self._excluded_links[obj_id] = tuple(excluded_links)
+
+    def validate_model(self, model):
+        if self._validated_model is model:
+            return
+        with diagnostic_scope(self.validation, "newton.describe", "scene"):
+            bindings = describe_articulations(model)
+        self.validation.extend(validate_model_for_mimickit(model, bindings))
+        for obj_id, binding in enumerate(bindings):
+            self.validation.extend(validate_physical_asset(binding.asset, self._excluded_links.get(obj_id, ())))
+            if obj_id in self._skeletons:
+                self.validation.extend(validate_skeleton(binding.asset, self._skeletons[obj_id]))
+        if set(self._skeletons) - set(range(len(bindings))):
+            self.validation.add("error", "skeleton.object", "scene", "Registered character has no physical articulation")
+        self.validation.require_valid()
+        self._bindings = bindings
+        self._validated_model = model
 
     def add_static(self, builder):
-        self.static_path, self.bunny, hulls = assets.prepare_static(
-            self.store, self.device, self.particles.smoothing_length)
+        with diagnostic_scope(self.validation, "static.prepare", "pool and bunny"):
+            self.static_path, self.bunny, hulls = assets.prepare_static(
+                self.store, self.device, self.particles.smoothing_length, report=self.validation)
         self.initial_clearances = self._validate_initial_layout()
         assets.add_static_collisions(builder, self.bunny, hulls)
         self.static_hull_count = len(hulls)
@@ -77,21 +107,37 @@ class PBFScene:
                               mass=[mass] * n, radius=[self.config.particle_radius] * n)
 
     def bind_model(self, model, body_ids):
+        self.validate_model(model)
         self.particles.model = model
         centers = model.body_com.numpy()
         masses = model.body_mass.numpy()
         paths, mapped_ids, entries = [], [], []
-        for body_id, mesh, checked in assets.body_meshes(model, body_ids):
-            path = assets.prepare_boundary(mesh, checked, self.store, self.device,
-                                            support_radius=self.particles.smoothing_length,
-                                            provenance={"source_kind": "newton_collision_geometry"})
-            self.body_meshes[body_id] = mesh
-            mapped_ids.append(body_id)
-            paths.append(path)
-            entries.append(dict(body_id=body_id, label=model.body_label[body_id],
-                                asset=str(path), local_transform=[0, 0, 0, 0, 0, 0, 1],
-                                center_of_mass=centers[body_id].tolist(), mass=float(masses[body_id]),
-                                bounds=mesh.bounds.tolist()))
+        selected = set(body_ids)
+        known = {i for binding in self._bindings for i in binding.body_ids}
+        if len(selected) != len(body_ids) or selected - known:
+            self.validation.add("error", "binding.bodies", "scene", "Duplicate or unknown runtime body IDs")
+        for binding in self._bindings:
+            if selected.intersection(binding.body_ids) and not set(binding.body_ids) <= selected:
+                self.validation.add("error", "binding.partial", binding.asset.name, "Select an entire asset; exclude links explicitly")
+        self.validation.require_valid()
+        for obj_id, binding in enumerate(self._bindings):
+            if not selected.intersection(binding.body_ids):
+                continue
+            prepared = prepare_articulated_asset(binding.asset, store=self.store, device=self.device,
+                bake_options=BakeOptions(voxel_size=.005, max_support_radius=self.particles.smoothing_length),
+                support_radius=self.particles.smoothing_length,
+                excluded_links=self._excluded_links.get(obj_id, ()))
+            self.validation.extend(prepared.report)
+            for local_id, path in prepared.boundaries.items():
+                body_id = binding.body_ids[local_id]
+                mesh = prepared.meshes[local_id]
+                self.body_meshes[body_id] = mesh
+                mapped_ids.append(body_id)
+                paths.append(path)
+                entries.append(dict(body_id=body_id, label=model.body_label[body_id],
+                                    asset=str(path), local_transform=[0, 0, 0, 0, 0, 0, 1],
+                                    center_of_mass=centers[body_id].tolist(), mass=float(masses[body_id]),
+                                    bounds=mesh.bounds.tolist()))
         self.boundaries = boundary_model.load_boundaries(
             self.static_path, paths,
             boundary_model.BoundaryLoadOptions(self.particles.smoothing_length, self.device))
@@ -115,8 +161,12 @@ class PBFScene:
                              particle_radius=self.config.particle_radius,
                              support_radius=self.particles.smoothing_length,
                              control_dt=self.config.frame_dt, physics_dt=self.config.frame_dt / self.config.substeps)
-        self.store.path("scene_manifest.json").write_text(
-            json.dumps(self.manifest, indent=2) + "\n", encoding="utf-8")
+        self.manifest["asset_validation"] = self.validation.to_dict()
+        destination = self.store.path("scene_manifest.json")
+        with self.store.staging(destination) as stage:
+            source = stage / "scene_manifest.json"
+            source.write_text(json.dumps(self.manifest, indent=2) + "\n", encoding="utf-8")
+            self.store.publish([(source, destination)])
         return self.boundaries
 
     def initialize_particles(self, *states):

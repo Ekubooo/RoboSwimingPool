@@ -14,6 +14,7 @@ import warp as wp
 from ...lib.mesh import geometry, validation
 from ...lib.storage.fingerprints import file_digest
 from ...lib.storage.store import AssetStore
+from ...lib.asset_validation import ValidationReport, check_source
 from ...paths import ORIGIN_ROOT
 from .. import collision
 from ...config import BakeOptions
@@ -118,8 +119,11 @@ def prepare_boundary(mesh, checked, store, device, *, support_radius, container=
                                   support_radius=support_radius, container=container, provenance=provenance)
 
 
-def prepare_static(store: AssetStore, device, support_radius):
+def prepare_static(store: AssetStore, device, support_radius, *, report=None):
+    report = ValidationReport() if report is None else report
+    check_source(ORIGIN_ROOT / "bunny_flat_bottom.obj", {".obj"}, report)
     mesh, checked, bunny, provenance = static_geometry()
+    report.add("pass", "static.conventions", "pool and bunny", provenance)
     path = prepare_boundary(mesh, checked, store, device,
                             support_radius=support_radius, container=True, provenance=provenance)
     hulls = collision.prepare_hulls(bunny, "suspended_bunny", store)
@@ -152,37 +156,3 @@ def add_static_collisions(builder, bunny, hulls):
     shape = newton.Mesh(np.asarray(bunny.vertices, dtype=np.float32),
                         np.asarray(bunny.faces, dtype=np.int32).reshape(-1), compute_inertia=False)
     builder.add_shape_mesh(-1, mesh=shape, cfg=visible, label="pool_bunny")
-
-
-def body_meshes(model, body_ids):
-    """Bake actual native collision shapes in each Newton body's local frame."""
-    import newton
-    body = model.shape_body.numpy()
-    kind = model.shape_type.numpy()
-    size = model.shape_scale.numpy()
-    transforms = model.shape_transform.numpy()
-    flags = model.shape_flags.numpy()
-    for body_id in body_ids:
-        parts = []
-        for index in np.flatnonzero(body == body_id):
-            if not flags[index] & int(newton.ShapeFlags.COLLIDE_SHAPES):
-                continue
-            shape_type = int(kind[index])
-            if shape_type == int(newton.GeoType.SPHERE):
-                mesh = trimesh.creation.icosphere(subdivisions=3, radius=float(size[index, 0]))
-            elif shape_type == int(newton.GeoType.BOX):
-                mesh = trimesh.creation.box(extents=2 * size[index])
-            elif shape_type == int(newton.GeoType.CAPSULE):
-                mesh = trimesh.creation.capsule(radius=float(size[index, 0]),
-                                                height=float(2 * size[index, 1]))
-            else:
-                raise ValueError(f"Unsupported play-scene body geometry: {model.shape_label[index]} ({shape_type})")
-            pose = transforms[index]
-            matrix = trimesh.transformations.quaternion_matrix([pose[6], pose[3], pose[4], pose[5]])
-            matrix[:3, 3] = pose[:3]
-            mesh.apply_transform(matrix)
-            parts.append(mesh)
-        if not parts:
-            continue
-        mesh = geometry.union(parts) if len(parts) > 1 else parts[0]
-        yield int(body_id), mesh, validation.validate_solid(mesh)

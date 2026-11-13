@@ -616,7 +616,10 @@ class SceneBuilder:
         for i in range(len(self.builder.shape_flags)):
             self.builder.shape_flags[i] &= ~newton.ShapeFlags.COLLIDE_PARTICLES
         Logger.print("Initializing simulation...")
-        return self.builder.finalize(device=self.device, requires_grad=False)
+        from RSP.sim_ready.adapters.newton import finalize_model
+        model = finalize_model(self.builder, device=self.device, report=self.play_scene.validation)
+        self.play_scene.validate_model(model)
+        return model
 
     def bind_boundaries(self, model, state):
         body_ids = [body_id for obj_id, visual in enumerate(self.visual[0])
@@ -723,27 +726,14 @@ class SceneBuilder:
         else:
             obj_builder = self._create_model_builder()
 
-            _, asset_ext = os.path.splitext(asset_file)
-            if (asset_ext == ".xml"):
-                obj_builder.add_mjcf(
-                    asset_file,
-                    floating=not fix_root,
-                    ignore_inertial_definitions=False,
-                    collapse_fixed_joints=False,
-                    enable_self_collisions=enable_self_collisions,
-                    convert_3d_hinge_to_ball_joints=True
-                )
-            elif (asset_ext == ".urdf"):
-                obj_builder.add_urdf(
-                    asset_file,
-                    floating=not fix_root,
-                    ignore_inertial_definitions=False,
-                    collapse_fixed_joints=False,
-                    enable_self_collisions=enable_self_collisions,
-                    joint_ordering="dfs"
-                )
-            else:
-                assert(False), "Unsupported asset format: {:s}".format(asset_ext)
+            from RSP.sim_ready.adapters.newton import import_physical_asset
+            import_physical_asset(obj_builder, asset_file, fix_root=fix_root,
+                                  enable_self_collisions=enable_self_collisions,
+                                  report=self.play_scene.validation)
+            if obj_builder.articulation_count != 1:
+                self.play_scene.validation.add("unsupported", "consumer.articulation_count", asset_file,
+                    f"MimicKit requires one articulation per object; imported {obj_builder.articulation_count}")
+                self.play_scene.validation.require_valid()
 
             if (is_visual):
                 for i in range(len(obj_builder.shape_flags)):

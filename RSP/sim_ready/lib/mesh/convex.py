@@ -34,13 +34,22 @@ def decompose_convex(mesh):
     return tuple(hulls)
 
 
+def validate_convex_mesh(mesh):
+    """Generic convex solid validity without CoACD output-budget restrictions."""
+    if not np.isfinite(mesh.vertices).all() or not mesh.is_volume or not mesh.is_convex:
+        raise ValueError("Invalid convex solid")
+
+
 def validate_hulls(hulls):
     if not hulls or len(hulls) > COACD_OPTIONS["max_convex_hull"]:
         raise ValueError("CoACD must produce between one and 32 convex solids")
     for hull in hulls:
-        if (len(hull.vertices) > COACD_OPTIONS["max_ch_vertex"]
-                or not np.isfinite(hull.vertices).all() or not hull.is_volume or not hull.is_convex):
+        if len(hull.vertices) > COACD_OPTIONS["max_ch_vertex"]:
             raise ValueError("CoACD produced an invalid convex solid")
+        try:
+            validate_convex_mesh(hull)
+        except ValueError:
+            raise ValueError("CoACD produced an invalid convex solid") from None
 
 
 def measure_hull_error(mesh, hulls):

@@ -6,6 +6,7 @@ from engines.engine import ObjType
 from envs.smp_env import SMPEnv
 from envs.task_dodgeball_env import compute_dodgeball_observations
 from RSP.sim_ready.pipelines.scenes.pbf_play import RIGIDS
+from RSP.sim_ready.lib.asset_validation import SkeletonDescription
 from util.camera import Camera, CameraMode
 
 
@@ -24,6 +25,24 @@ class PBFPlayEnv(SMPEnv):
                 env_id, ObjType.rigid, path, spec.name, start_pos=np.array(spec.center),
                 color=np.array(spec.color))
             self._scene_obj_ids.append(obj_id)
+
+    def _build_character(self, env_id, env_config, color=None):
+        obj_id = super()._build_character(env_id, env_config, color)
+        kin = self._kin_char_model
+        n = kin.get_num_joints()
+        kinds = {"HINGE": "REVOLUTE", "SPHERICAL": "BALL", "FIXED": "FIXED"}
+        mode = self._engine.get_control_mode().name
+        skeleton = SkeletonDescription(
+            tuple(kin.get_body_names()), tuple(int(kin.get_parent_id(i)) for i in range(n)),
+            ("ROOT",) + tuple(kinds.get(kin.get_joint(i).joint_type.name, kin.get_joint(i).joint_type.name)
+                              for i in range(1, n)),
+            (0,) + tuple(kin.get_joint_dof_idx(i) for i in range(1, n)),
+            (0,) + tuple(kin.get_joint_dof_dim(i) for i in range(1, n)),
+            tuple(range(kin.get_dof_size())) if mode != "none" else (), mode,
+            self._clip_position_targets_to_physical_limits)
+        self._engine.get_play_scene().register_character(
+            obj_id, skeleton, env_config.get("pbf_excluded_links", ()))
+        return obj_id
 
     def set_policy_use_scene_sphere(self, enabled):
         self.policy_use_scene_sphere = bool(enabled)
