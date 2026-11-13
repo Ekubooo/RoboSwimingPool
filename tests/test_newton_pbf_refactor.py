@@ -145,11 +145,13 @@ class BackendContracts(unittest.TestCase):
         self.assertIsInstance(eng, engine.Engine)
         self.assertFalse(eng._closed)
         self.assertEqual(eng._prev_frame_time, 0.)
+        self.assertTrue(eng._realtime)
         eng.close()
 
     def test_render_preserves_base_timing(self):
         eng = current.NewtonEngine.__new__(current.NewtonEngine)
         engine.Engine.__init__(eng, visualize=True)
+        eng._realtime = True
         eng._runtime = SimpleNamespace(timestep=.1, get_sim_time=Mock(return_value=.5))
         eng._state = SimpleNamespace(raw_state=object())
         eng._scene = SimpleNamespace(play_scene=SimpleNamespace(draw_pool=Mock()))
@@ -163,6 +165,20 @@ class BackendContracts(unittest.TestCase):
         sleep.assert_called_once()
         self.assertAlmostEqual(sleep.call_args.args[0], .05)
         self.assertEqual(eng._prev_frame_time, 10.05)
+
+    def test_uncapped_render_keeps_presentation(self):
+        eng = current.NewtonEngine.__new__(current.NewtonEngine)
+        engine.Engine.__init__(eng, visualize=True)
+        eng._realtime = False
+        eng._runtime = SimpleNamespace(get_sim_time=Mock(return_value=.5))
+        eng._state = SimpleNamespace(raw_state=object())
+        eng._scene = SimpleNamespace(play_scene=SimpleNamespace(draw_pool=Mock()))
+        eng._presentation = Mock(spec=current.Presentation)
+        with patch.object(engine.time, "sleep") as sleep:
+            eng.render()
+        sleep.assert_not_called()
+        eng._presentation.render.assert_called_once_with(
+            .5, eng._state.raw_state, eng._scene.play_scene.draw_pool)
 
     def test_state_and_control_modes(self):
         for with_ball in (False, True):

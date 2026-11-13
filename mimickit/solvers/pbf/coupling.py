@@ -21,9 +21,10 @@ class CoupledStepGraph:
     Capturing restores host state even on failure; replay commits it once.
     """
 
-    def __init__(self, solver, step, substeps):
+    def __init__(self, solver, step, substeps, *, fluid_substeps=None):
         self._solver = solver
         self._substeps = substeps
+        fluid_substeps = substeps if fluid_substeps is None else fluid_substeps
         self._graphs = {}
         fluid = solver.fluid
         for module in ("solvers.pbf.pbf_helper", "solvers.pbf.PBF",
@@ -33,7 +34,7 @@ class CoupledStepGraph:
         prediction = (fluid.pre_Pos, fluid.temp_pPos)
         rigid_step = solver.rigid._step
         # Odd numbers of PBF substeps alternate the starting buffer address.
-        starts = [prediction] if substeps % 2 == 0 else [prediction, prediction[::-1]]
+        starts = [prediction] if fluid_substeps % 2 == 0 else [prediction, prediction[::-1]]
         try:
             for buffers in starts:
                 fluid.pre_Pos, fluid.temp_pPos = buffers
@@ -73,15 +74,24 @@ class SolverPBFMuJoCo(newton.solvers.SolverBase):
     def observables(self, kinds, *, contacts=None, requires_grad=None):
         return self.rigid.observables(kinds, contacts=contacts, requires_grad=requires_grad)
 
-    def capture_step_graph(self, step, substeps):
+    def capture_step_graph(self, step, substeps, *, fluid_substeps=None):
         """Capture the caller's full step without exposing solver-private state."""
-        return CoupledStepGraph(self, step, substeps)
+        return CoupledStepGraph(self, step, substeps, fluid_substeps=fluid_substeps)
 
-    def step(self, state_in, state_out, control, contacts, dt, *, observables=None):
+    def step(self, state_in, state_out, control, contacts, dt, *, observables=None,
+             advance_fluid=True, fluid_dt=None):
         # The engine has already cleared forces and applied user inputs.
         self.boundaries.sync_body_poses(state_in)
-        self.boundary_forces.zero_()
-        self.fluid.step(state_in, state_out, None, None, dt)
+        if advance_fluid:
+            self.boundary_forces.zero_()
+            self.fluid.step(state_in, state_out, None, None, dt if fluid_dt is None else fluid_dt)
+        else:
+            # MuJoCo advances rigid state only; carry the latest particles across
+            # its ping-pong States without changing PBF's own prediction buffers.
+            wp.copy(state_out.particle_q, state_in.particle_q)
+            wp.copy(state_out.particle_qd, state_in.particle_qd)
+        # Hold the pressure force (not an impulse) until the next fluid update.
+        # Summing F * rigid_dt over the group then gives F * fluid_dt.
         wp.launch(add_boundary_forces, self.model.body_count,
                   inputs=[self.boundary_forces], outputs=[state_in.body_f], device=self.model.device)
         self.rigid.step(state_in, state_out, control, contacts, dt, observables=observables)

@@ -15,6 +15,12 @@ class PBFPlayEnv(SMPEnv):
         if engine_config["engine_name"] != "newton_pbf" or num_envs != 1:
             raise ValueError("pbf_play requires one newton_pbf environment")
         self.policy_use_scene_sphere = bool(env_config.get("policy_use_scene_sphere", False))
+        self._play_init_mode = env_config.get("play_init_mode", "sampled")
+        if self._play_init_mode not in ("sampled", "standing"):
+            raise ValueError("play_init_mode must be 'sampled' or 'standing'")
+        self._playback_mode = False
+        self._inactive_projectile_pos = torch.tensor([[[10., 10., .1]]], device=device)
+        self._inactive_projectile_vel = torch.zeros_like(self._inactive_projectile_pos)
         self._scene_obj_ids = []
         super().__init__(env_config, engine_config, num_envs, device, visualize, record_video)
 
@@ -48,6 +54,18 @@ class PBFPlayEnv(SMPEnv):
         self.policy_use_scene_sphere = bool(enabled)
         self._update_observations()
 
+    def set_playback_mode(self, enabled):
+        """Skip training-only observations during dedicated policy playback."""
+        self._playback_mode = bool(enabled)
+
+    def _update_disc_hist(self):
+        if not self._playback_mode:
+            super()._update_disc_hist()
+
+    def _update_disc_obs(self, env_ids=None):
+        if not self._playback_mode:
+            super()._update_disc_obs(env_ids)
+
     def _compute_obs(self, env_ids=None):
         obs = super()._compute_obs(env_ids)
         char_id = self._get_char_id()
@@ -59,8 +77,8 @@ class PBFPlayEnv(SMPEnv):
             vel = self._engine.get_root_vel(sphere_id).unsqueeze(1)
         else:
             # The original task's inactive projectile input, without an entity.
-            pos = torch.tensor([[[10., 10., .1]]], device=self._device)
-            vel = torch.zeros_like(pos)
+            pos = self._inactive_projectile_pos
+            vel = self._inactive_projectile_vel
         if env_ids is not None:
             root_pos, root_rot, pos, vel = (value[env_ids] for value in (root_pos, root_rot, pos, vel))
         task_obs = compute_dodgeball_observations(root_pos, root_rot, pos, vel)
@@ -73,6 +91,40 @@ class PBFPlayEnv(SMPEnv):
         # Falling, contacts, time and motion-library boundaries never reset play.
         self._done_buf.zero_()
 
+    def _use_standing_init(self):
+        return self._playback_mode and self._play_init_mode == "standing"
+
+    def _reset_ref_motion(self, env_ids):
+        if not self._use_standing_init():
+            return super()._reset_ref_motion(env_ids)
+        if len(env_ids) == 0:
+            return
+        # DeepMimic's existing _ref_state_init writes these to the engine.
+        # Keep reference buffers coherent even when an agent loaded GSI samples.
+        self._motion_ids[env_ids] = 0
+        self._motion_time_offsets[env_ids] = 0.
+        self._ref_root_pos[env_ids] = self._init_root_pos
+        self._ref_root_rot[env_ids] = self._init_root_rot
+        self._ref_dof_pos[env_ids] = self._init_dof_pos
+        self._ref_root_vel[env_ids] = 0.
+        self._ref_root_ang_vel[env_ids] = 0.
+        self._ref_dof_vel[env_ids] = 0.
+        self._ref_joint_rot[env_ids] = self._kin_char_model.dof_to_rot(self._ref_dof_pos[env_ids])
+        pos, rot = self._kin_char_model.forward_kinematics(
+            self._ref_root_pos[env_ids], self._ref_root_rot[env_ids], self._ref_joint_rot[env_ids])
+        self._ref_body_pos[env_ids], self._ref_body_rot[env_ids] = pos, rot
+
+    def _reset_disc_hist(self, env_ids):
+        if not self._use_standing_init():
+            return super()._reset_disc_hist(env_ids)
+        if len(env_ids) == 0:
+            return
+        for name in ("root_pos", "root_rot", "root_vel", "root_ang_vel",
+                     "joint_rot", "dof_vel", "body_pos"):
+            history = getattr(self, "_disc_hist_" + name)
+            value = getattr(self, "_ref_" + name)[env_ids]
+            history.fill(env_ids, value.unsqueeze(1).expand(-1, history.get_buffer_len(), *value.shape[1:]))
+
     def _reset_envs(self, env_ids):
         super()._reset_envs(env_ids)
         if len(env_ids) == 0:
@@ -82,7 +134,8 @@ class PBFPlayEnv(SMPEnv):
             self._engine.set_root_rot(env_ids, obj_id, torch.tensor([0., 0., 0., 1.], device=self._device))
             self._engine.set_root_vel(env_ids, obj_id, 0.)
             self._engine.set_root_ang_vel(env_ids, obj_id, 0.)
-        self._engine.place_character(self._get_char_id())
+        if not self._use_standing_init():
+            self._engine.place_character(self._get_char_id())
         self._engine.reset_play_scene()
 
     def _build_camera(self, env_config):

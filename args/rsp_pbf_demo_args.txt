@@ -1,5 +1,5 @@
 # Run continuously until the window is closed or Ctrl+C is pressed.
---mode test
+--mode play
 --num_envs 1
 --devices cuda:0
 --visualize true

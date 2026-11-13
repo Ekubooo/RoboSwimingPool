@@ -131,6 +131,10 @@ def run(rank, num_procs, device, master_port, args):
             test_episodes = args.parse_int("test_episodes", np.iinfo(np.int64).max)
             test(agent=agent, test_episodes=test_episodes)
 
+        elif (mode == "play"):
+            from RSP.playback import run_playback
+            run_playback(agent, env)
+
         else:
             assert(False), "Unsupported mode: {}".format(mode)
     finally:
