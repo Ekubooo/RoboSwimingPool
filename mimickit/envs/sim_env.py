@@ -95,6 +95,10 @@ class SimEnv(base_env.BaseEnv):
     
     def get_num_envs(self):
         return self._engine.get_num_envs()
+
+    def get_policy_timestep(self):
+        """Policy/sample period; decimated playback may override the frame clock."""
+        return self._engine.get_timestep()
     
     def get_env_time(self, env_ids=None):
         if (env_ids is None):

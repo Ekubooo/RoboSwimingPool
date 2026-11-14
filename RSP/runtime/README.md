@@ -8,19 +8,36 @@ parameters have one definition. For example:
 DEFAULT_SETTINGS = FluidSettings(
     pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
                   block_end=(1.5, 2.08, 1.25)),
-    time_scale=0.2,
+    time_scale=1.0,
     feedback_scale=1.0,
     max_dt=1.0 / 300.0,
 )
 ```
 
-`time_scale` is relative to the unchanged MimicKit control clock. `frame_dt`
-is derived from that multiplier; setting `PBFConfig.frame_dt` does not add a
-second speed control. At control 30 Hz / rigid 120 Hz, defaults advance fluid
-by 1/150 s per control frame in two 1/300 s steps, before rigid steps 2 and 4.
-The humanoid advances by 1/30 s in four 1/120 s rigid steps. PD gains, target
-updates at 30 Hz and torque limits are unchanged; feedback is evaluated with
-each of the 120 Hz physics steps.
+`time_scale` is relative to the simulation frame clock. `frame_dt` is derived
+from that multiplier; setting `PBFConfig.frame_dt` does not add a second speed
+control. In `data/engines/newton_pbf_engine.yaml`, the backend's legacy
+`control_freq: 150` names the frame frequency, not the policy frequency;
+`sim_freq: 600` selects four rigid steps of 1/600 s per frame. Both rigid and
+fluid time advance by 1/150 s each frame. Fluid runs in two 1/300 s steps,
+before rigid steps 2 and 4. PD gains and torque limits are unchanged; PD runs
+each rigid step, at 600 Hz in simulated time.
+
+`playback.POLICY_HZ` remains 30. The runner derives five frames per decision
+from the engine timestep, holds the GPU action between decisions, and retains
+the environment's action clipping. Pause preserves the decision phase; reset
+discards the held action and makes the next advancing frame infer immediately.
+Policy-input switches affect the next scheduled decision.
+
+`SimEnv.get_policy_timestep()` normally returns the engine frame timestep;
+`PBFPlayEnv` overrides it to 1/30 s. SMP's prior compatibility check, GSI
+initial velocity reconstruction and reference history sampling use that policy
+period, preserving the existing 30 Hz data even with 150 Hz simulation frames.
+
+Playback is uncapped: Newton-PBF renders without invoking the base Engine's
+sleep. It advances a fixed amount per displayed simulation frame, without a
+wall-clock accumulator. At 100 FPS it advances 2/3 simulated second per real
+second; 150 FPS is real time. Slow motion therefore depends on actual FPS.
 Higher speeds increase the actual step count
 to respect `max_dt`; this bound alone does not guarantee numerical stability.
 
@@ -95,23 +112,27 @@ The original `_compute_obs` remains available for construction and numerical
 comparison, but ordinary playback updates use the GPU builder.
 
 The viewer owns pause/single-step state. Enter toggles pause, Space advances
-one control frame and stays paused, and R queues a reset. Reset and policy-input
-switches take effect between frames, before policy inference. Paused frames
-still draw and process camera/UI events. The application's 30 Hz limiter is
-unchanged; only performance tools bypass it for uncapped measurements.
+one 1/150 s simulation frame and stays paused, and R queues a reset. Reset and
+policy-input switches take effect between frames. Paused frames still draw and
+process camera/UI events. The application's former 30 Hz limiter is removed;
+other engine backends retain their existing behavior.
 
 Use `tools/profile_rsp_playback.py --label NAME --loop playback --fluid default`
-for the real playback loop, and `--fluid old` to isolate code changes using the
-reference 195,525 particles / three substeps. `--loop legacy` is for an actual
+for the real playback loop. `--fluid old` selects reference `FluidSettings`
+(195,525 particles, minimum three substeps, time scale 0.2), with the current
+frame clock; it does not restore the old complete configuration. `--loop legacy` is for an actual
 pre-change checkout. `--separate-wait` is an attribution diagnostic, not a
 throughput benchmark. All outputs are under `output/rsp_render_profile/NAME`.
 
-`--rigid-substeps 8` selects the previous physics frequency for an isolated
-comparison without editing production configuration. Each profiler run measures
-paced and uncapped playback; `--modes uncapped` selects only that mode. Screenshots
+`--rigid-substeps 8` overrides only the rigid step count at the configured frame
+frequency, without editing production configuration. The profiler measures the
+uncapped production loop directly, without overriding its pacing. Screenshots
 are opt-in with `--screenshot`. The targeted inference check is
 `python -m unittest discover -s tests -p test_rsp_inference.py -v`; the real-scene
 check `python tools/check_rsp_playback.py` covers policy equivalence, persistent
-state views and one 900-frame (30 main-second) trajectory, without recording.
+state views, five-frame action holds and one 1500-frame (10 simulated-second)
+trajectory, without recording.
 See [the stage 5 results](../../docs/rendering_stage5_results.md) for the measured
 comparison and the reason four rigid steps replaced the unstable three-step trial.
+The [stage 6 results](../../docs/rendering_stage6_results.md) cover uncapped
+playback, matched 1/150 s frame clocks and five-frame policy decisions.

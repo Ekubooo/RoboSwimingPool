@@ -49,6 +49,8 @@ class FrameProfiler:
                 return original(*a, **kw)
             finally:
                 self.add(key, (time.perf_counter() - start) * 1000)
+                if key == "policy_ms":
+                    self.add("policy_calls", 1)
         stack.enter_context(patch.object(obj, method, measured))
 
     def next_frame(self):
@@ -79,7 +81,8 @@ def main():
     parser.add_argument("--frames", type=int, default=180)
     parser.add_argument("--separate-wait", action="store_true")
     parser.add_argument("--rigid-substeps", type=int, help="Process-local override; production config is unchanged")
-    parser.add_argument("--modes", nargs="+", choices=("paced", "uncapped"), default=("paced", "uncapped"))
+    parser.add_argument("--modes", nargs="+", choices=("uncapped",), default=("uncapped",),
+                        help="Production playback is uncapped; retained for existing profiler commands")
     parser.add_argument("--screenshot", action="store_true")
     args = parser.parse_args()
     cache = ROOT / "output/newton_pbf_refactor_checks"
@@ -91,7 +94,7 @@ def main():
     import yaml
     from PIL import Image
     import newton
-    from engines import engine, newton_pbf_engine
+    from engines import newton_pbf_engine
     from engines.newton_pbf_viewer import PBFViewer
     from envs.pbf_play_env import PBFPlayEnv
     from learning.agent_builder import build_agent
@@ -121,6 +124,8 @@ def main():
     checkpoint = ROOT / "output/a5000_dodgeball_2048_full_r01"
     report = {"args": vars(args), "seed": 1234, "runs": {}, "sources": {}}
     paths = [ROOT / p for p in ("mimickit/envs/pbf_play_env.py", "mimickit/run.py",
+                               "mimickit/envs/sim_env.py", "mimickit/envs/amp_env.py", "mimickit/envs/smp_env.py",
+                               "mimickit/learning/smp_agent.py",
                                "mimickit/engines/newton_pbf_engine.py", "mimickit/learning/base_agent.py",
                                "data/engines/newton_pbf_engine.yaml", "tools/profile_rsp_playback.py")]
     paths += [p for folder in ("RSP/rendering", "RSP/runtime") for p in (ROOT / folder).glob("*.py")]
@@ -173,19 +178,14 @@ def main():
                 else:
                     from RSP.runtime.playback import PlaybackRunner
                     runner = PlaybackRunner(env, agent)
+                    report["policy_interval_frames"] = runner.policy_interval
+                    report["policy_hz"] = 1.0 / (eng.get_timestep() * runner.policy_interval)
                     original_tick = runner.tick
                     def tick():
                         recorder.next_frame()
                         return original_tick()
                     stack.enter_context(patch.object(runner, "tick", tick))
                     recorder.hook(stack, runner.policy, "act", "policy_ms")
-                original_limit = engine.Engine.render
-                def limit(instance):
-                    start = time.perf_counter()
-                    if mode == "paced":
-                        original_limit(instance)
-                    recorder.add("limit_ms", (time.perf_counter() - start) * 1000)
-                stack.enter_context(patch.object(engine.Engine, "render", limit))
                 original_physics = env._physics_step
                 def physics():
                     start = time.perf_counter()

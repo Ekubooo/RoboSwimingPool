@@ -8,6 +8,7 @@ from envs.sim_env import SimEnv
 from envs.task_dodgeball_env import compute_dodgeball_observations
 from RSP.sim_ready.pipelines.scenes.pbf_play import RIGIDS
 from RSP.sim_ready.lib.asset_validation import SkeletonDescription
+from RSP.runtime.playback import POLICY_HZ
 from util.camera import Camera, CameraMode
 
 
@@ -28,6 +29,9 @@ class PBFPlayEnv(SMPEnv):
         super().__init__(env_config, engine_config, num_envs, device, visualize, record_video)
         from RSP.runtime.observations import ObservationBuilder
         self._play_observations = ObservationBuilder(self)
+
+    def get_policy_timestep(self):
+        return 1.0 / POLICY_HZ
 
     def _build_data_buffers(self):
         super()._build_data_buffers()

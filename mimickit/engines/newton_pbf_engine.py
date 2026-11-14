@@ -1425,7 +1425,6 @@ class NewtonEngine(NewtonEngineAPI):
 
     def render(self):
         self._presentation.render(self.get_sim_time(), self._state.raw_state)
-        super().render()
 
     def close(self):
         if getattr(self, "_closed", False):

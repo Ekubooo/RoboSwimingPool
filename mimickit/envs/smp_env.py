@@ -99,7 +99,7 @@ class SMPEnv(amp_env.AMPEnv):
     def _motion_frames_to_init_states(self, motion_frames):
         kin_char_model = self._kin_char_model
         seq_len = motion_frames.shape[1]
-        dt = self._engine.get_timestep()
+        dt = self.get_policy_timestep()
 
         root_pos = motion_frames[..., 0:3]
         root_rot = torch_util.exp_map_to_quat(motion_frames[..., 3:6])

@@ -69,7 +69,7 @@ class AMPEnv(deepmimic_env.DeepMimicEnv):
 
         motion_ids = torch.tile(motion_ids.unsqueeze(-1), [1, self._num_disc_obs_steps])
         motion_times = motion_times0.unsqueeze(-1)
-        time_steps = -self._engine.get_timestep() * torch.arange(0, self._num_disc_obs_steps, device=self._device)
+        time_steps = -self.get_policy_timestep() * torch.arange(0, self._num_disc_obs_steps, device=self._device)
         time_steps = torch.flip(time_steps, dims=[0])
         motion_times = motion_times + time_steps
 

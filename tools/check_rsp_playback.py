@@ -13,9 +13,9 @@ sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--label", default="stage5_checks")
-    parser.add_argument("--frames", type=int, default=900)
-    parser.add_argument("--check-every", type=int, default=300, help="Diagnostic interval in control frames")
+    parser.add_argument("--label", default="stage6_checks")
+    parser.add_argument("--frames", type=int, default=1500, help="1500 frames = 10 simulated seconds")
+    parser.add_argument("--check-every", type=int, default=300, help="Diagnostic interval in simulation frames")
     parser.add_argument("--reference", default="output/rsp_render_profile/stage5_A/source/mimickit/envs/pbf_play_env.py")
     args = parser.parse_args()
     output = ROOT / "output/rsp_render_profile" / args.label
@@ -65,8 +65,12 @@ def main():
         clock = eng._runtime._solver.clock
         assert eng.get_sim_model().particle_count == 301392
         assert clock.schedule.calls == (0, 1, 0, 1)
-        assert abs(clock.schedule.control_dt - 1/30) < 1e-12
+        assert abs(clock.schedule.control_dt - 1/150) < 1e-12
         assert abs(clock.schedule.fluid_dt - 1/300) < 1e-12
+        assert abs(clock.schedule.fluid_frame_dt - 1/150) < 1e-12
+        assert abs(eng.get_sim_timestep() - 1/600) < 1e-12
+        assert runner.policy_interval == 5
+        assert eng._runtime._solver.settings.time_scale == 1.
         rigid_steps = clock.schedule.rigid_steps
         assert "disc_obs" not in env._info
         result["checks"].append("new defaults and training-info contract")
@@ -103,27 +107,27 @@ def main():
                                          max_target_error=max_target_error)
             reference.policy_use_scene_sphere = False
 
-            # Graph and ordinary execution must update the persistent views.
-            # Do not compare two
-            # independently diverging physics trajectories for bitwise equality.
+            # Cross two policy boundaries in both graph and ordinary execution.
             runtime = eng._runtime
             graph = runtime._graph
             for use_graph in (True, False):
                 runtime._graph = graph if use_graph else None
                 runner.reset()
-                for frame in range(1, 3):
-                    runner.tick()
-                    assert clock.rigid_ticks == frame * rigid_steps and clock.fluid_ticks == frame * 2
-                    assert abs(eng.get_sim_time() - frame / 30) < 1e-12
-                    assert abs(clock.time - frame / 150) < 1e-12
-                    if rigid_steps % 2:
-                        for name in ("joint_q", "joint_qd", "body_q", "particle_q", "particle_qd"):
-                            torch.testing.assert_close(wp.to_torch(getattr(eng._state.raw_state, name)),
-                                wp.to_torch(getattr(eng._state.swap_state, name)), rtol=0, atol=0)
-                    old = reference._compute_obs()
-                    torch.testing.assert_close(env._obs_buf, old, rtol=1e-5, atol=1e-6)
+                with patch.object(runner.policy, "act", wraps=runner.policy.act) as decisions:
+                    previous_action = None
+                    for frame in range(1, 12):
+                        runner.tick()
+                        assert clock.rigid_ticks == frame * rigid_steps and clock.fluid_ticks == frame * 2
+                        assert abs(eng.get_sim_time() - frame / 150) < 1e-12
+                        assert abs(clock.time - frame / 150) < 1e-12
+                        assert decisions.call_count == (frame - 1) // 5 + 1
+                        if (frame - 1) % 5:
+                            assert runner._action is previous_action
+                        previous_action = runner._action
+                        old = reference._compute_obs()
+                        torch.testing.assert_close(env._obs_buf, old, rtol=1e-5, atol=1e-6)
             runtime._graph = graph
-            result["checks"].append(f"{rigid_steps} rigid/two fluid steps: graph/eager clocks and persistent state views")
+            result["checks"].append("graph/eager: 4 rigid/2 fluid steps, equal clocks, decisions on frames 1/6/11 with held GPU actions")
 
             # Audit ordinary frames, not loading, resetting, picking or screenshots.
             with patch.object(wp.array, "numpy", side_effect=AssertionError("Warp host readback")), \
@@ -132,7 +136,8 @@ def main():
                     patch.object(env, "_update_disc_hist", side_effect=AssertionError("Training history")), \
                     patch.object(env, "_update_disc_obs", side_effect=AssertionError("Training features")), \
                     patch.object(env, "_compute_obs", side_effect=AssertionError("Legacy observation path")), \
-                    patch.object(agent, "_decide_action", side_effect=AssertionError("Legacy policy path")):
+                    patch.object(agent, "_decide_action", side_effect=AssertionError("Legacy policy path")), \
+                    patch("engines.engine.Engine.render", side_effect=AssertionError("Legacy frame limiter")):
                 for _ in range(5):
                     runner.tick()
             result["checks"].append("five ordinary frames without explicit state readback or training features")
@@ -167,6 +172,7 @@ def main():
             assert clock.rigid_ticks == ticks + rigid_steps and env._pending_reset
             assert not runner.tick()
             assert clock.rigid_ticks == clock.fluid_ticks == 0
+            assert runner._action is None and runner._policy_phase == 0
             assert not np.any(eng._runtime._solver.boundary_forces.numpy())
             result["checks"].append("UI pause, exact one-step, deferred reset and cleared feedback")
 
@@ -203,6 +209,7 @@ def main():
                         raise AssertionError(f"Non-finite state: {result['failure']}")
                     assert clock.rigid_ticks == (index + 1) * rigid_steps
                     assert clock.fluid_ticks == (index + 1) * 2
+                    assert abs(clock.time - eng.get_sim_time()) < 1e-10
                     wp.launch(sample_sdf, len(points), inputs=[scene.boundaries.assets[0].sdf.id, raw.particle_q],
                               outputs=[sdf_distances], device="cuda:0")
                     distances = sdf_distances.numpy()

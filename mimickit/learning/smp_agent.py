@@ -116,7 +116,7 @@ class SMPAgent(ppo_agent.PPOAgent):
             "SMP prior env mismatch for key_bodies: prior={}, env={}".format(len(prior_key_bodies), env_num_key_bodies)
 
         prior_control_freq = prior_config.get("control_freq", None)
-        env_control_freq = int(round(1.0 / self._env._engine.get_timestep()))
+        env_control_freq = int(round(1.0 / self._env.get_policy_timestep()))
         assert prior_control_freq == env_control_freq, \
             "SMP prior config mismatch for control_freq: prior={}, env={}".format(prior_control_freq, env_control_freq)
         return

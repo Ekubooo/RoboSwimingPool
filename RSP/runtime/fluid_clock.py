@@ -1,4 +1,4 @@
-"""Code-configured fluid playback; the humanoid remains on its original clock.
+"""Code-configured fluid playback relative to each simulation frame.
 
 Edit DEFAULT_SETTINGS before starting the application. All physical parameters
 come from the existing WarpLab-compatible PBFConfig; frame_dt is derived from
@@ -85,4 +85,5 @@ class FluidClock:
 DEFAULT_SETTINGS = FluidSettings(
     pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
                   block_end=(1.5, 2.08, 1.25)),
+    time_scale=1.0,
 )
