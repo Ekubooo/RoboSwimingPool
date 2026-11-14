@@ -1,7 +1,7 @@
 engine_name: newton_pbf
 control_mode: pos
 control_freq: 30
-sim_freq: 240
+sim_freq: 120
 env_spacing: 5
 enable_cuda_graph: true
 newton_njmax: 8192

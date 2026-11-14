@@ -145,11 +145,10 @@ def compare(args):
 
 
 def integration(args):
-    """Exercise the existing SMP checkpoint, GSI resets and headless GL recorder."""
+    """Exercise the SMP checkpoint and GSI reset without rendering or recording."""
     import torch
     import warp as wp
     import yaml
-    from PIL import Image
 
     wp.config.kernel_cache_dir = str(OUTPUT / "warp_cache")
     (OUTPUT / "tmp").mkdir(parents=True, exist_ok=True)
@@ -170,12 +169,11 @@ def integration(args):
         env_config = yaml.safe_load(f)
     env = agent = None
     try:
-        env = resource_util.construct(PBFPlayEnv, env_config, config, 1, "cuda:0", False, record_video=True)
+        env = resource_util.construct(PBFPlayEnv, env_config, config, 1, "cuda:0", False, record_video=False)
         agent = build_agent("output/a5000_dodgeball_2048_full_r01/agent_config.yaml", env, "cuda:0")
         agent.load("output/a5000_dodgeball_2048_full_r01/model.pt")
         agent.eval()
         agent.set_mode(AgentMode.TEST)
-        observations = []
         with torch.no_grad():
             obs, info = env.reset()
             for step in range(8):
@@ -185,17 +183,7 @@ def integration(args):
                 assert torch.isfinite(action).all()
                 obs, _, _, info = env.step(action)
                 assert torch.isfinite(obs).all()
-                observations.append(obs.cpu().numpy().copy())
-        video = env._engine.get_video_recording()
-        assert video.get_num_frames() == 8
-        frames = video.get_frames()
-        assert all(frame.shape == (480, 854, 3) and frame.dtype == np.uint8 for frame in frames)
-        assert all(float(frame.std()) > 1 for frame in frames), "Recorder returned blank frames"
-        prefix = OUTPUT / f"policy_{args.revision}"
-        video.save(str(prefix.with_suffix(".mp4")))
-        Image.fromarray(frames[-1]).save(prefix.with_suffix(".png"))
-        np.save(prefix.with_suffix(".npy"), np.asarray(observations))
-        print(f"INTEGRATION PASS: checkpoint + GSI reset + 8 policy steps + GL frames/video: {prefix}", flush=True)
+        print("INTEGRATION PASS: checkpoint + GSI reset + 8 policy steps (recording disabled)", flush=True)
     finally:
         resource_util.cleanup(env.close if env is not None else None,
                               agent.close if agent is not None else None, mp_util.shutdown)

@@ -82,4 +82,7 @@ class FluidClock:
 # PBFConfig exposes every fluid parameter, including radius, density, viscosity,
 # vorticity, pressure regularization, initial velocity and block bounds. Supply
 # overrides here, e.g. pbf=PBFConfig(substeps=2, viscosity=0.25).
-DEFAULT_SETTINGS = FluidSettings()
+DEFAULT_SETTINGS = FluidSettings(
+    pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
+                  block_end=(1.5, 2.08, 1.25)),
+)

@@ -41,6 +41,9 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         self._billboard_closed = False
         self._billboard_settings = {"speed_color_mid": speed_color_mid, "speed_color_max": speed_color_max}
         super().__init__(*args, **kwargs)
+        if self.gui is not None:
+            from .playback_ui import PlaybackGui
+            self.gui = PlaybackGui(self.gui)
         # RSP's application already owns pacing. Newton's requested 1 ms wait
         # can become a Windows timer tick, masking faster GPU uploads. Adapt
         # this renderer instance only; retain all event and camera processing.

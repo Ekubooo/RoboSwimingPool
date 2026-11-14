@@ -8,6 +8,15 @@ one shared CUDA/OpenGL buffer for all rigid instances in a layer.
 Importing the backend does not initialize OpenGL; a context is needed only when
 constructing a viewer, so non-visual simulation retains its display-free path.
 
+`PlaybackGui` composes the existing Newton GUI, sharing its ImGui context,
+input handling and GL backend. The playback panel only builds run/reset,
+camera, geometry/particle visibility and application controls. Model values,
+gravity, selection attributes, plots and diagnostic panels are not read or
+built each frame. Side/free UI callback registration remains available for
+future controls. Picking and explicit frame capture retain their on-demand
+readback; normal idle playback has no simulation-state readback in this UI.
+The scene adapter no longer submits the static pool outline.
+
 ## Data and rendering
 
 Call `update(positions, velocities, radii)` with contiguous, one-dimensional
@@ -65,7 +74,10 @@ Newton, run the rendering tests to verify this internal scene-object contract.
 
 ## Verification and timing
 
-Use the project's WarpSim environment from the repository root:
+Use the project's WarpSim environment from the repository root. Select only the
+checks relevant to the change; this list is not a required full suite. The
+integration check covers policy loading and GSI reset with recording disabled.
+Do not run recording tests or generate recording test artifacts.
 
 ```text
 python -m unittest discover -s tests -p test_rsp_rendering.py -v

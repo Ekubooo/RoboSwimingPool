@@ -1176,7 +1176,7 @@ class Presentation:
         if self._viewer is not None:
             self._viewer.apply_forces(raw_state)
 
-    def render(self, sim_time, raw_state, draw_scene):
+    def render(self, sim_time, raw_state, draw_scene=None):
         if (not self._viewer.is_running()):
             raise SystemExit(0)
 
@@ -1187,7 +1187,8 @@ class Presentation:
 
         self._viewer.begin_frame(sim_time)
         self._viewer.log_state(raw_state)
-        draw_scene(self._viewer)
+        if draw_scene is not None:
+            draw_scene(self._viewer)
 
         self._draw_line_count = 0
 
@@ -1423,8 +1424,7 @@ class NewtonEngine(NewtonEngineAPI):
         self._scene_reset.reset()
 
     def render(self):
-        self._presentation.render(self.get_sim_time(), self._state.raw_state,
-                                  self._scene.play_scene.draw_pool)
+        self._presentation.render(self.get_sim_time(), self._state.raw_state)
         super().render()
 
     def close(self):

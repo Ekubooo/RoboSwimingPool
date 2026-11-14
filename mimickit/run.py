@@ -128,8 +128,12 @@ def run(rank, num_procs, device, master_port, args):
                   save_int_models=save_int_models, logger_type=logger_type)
 
         elif (mode == "test"):
-            test_episodes = args.parse_int("test_episodes", np.iinfo(np.int64).max)
-            test(agent=agent, test_episodes=test_episodes)
+            if getattr(env, "continuous_playback", False):
+                from RSP.runtime.playback import play
+                play(env, agent)
+            else:
+                test_episodes = args.parse_int("test_episodes", np.iinfo(np.int64).max)
+                test(agent=agent, test_episodes=test_episodes)
 
         else:
             assert(False), "Unsupported mode: {}".format(mode)

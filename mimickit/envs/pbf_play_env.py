@@ -4,6 +4,7 @@ import torch
 
 from engines.engine import ObjType
 from envs.smp_env import SMPEnv
+from envs.sim_env import SimEnv
 from envs.task_dodgeball_env import compute_dodgeball_observations
 from RSP.sim_ready.pipelines.scenes.pbf_play import RIGIDS
 from RSP.sim_ready.lib.asset_validation import SkeletonDescription
@@ -11,12 +12,47 @@ from util.camera import Camera, CameraMode
 
 
 class PBFPlayEnv(SMPEnv):
+    continuous_playback = True
+
     def __init__(self, env_config, engine_config, num_envs, device, visualize, record_video=False):
         if engine_config["engine_name"] != "newton_pbf" or num_envs != 1:
             raise ValueError("pbf_play requires one newton_pbf environment")
         self.policy_use_scene_sphere = bool(env_config.get("policy_use_scene_sphere", False))
         self._scene_obj_ids = []
+        self._pending_reset = False
+        self._pending_sphere = None
+        self._play_observations = None
+        # Needed even during base construction, when observation size is queried.
+        self._inactive_sphere_pos = torch.tensor([[[10., 10., .1]]], device=device)
+        self._inactive_sphere_vel = torch.zeros_like(self._inactive_sphere_pos)
         super().__init__(env_config, engine_config, num_envs, device, visualize, record_video)
+        from RSP.runtime.observations import ObservationBuilder
+        self._play_observations = ObservationBuilder(self)
+
+    def _build_data_buffers(self):
+        super()._build_data_buffers()
+        # SMP's reset/GSI support still owns its history buffers. Playback does
+        # not publish a stale training feature as if it were current state.
+        self._info.pop("disc_obs", None)
+
+    def _update_misc(self):
+        """No training history or reference-character work during playback."""
+
+    def _update_observations(self, env_ids=None):
+        if self._play_observations is None:
+            # Construction queries observation dimensions before buffers exist.
+            SimEnv._update_observations(self, env_ids)
+        else:
+            self._play_observations.update(env_ids, use_scene_sphere=self.policy_use_scene_sphere)
+
+    def _update_info(self, env_ids=None):
+        """Playback has no tracking-error or reward diagnostics."""
+
+    def _post_physics_step(self):
+        self._update_time()
+        self._update_observations()
+        # Reward/done buffers remain zero from initialization/reset. Keeping
+        # their return slots preserves the ordinary environment step interface.
 
     def _build_env(self, env_id, env_config):
         super()._build_env(env_id, env_config)
@@ -59,8 +95,8 @@ class PBFPlayEnv(SMPEnv):
             vel = self._engine.get_root_vel(sphere_id).unsqueeze(1)
         else:
             # The original task's inactive projectile input, without an entity.
-            pos = torch.tensor([[[10., 10., .1]]], device=self._device)
-            vel = torch.zeros_like(pos)
+            pos = self._inactive_sphere_pos
+            vel = self._inactive_sphere_vel
         if env_ids is not None:
             root_pos, root_rot, pos, vel = (value[env_ids] for value in (root_pos, root_rot, pos, vel))
         task_obs = compute_dodgeball_observations(root_pos, root_rot, pos, vel)
@@ -90,17 +126,35 @@ class PBFPlayEnv(SMPEnv):
                               pos=np.array([5., -5., 4.1]), target=np.array([1.5, 1., 1.5]))
 
     def _setup_gui(self):
-        super()._setup_gui()
-        self._engine.register_keyboard_callback("R", self.reset)
-        self._engine.get_viewer().set_reset_callback(self.reset)
+        # PlaybackGui owns Enter/Space/R; do not also register SimEnv's keys.
+        self._engine.get_viewer().set_reset_callback(self.request_reset)
         self._engine.register_ui_callback(self._draw_play_controls)
+
+    def request_reset(self):
+        self._pending_reset = True
+
+    def apply_playback_commands(self):
+        """Apply UI changes between frames, before the next policy decision."""
+        reset = self._pending_reset
+        self._pending_reset = False
+        if reset:
+            self.reset()
+        if self._pending_sphere is not None:
+            enabled, self._pending_sphere = self._pending_sphere, None
+            self.set_policy_use_scene_sphere(enabled)
+        return reset
+
+    def render_only(self):
+        if self._visualize:
+            self._update_camera()
+            self._render_scene()
+
+    def _render(self):
+        # The runner owns stepping; a paused redraw must never block env.step.
+        self.render_only()
 
     def _draw_play_controls(self, imgui):
         imgui.text("PBF play / SMP policy")
         changed, enabled = imgui.checkbox("Policy: scene sphere", self.policy_use_scene_sphere)
         if changed:
-            self.set_policy_use_scene_sphere(enabled)
-        if imgui.button("Reset scene (R)"):
-            self.reset()
-        imgui.text("No automatic reset.")
-        imgui.text("Enter: pause; Space: step.")
+            self._pending_sphere = enabled

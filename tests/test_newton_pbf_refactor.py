@@ -159,7 +159,7 @@ class BackendContracts(unittest.TestCase):
                 patch.object(engine.time, "sleep") as sleep:
             eng.render()
         eng._presentation.render.assert_called_once_with(
-            .5, eng._state.raw_state, eng._scene.play_scene.draw_pool)
+            .5, eng._state.raw_state)
         sleep.assert_called_once()
         self.assertAlmostEqual(sleep.call_args.args[0], .05)
         self.assertEqual(eng._prev_frame_time, 10.05)

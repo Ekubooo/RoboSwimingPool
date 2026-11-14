@@ -310,6 +310,35 @@ class RigidChecks(unittest.TestCase):
 
 
 class ViewerUIChecks(unittest.TestCase):
+    def test_playback_ui_has_no_idle_readback_and_keys_have_one_owner(self):
+        app.event_loop.has_exit = False
+        viewer = NewtonBillboardViewer(width=640, height=480, headless=False, vsync=False)
+        viewer.renderer.window.set_visible(False)
+        try:
+            viewer.set_model(particle_model())
+            viewer.show_particles = True
+            state = viewer.model.state()
+            viewer.log_state(state)
+            viewer.end_frame()
+            with patch.object(wp.array, "numpy", side_effect=AssertionError("UI readback")):
+                viewer.log_state(state)
+                viewer.end_frame()
+            from pyglet.window import key
+            resets = []
+            viewer.set_reset_callback(lambda: resets.append(True))
+            viewer.renderer._on_key_press(key.ENTER, 0)
+            self.assertTrue(viewer.is_paused())
+            self.assertFalse(viewer.should_step())
+            viewer.renderer._on_key_press(key.SPACE, 0)
+            self.assertTrue(viewer.should_step())
+            self.assertFalse(viewer.should_step())
+            viewer.renderer._on_key_press(key.R, 0)
+            self.assertEqual(resets, [True])
+            viewer.renderer._on_key_press(key.ENTER, 0)
+            self.assertFalse(viewer.is_paused())
+        finally:
+            viewer.close()
+
     def test_import_does_not_initialize_opengl(self):
         result = subprocess.run(
             [sys.executable, "-c", "import sys; import RSP.rendering.newton_gl; "
