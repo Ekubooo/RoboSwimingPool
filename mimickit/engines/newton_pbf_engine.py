@@ -13,7 +13,7 @@ from engines.newton_pbf_api import NewtonEngineAPI
 from engines.newton_pbf_runtime import PBFScene
 from RSP.sim_ready.paths import PBF_PLAY_ROOT
 from engines.newton_pbf_viewer import PBFViewer, PBFVideoRecorder
-from solvers.pbf.coupling import SolverPBFMuJoCo
+from RSP.runtime.coupling import ClockedPBFMuJoCo as SolverPBFMuJoCo
 from util.logger import Logger
 
 def str_to_key_code(key_str):
@@ -1022,7 +1022,8 @@ class SimulationRuntime:
         self._solver = SolverPBFMuJoCo(
             self._sim_model, 
             config=scene.play_scene.config,
-            boundaries=boundaries, rigid=rigid
+            boundaries=boundaries, rigid=rigid,
+            settings=scene.play_scene.fluid_settings, schedule=scene.play_scene.fluid_schedule
         )
         return
 

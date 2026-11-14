@@ -212,6 +212,103 @@ class BillboardChecks(unittest.TestCase):
             batch.update(self.state.particle_q, self.state.particle_qd, self.viewer.model.particle_radius)
 
 
+class RigidChecks(unittest.TestCase):
+    def setUp(self):
+        app.event_loop.has_exit = False
+        self.viewer = NewtonBillboardViewer(width=192, height=192, headless=True, vsync=False)
+        builder = newton.ModelBuilder()
+        body = builder.add_body(xform=wp.transform((1., 2., 3.), wp.quat_identity()))
+        builder.add_shape_capsule(body, radius=.2, half_height=.5)
+        builder.add_shape_box(-1, xform=wp.transform((0., 0., 1.), wp.quat_identity()), hx=.2, hy=.3, hz=.4)
+        self.model = builder.finalize(device="cuda:0")
+        self.state = self.model.state()
+        self.viewer.set_model(self.model)
+        self.viewer.show_visual = True
+
+    def tearDown(self):
+        self.viewer.close()
+
+    def packed(self):
+        batch = self.viewer._rigid_batches[id(self.viewer.layer)][0]
+        values = np.empty((batch.count, 24), dtype=np.float32)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, batch.buffer)
+        gl.glGetBufferSubData(gl.GL_ARRAY_BUFFER, 0, values.nbytes, values.ctypes.data)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+        return batch, values
+
+    def test_capsules_and_dynamic_color_use_one_gpu_buffer(self):
+        self.viewer.log_state(self.state)
+        batch, values = self.packed()
+        # One cylinder, two caps, and one static box.
+        self.assertEqual(batch.count, 4)
+        ids = batch.shape_ids.numpy()
+        capsule = values[ids == 0]
+        np.testing.assert_allclose(np.sort(capsule[:, 14]), [2.5, 3., 3.5])
+        np.testing.assert_allclose(capsule[:, 12:14], [[1., 2.]] * 3)
+        buffer_id, registration = batch.buffer.value, batch.registered
+        self.model.shape_color.assign(np.array([[.1, .7, .3], [.8, .4, .2]], dtype=np.float32))
+        self.state.body_q.assign(np.array([[4., 2., 3., 0., 0., 0., 1.]], dtype=np.float32))
+        with patch.object(wp.array, "numpy", side_effect=AssertionError("Unexpected CPU readback")), \
+                patch.object(wp, "synchronize", side_effect=AssertionError("Explicit device synchronization")), \
+                patch.object(sys.modules["pyglet.gl"], "glBufferSubData", side_effect=AssertionError("Host upload")):
+            self.viewer.log_state(self.state)
+        batch, moved = self.packed()
+        self.assertEqual(batch.buffer.value, buffer_id)
+        self.assertIs(batch.registered, registration)
+        np.testing.assert_allclose(moved[ids == 0, 12], [4.] * 3)
+        np.testing.assert_allclose(moved[ids == 0, 16:19], [[.1, .7, .3]] * 3)
+        np.testing.assert_allclose(moved[ids == 1, 12:15], [[0., 0., 1.]])
+        self.viewer.begin_frame(0.)
+        self.viewer.end_frame()
+        self.assertTrue(np.isfinite(self.viewer.get_frame().numpy()).all())
+
+    def test_appearance_invalidation_and_cleanup(self):
+        self.viewer.log_state(self.state)
+        old, _ = self.packed()
+        self.model.shape_opacity.assign(np.array([.5, 1.], dtype=np.float32))
+        self.viewer.invalidate_rigid_appearance()
+        self.assertTrue(old.closed)
+        self.assertEqual(old.buffer.value, 0)
+        self.viewer.log_state(self.state)
+        batch, _ = self.packed()
+        self.assertTrue(any(drawable.has_transparency() for drawable in batch.drawables))
+        self.viewer.set_visible_worlds(None)
+        self.assertTrue(batch.closed)
+        self.viewer.log_state(self.state)
+        replacement, _ = self.packed()
+        self.viewer.set_model(None)
+        self.assertTrue(replacement.closed)
+
+    def test_close_releases_shared_registration_before_window(self):
+        self.viewer.log_state(self.state)
+        batch, _ = self.packed()
+        normal_close = self.viewer.renderer.close
+
+        def close_renderer():
+            self.assertTrue(batch.closed)
+            self.assertIsNone(batch.registered)
+            self.assertEqual(batch.buffer.value, 0)
+            normal_close()
+
+        with patch.object(self.viewer.renderer, "close", side_effect=close_renderer):
+            self.viewer.close()
+        self.viewer.close()
+
+    def test_picking_and_com_overlay_still_work(self):
+        self.viewer.log_state(self.state)
+        self.viewer.picking.pick(self.state, wp.vec3(1., -3., 3.), wp.vec3(0., 1., 0.))
+        self.assertTrue(self.viewer.picking.is_picking())
+        self.assertEqual(self.viewer.picking.pick_body.numpy()[0], 0)
+        self.viewer.log_state(self.state)
+        self.viewer.picking.release()
+        self.viewer.show_com = True
+        self.viewer.log_state(self.state)
+        self.assertFalse(self.viewer.objects["/model/com"].hidden)
+        self.viewer.show_com = False
+        self.viewer.log_state(self.state)
+        self.assertTrue(self.viewer.objects["/model/com"].hidden)
+
+
 class ViewerUIChecks(unittest.TestCase):
     def test_import_does_not_initialize_opengl(self):
         result = subprocess.run(

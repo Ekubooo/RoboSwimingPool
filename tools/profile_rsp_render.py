@@ -11,6 +11,7 @@ measurement boundaries, never between individual measured frames.
 """
 
 import argparse
+from dataclasses import asdict, replace
 import hashlib
 import json
 from pathlib import Path
@@ -53,16 +54,47 @@ def run(args):
     from learning.base_agent import AgentMode
     from util import mp_util, resource_util
     from util.util import set_rand_seed
+    from RSP.runtime import fluid_clock
+
+    if args.fluid_profile == "legacy":
+        base = fluid_clock.DEFAULT_SETTINGS
+        fluid_clock.DEFAULT_SETTINGS = replace(base, time_scale=1., max_dt=1/240,
+                                               pbf=replace(base.pbf, substeps=8))
+    elif args.fluid_profile == "two":
+        base = fluid_clock.DEFAULT_SETTINGS
+        fluid_clock.DEFAULT_SETTINGS = replace(base, pbf=replace(base.pbf, substeps=2))
+    elif args.fluid_profile == "paused":
+        fluid_clock.DEFAULT_SETTINGS = replace(fluid_clock.DEFAULT_SETTINGS, time_scale=0.)
+    elif args.fluid_profile == "fast":
+        fluid_clock.DEFAULT_SETTINGS = replace(fluid_clock.DEFAULT_SETTINGS, time_scale=1.)
 
     class ProfileViewer(PBFViewer):
         def __init__(self, **kwargs):
+            self.profile_state_ms = 0.0
+            self.profile_particles_ms = 0.0
             kwargs.update(width=args.width, height=args.height, vsync=False)
             super().__init__(**kwargs)
             if args.hidden:
                 self.renderer.window.set_visible(False)
 
+        def log_state(self, state):
+            start = time.perf_counter()
+            try:
+                return super().log_state(state)
+            finally:
+                self.profile_state_ms += (time.perf_counter() - start) * 1000
+
+        def _log_particles(self, state):
+            start = time.perf_counter()
+            try:
+                return super()._log_particles(state)
+            finally:
+                self.profile_particles_ms += (time.perf_counter() - start) * 1000
+
     with (ROOT / "data/engines/newton_pbf_engine.yaml").open() as f:
         engine_config = yaml.safe_load(f)
+    if args.eager:
+        engine_config["enable_cuda_graph"] = False
     with (ROOT / "data/envs/pbf_play_env.yaml").open() as f:
         env_config = yaml.safe_load(f)
     checkpoint = ROOT / "output/a5000_dodgeball_2048_full_r01"
@@ -91,6 +123,8 @@ def run(args):
             "framebuffer_size": list(viewer.renderer.window.get_framebuffer_size()),
             "particle_count": model.particle_count, "body_count": model.body_count,
             "engine_config": engine_config, "env_config": env_config,
+            "fluid_settings": asdict(eng.get_play_scene().fluid_settings),
+            "fluid_schedule": asdict(eng.get_play_scene().fluid_schedule),
             "checkpoint": str(checkpoint / "model.pt"),
             "versions": {"newton": newton.__version__, "warp": wp.__version__, "torch": torch.__version__},
             "device": wp.get_device("cuda:0").name,
@@ -101,9 +135,14 @@ def run(args):
                            "GPU drain occurs only at batch boundaries.",
             "runs": {},
         }
+        report["source_hashes"] = {
+            str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for directory in (ROOT / "RSP/rendering", ROOT / "RSP/runtime")
+            for path in directory.glob("*.py")}
         counters = {}
         normal_limit = engine.Engine.render
         normal_render = eng._presentation.render
+        normal_poll = viewer.renderer.update
         paced = True
 
         def rate_limit(instance):
@@ -118,12 +157,20 @@ def run(args):
             counters["render_ms"] += (time.perf_counter() - start) * 1000
             return result
 
+        def poll_events():
+            start = time.perf_counter()
+            try:
+                return normal_poll()
+            finally:
+                counters["event_poll_ms"] += (time.perf_counter() - start) * 1000
+
         def drain():
             viewer.renderer._make_current()
             wp.synchronize()
             gl.glFinish()
 
         with patch.object(engine.Engine, "render", rate_limit), \
+                patch.object(viewer.renderer, "update", poll_events), \
                 patch.object(eng._presentation, "render", render), torch.no_grad():
             for mode in ("paced", "uncapped"):
                 paced = mode == "paced"
@@ -134,11 +181,13 @@ def run(args):
                     if index == args.warmup:
                         drain()
                         batch_start = time.perf_counter()
-                    counters.update(render_ms=0.0, limit_ms=0.0)
+                    counters.update(render_ms=0.0, limit_ms=0.0, event_poll_ms=0.0)
+                    viewer.profile_state_ms = viewer.profile_particles_ms = 0.0
                     start = time.perf_counter()
                     action, _ = agent._decide_action(obs, info)
                     obs, _, _, info = env.step(action)
                     elapsed = (time.perf_counter() - start) * 1000
+                    counters["rigid_update_ms"] = viewer.profile_state_ms - viewer.profile_particles_ms
                     if index >= args.warmup:
                         samples.append({"frame_ms": elapsed, **counters})
                 drain()
@@ -156,6 +205,42 @@ def run(args):
                 Image.fromarray(frame).save(output / f"{mode}.png")
                 print(json.dumps({"mode": mode, **summary}), flush=True)
                 (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+            if args.stability_frames:
+                paced = False
+                set_rand_seed(args.seed)
+                obs, info = env.reset()
+                checkpoints = []
+                for index in range(args.stability_frames):
+                    # One explicit reset tests both the cached feedback and graph
+                    # parity after continuous playback, in addition to startup.
+                    if args.reset_at and index == args.reset_at:
+                        obs, info = env.reset()
+                        assert eng._runtime._solver.clock.time == 0.
+                    action, _ = agent._decide_action(obs, info)
+                    obs, _, _, info = env.step(action)
+                    if index % 300 == 0 or index == args.stability_frames - 1:
+                        drain()
+                        raw = eng.get_sim_state().raw_state
+                        points, velocity, bodies = raw.particle_q.numpy(), raw.particle_qd.numpy(), raw.body_q.numpy()
+                        forces = eng._runtime._solver.boundary_forces.numpy()
+                        assert all(np.isfinite(x).all() for x in (points, velocity, bodies, forces))
+                        assert torch.isfinite(obs).all()
+                        clock = eng._runtime._solver.clock
+                        expected_steps = round(eng.get_sim_time() / eng.get_timestep())
+                        assert clock.rigid_ticks == expected_steps * eng._runtime._sim_steps
+                        assert clock.fluid_ticks == expected_steps * clock.schedule.fluid_steps
+                        checkpoints.append(dict(frame=index + 1, main_time=eng.get_sim_time(),
+                            fluid_time=clock.time, particle_min=points.min(axis=0).tolist(),
+                            particle_max=points.max(axis=0).tolist(),
+                            max_speed=float(np.linalg.norm(velocity, axis=1).max()),
+                            max_force=float(np.linalg.norm(forces[:, :3], axis=1).max())))
+                        Image.fromarray(viewer.get_frame(render_ui=True).numpy()).save(output / f"stability_{index + 1}.png")
+                report["stability"] = {"frames": args.stability_frames, "checkpoints": checkpoints}
+                raw = eng.get_sim_state().raw_state
+                np.savez(output / "final_state.npz", particles=raw.particle_q.numpy(),
+                         velocities=raw.particle_qd.numpy(), bodies=raw.body_q.numpy(),
+                         joints=raw.joint_q.numpy(), observations=obs.cpu().numpy())
+                (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"PROFILE PASS: {output / 'report.json'}", flush=True)
     finally:
         resource_util.cleanup(env.close if env is not None else None,
@@ -171,6 +256,10 @@ def main():
     parser.add_argument("--warmup", type=int, default=30)
     parser.add_argument("--frames", type=int, default=180)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--fluid-profile", choices=("default", "legacy", "two", "paused", "fast"), default="default")
+    parser.add_argument("--eager", action="store_true", help="Disable CUDA Graph for equivalence checks")
+    parser.add_argument("--stability-frames", type=int, default=0)
+    parser.add_argument("--reset-at", type=int, default=0)
     args = parser.parse_args()
     if args.warmup < 1 or args.frames < 1 or min(args.width, args.height) < 1:
         parser.error("warmup, frames, width and height must be positive")

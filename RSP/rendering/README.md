@@ -1,9 +1,10 @@
-# RSP particle rendering
+# RSP GPU rendering
 
 `BillboardBatch` owns one CUDA/OpenGL instance buffer, a quad and its shaders.
 `NewtonBillboardViewer` adapts that batch to Newton 1.7's existing scene, window,
 camera and UI. MimicKit's `PBFViewer` name remains the application entry point;
-the same viewer is used by the headless video recorder.
+the same viewer is used by the headless video recorder. `RigidBatch` also owns
+one shared CUDA/OpenGL buffer for all rigid instances in a layer.
 Importing the backend does not initialize OpenGL; a context is needed only when
 constructing a viewer, so non-visual simulation retains its display-free path.
 
@@ -39,11 +40,24 @@ There is no particle lighting, shadow pass, edge overlay or transparency sort.
 ## Newton boundary
 
 Version-specific integration is confined to `newton_gl.py`: the scene-object
-`render()`/`destroy()` protocol, camera matrices, layer-qualified particle names,
-and `_log_particles()`. Particles draw in the opaque scene pass, sharing rigid
+`render()`/`destroy()` protocol, instance attributes, shape batching, camera
+matrices and layer-qualified names. Particles draw in the opaque scene pass, sharing rigid
 depth before transparency, MSAA resolve and ImGui. Human geometry, scene lines,
 input callbacks and recording retain their Newton paths. No global monkeypatch
 or modified installed package is needed.
+
+Rigid records contain a transform, RGB/opacity and material in 96 bytes. A single
+GPU kernel writes the shared GL buffer; group VAOs address its ranges and reuse
+Newton's mesh shaders. Capsules have persistent cylinder/end-cap instances.
+Colors follow the model's GPU array every frame. After changing opacity across
+opaque/transparent passes, call `invalidate_rigid_appearance()` explicitly;
+ordinary frames do not read opacity flags back to the CPU. Optional diagnostic
+overlays and picking retain Newton's paths and may perform their own readbacks.
+
+RSP adapts only its renderer instance to nonblocking event polling. The existing
+application limiter still controls playback pacing; window/UI events continue
+to be dispatched. Hidden COM markers skip Newton's otherwise unconditional
+update/upload. Enabling the COM overlay still uses Newton's original drawing.
 
 Newton owns model/layer cleanup and calls the object's `destroy()`. The adapter
 also handles the window-close event before the context disappears. When updating

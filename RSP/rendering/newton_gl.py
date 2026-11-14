@@ -37,12 +37,129 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
     """Native Newton rigid/UI rendering with CUDA billboard particles."""
 
     def __init__(self, *args, speed_color_mid=2.0, speed_color_max=6.5, **kwargs):
+        self._rigid_batches = {}
         self._billboard_closed = False
         self._billboard_settings = {"speed_color_mid": speed_color_mid, "speed_color_max": speed_color_max}
         super().__init__(*args, **kwargs)
+        # RSP's application already owns pacing. Newton's requested 1 ms wait
+        # can become a Windows timer tick, masking faster GPU uploads. Adapt
+        # this renderer instance only; retain all event and camera processing.
+        self.renderer.update = self._poll_events
         # The OS close event can destroy the context before the engine's finally
         # block runs. Release interop resources while that context still exists.
         self.renderer.window.push_handlers(on_close=self._close_window)
+
+    def _poll_events(self):
+        import ctypes
+        import pyglet
+
+        self.renderer._make_current()
+        if not self.renderer.headless:
+            pyglet.clock.tick()
+            self.renderer.app.platform_event_loop.step(0.0)
+            try:
+                self.renderer.window.dispatch_events()
+            except (ctypes.ArgumentError, TypeError):
+                # Same xlib compatibility exception as Newton's event pump.
+                pass
+
+    def _drop_rigid_batch(self):
+        entry = self._rigid_batches.pop(id(getattr(self, "layer", None)), None)
+        if entry is not None:
+            batch, groups = entry
+            batch.close()
+            for name, _shapes in groups:
+                self.objects.pop(name, None)
+
+    def _build_packed_vbo_arrays(self):
+        """Replace Newton's pinned-host upload route with one shared GPU buffer."""
+        import numpy as np
+        from .rigid import RigidBatch
+
+        self.renderer._make_current()
+        self._drop_rigid_batch()
+        if self.model is None:
+            return
+        ids, extras, scales, materials, groups = [], [], [], [], []
+        identity = (0., 0., 0., 0., 0., 0., 1.)
+        for shapes in self._shape_instances.values():
+            shape_ids = list(shapes.model_shapes)
+            if not shape_ids:
+                continue
+            group_scales = shapes.scales.numpy()
+            group_materials = shapes.materials.numpy()
+            parts = [(shapes.name, shapes.mesh, shape_ids, [identity] * len(shape_ids), group_scales, group_materials)]
+            if shapes.geo_type == newton.GeoType.CAPSULE:
+                sphere = self._qualify("/geometry/_capsule_instancer/sphere")
+                cylinder = self._qualify("/geometry/_capsule_instancer/cylinder")
+                if sphere not in self.objects:
+                    self.log_geo(sphere, newton.GeoType.SPHERE, (1.,), 0., True, hidden=True)
+                if cylinder not in self.objects:
+                    self.log_geo(cylinder, newton.GeoType.CYLINDER, (1., 1.), 0., True, hidden=True)
+                cap_extras = [(0., 0., sign * float(s[2]), 0., 0., 0., 1.)
+                              for s in group_scales for sign in (-1, 1)]
+                cap_scales = [(float(s[0]),) * 3 for s in group_scales for _ in range(2)]
+                parts = [(shapes.name + "/capsule_cylinder", cylinder, shape_ids,
+                          [identity] * len(shape_ids), group_scales, group_materials),
+                         (shapes.name + "/capsule_caps", sphere, np.repeat(shape_ids, 2),
+                          cap_extras, cap_scales, np.repeat(group_materials, 2, axis=0))]
+            for name, mesh, part_ids, part_extra, part_scale, part_material in parts:
+                offset = len(ids)
+                ids.extend(part_ids)
+                extras.extend(part_extra)
+                scales.extend(part_scale)
+                materials.extend(part_material)
+                groups.append((name, shapes, mesh, offset, len(part_ids)))
+        batch = RigidBatch(self.model, ids, extras, scales, materials)
+        try:
+            for name, shapes, mesh, offset, count in groups:
+                self.objects[name] = batch.add_drawable(self.objects[mesh], offset, count,
+                    transparent=shapes.transparent, draw_edge=shapes.geo_type != newton.GeoType.PLANE)
+            self._rigid_batches[id(self.layer)] = (batch, [(name, shapes) for name, shapes, *_ in groups])
+        except BaseException:
+            batch.close()
+            for name, *_ in groups:
+                self.objects.pop(name, None)
+            raise
+
+    def invalidate_rigid_appearance(self):
+        """Call after changing opacity across render passes or mesh topology.
+
+Colors and opacity values themselves are read on GPU every frame. CPU-side
+pass classification is refreshed only on this explicit edit notification.
+"""
+        self.renderer._make_current()
+        self._drop_rigid_batch()
+        self._rebuild_shape_batches_for_opacity_groups()
+
+    def log_state(self, state):
+        self._last_state = state
+        if self.model is None:
+            return
+        self.renderer._make_current()
+        batch, groups = self._rigid_batches[id(self.layer)]
+        try:
+            batch.update(state, self.world_offsets, self.layer.xform)
+        finally:
+            hidden_layer = self._layer_force_hidden()
+            for name, shapes in groups:
+                self.objects[name].hidden = (not batch.valid or hidden_layer or not self._should_show_shape(
+                    shapes.flags, shapes.static, shapes.geo_type))
+        # Keep Newton's optional diagnostics and our billboard hook. The normal
+        # rigid path never enters log_capsules/update_from_pinned/color.numpy.
+        self._log_gaussian_shapes(state)
+        self._log_non_shape_state(state)
+        self.model_changed = False
+        self._render_picking_line(state)
+
+    def _log_com(self, state):
+        # Newton updates and uploads hidden COM markers as well. Keep the UI
+        # feature, but incur that diagnostic work only when it is displayed.
+        if self.show_com and not self._layer_force_hidden():
+            return super()._log_com(state)
+        marker = self.objects.get(self._qualify("/model/com"))
+        if marker is not None:
+            marker.hidden = True
 
     def _log_particles(self, state):
         name = self._qualify("/model/particles")
@@ -64,6 +181,7 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         renderer = getattr(self, "renderer", None)
         if renderer is not None:
             renderer._make_current()
+        self._drop_rigid_batch()
         # Newton calls destroy() on layer-owned scene objects, including ours.
         super().clear_model()
 
@@ -81,6 +199,9 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         window = getattr(renderer, "window", None)
         if window is not None and window.context is not None:
             renderer._make_current()
+            for batch, _groups in self._rigid_batches.values():
+                batch.close()
+            self._rigid_batches.clear()
             # ViewerGL destroys geometry (and our CUDA registration) first,
             # then closes its window. No parallel renderer/window is created.
             super().close()

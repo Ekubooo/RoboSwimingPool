@@ -15,6 +15,7 @@ from RSP.sim_ready.adapters.newton import describe_articulations, validate_model
 from RSP.sim_ready.pipelines.articulation import prepare_articulated_asset
 from RSP.sim_ready.config import BakeOptions
 from solvers.pbf import boundary_model, pbf_helper
+from RSP.runtime import fluid_clock
 
 
 @wp.kernel
@@ -24,12 +25,15 @@ def sample_sdf(volume: wp.uint64, points: wp.array(dtype=wp.vec3), distances: wp
     distances[i] = wp.volume_sample_f(volume, index, wp.Volume.LINEAR)
 
 
-def runtime_config(control_dt, substeps):
+def runtime_config(control_dt, substeps, settings=None):
     """Keep physical scalars; express the authored Y-up scene in the Z-up world."""
-    original = pbf_helper.PBFConfig()
+    settings = fluid_clock.DEFAULT_SETTINGS if settings is None else settings
+    original = settings.integrator_config(settings.schedule(control_dt, substeps))
     transform = assets.SCENE_TRANSFORM
+    if not np.allclose(np.abs(transform[:3, :3]) @ original.container_size, assets.POOL_SIZE):
+        raise ValueError("Fluid container_size must match the existing pool assets; asset geometry is unchanged")
     endpoints = np.array([original.block_start, original.block_end]) @ transform[:3, :3].T + transform[:3, 3]
-    return replace(original, frame_dt=control_dt, substeps=substeps,
+    return replace(original,
                    gravity=tuple(transform[:3, :3] @ original.gravity),
                    container_size=tuple(np.abs(transform[:3, :3]) @ original.container_size),
                    block_start=tuple(endpoints.min(axis=0)), block_end=tuple(endpoints.max(axis=0)),
@@ -41,7 +45,11 @@ class PBFScene:
         self.store = AssetStore(directory)
         self.directory = self.store.root
         self.device = device
-        self.config = runtime_config(control_dt, substeps)
+        self.control_dt = control_dt
+        self.rigid_dt = control_dt / substeps
+        self.fluid_settings = fluid_clock.DEFAULT_SETTINGS
+        self.fluid_schedule = self.fluid_settings.schedule(control_dt, substeps)
+        self.config = runtime_config(control_dt, substeps, self.fluid_settings)
         self.particles = SimpleNamespace(config=self.config)
         pbf_helper.init_scene_parameters(self.particles)
         self.primitive_files = assets.primitive_files(self.store)
@@ -160,7 +168,11 @@ class PBFScene:
                              initial_clearances=self.initial_clearances,
                              particle_radius=self.config.particle_radius,
                              support_radius=self.particles.smoothing_length,
-                             control_dt=self.config.frame_dt, physics_dt=self.config.frame_dt / self.config.substeps)
+                             control_dt=self.control_dt, physics_dt=self.rigid_dt,
+                             fluid_frame_dt=self.fluid_schedule.fluid_frame_dt,
+                             fluid_dt=self.fluid_schedule.fluid_dt,
+                             fluid_substeps=self.fluid_schedule.fluid_steps,
+                             fluid_time_scale=self.fluid_settings.time_scale)
         self.manifest["asset_validation"] = self.validation.to_dict()
         destination = self.store.path("scene_manifest.json")
         with self.store.staging(destination) as stage:
