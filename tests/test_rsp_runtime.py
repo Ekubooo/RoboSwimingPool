@@ -58,7 +58,7 @@ class ClockChecks(unittest.TestCase):
             a, b = SimpleNamespace(ptr=1), SimpleNamespace(ptr=2)
             fluid = SimpleNamespace(pre_Pos=a, temp_pPos=b, grid=Mock())
             solver = SimpleNamespace(fluid=fluid, clock=clock, rigid=SimpleNamespace(_step=4),
-                                     model=SimpleNamespace(device="cuda:0", particle_count=1))
+                                     model=SimpleNamespace(device="cuda:0", particle_count=1), graph_revision=0)
 
             def step():
                 for _ in range(8):
@@ -67,7 +67,8 @@ class ClockChecks(unittest.TestCase):
                     solver.rigid._step += 1
                     clock.advance()
 
-            with patch.object(wp, "load_module"), patch.object(wp, "ScopedCapture"), patch.object(wp, "capture_launch"):
+            with patch.object(wp, "load_module"), patch.object(wp, "ScopedCapture"), patch.object(wp, "capture_launch"), \
+                 patch.object(wp, "Stream"), patch.object(wp, "ScopedStream"):
                 graph = ClockedStepGraph(solver, step)
                 self.assertEqual((clock.rigid_ticks, clock.fluid_ticks, solver.rigid._step), (0, 0, 4))
                 graph.launch()
@@ -97,6 +98,7 @@ class FeedbackChecks(unittest.TestCase):
                         body_f=wp.zeros(1, dtype=wp.spatial_vector)) for _ in range(2)]
             forces = wp.full(1, wp.spatial_vector(1, 2, 3, 4, 5, 6), dtype=wp.spatial_vector)
             solver = SimpleNamespace(clock=FluidClock(settings.schedule(1/30, 8)), settings=settings,
+                feedback_parameter=wp.full(1, scale, dtype=float),
                 boundaries=SimpleNamespace(sync_body_poses=Mock()), boundary_forces=forces,
                 model=SimpleNamespace(device=forces.device, body_count=1), rigid=SimpleNamespace(step=Mock()))
             # First two rigid ticks deliberately perform no fluid solve.

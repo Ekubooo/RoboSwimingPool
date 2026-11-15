@@ -11,6 +11,8 @@ class PlaybackGui:
     def __init__(self, gui):
         self._base = gui
         self._prepared = False
+        self.fluid_controls = None
+        self._pressed_keys = set()
 
     def __getattr__(self, name):
         # Keep the version-specific ViewerGui interface at this adapter boundary.
@@ -25,10 +27,15 @@ class PlaybackGui:
         self._base.show_ui = value
 
     def handle_key_press(self, symbol, close_fn=None):
-        if self.is_keyboard_capturing():
-            return
         from pyglet.window import key
 
+        toggles = (key.ENTER, key.SPACE, key.R, key.G, key.O, key.P, key.X)
+        if symbol in toggles:
+            if symbol in self._pressed_keys:
+                return
+            self._pressed_keys.add(symbol)
+        if self.is_keyboard_capturing():
+            return
         viewer = self._base._viewer
         if symbol == key.ENTER:
             viewer._paused = not viewer._paused
@@ -36,11 +43,26 @@ class PlaybackGui:
             viewer._paused = True
             viewer._step_requested = True
         elif symbol == key.R:
-            callback = viewer._reset_callback
-            if callback is not None:
-                callback()
+            self.request_reset()
+        elif self.fluid_controls is not None and symbol == key.G:
+            self.fluid_controls.reverse_gravity()
+        elif self.fluid_controls is not None and symbol in (key.O, key.P):
+            self.fluid_controls.select_horizontal(-1 if symbol == key.O else 1)
+        elif self.fluid_controls is not None and symbol == key.X:
+            self.fluid_controls.set_slow_motion(not self.fluid_controls.slow_motion)
         else:
             self._base.handle_key_press(symbol, close_fn=close_fn)
+
+    def handle_key_release(self, symbol, modifiers=0):
+        self._pressed_keys.discard(symbol)
+
+    def clear_pressed_keys(self):
+        self._pressed_keys.clear()
+
+    def request_reset(self):
+        callback = self._base._viewer._reset_callback
+        if callback is not None:
+            callback()
 
     def prepare_frame(self, update_fps=True):
         self._prepared = False
@@ -82,21 +104,34 @@ class PlaybackGui:
             if viewer._reset_callback is not None:
                 imgui.same_line()
                 if imgui.button("Reset"):
-                    viewer._reset_callback()
-            imgui.separator()
-            _, viewer.show_visual = imgui.checkbox("Rigid geometry", viewer.show_visual)
-            _, viewer.show_particles = imgui.checkbox("Fluid particles", viewer.show_particles)
-            imgui.push_item_width(140 * scale)
-            changed, fov = imgui.slider_float("Camera FOV", viewer.camera.fov, 15., 90.)
-            if changed:
-                viewer.camera.fov = fov
-                viewer._camera_dirty = True
-            _, viewer.camera_speed = imgui.slider_float("Camera speed", viewer.camera_speed, .1, 10.)
-            imgui.pop_item_width()
+                    self.request_reset()
             imgui.separator()
             for callback in self._base._ui_callbacks["side"]:
                 callback(imgui)
+            controls = self.fluid_controls
+            if controls is not None:
+                imgui.separator()
+                imgui.push_item_width(160 * scale)
+                changed, strength = imgui.slider_float("Fluid gravity (m/s^2)", controls.gravity_strength, 0., 20.,
+                                                       flags=imgui.SliderFlags_.always_clamp)
+                if changed:
+                    controls.set_gravity_strength(strength, commit=False)
+                if imgui.is_item_deactivated_after_edit():
+                    controls.commit_gravity()
+                direction = next((label for value, label in zip(controls.direction, ("X", "Y", "Z")) if value), "Z")
+                sign = "+" if sum(controls.direction) > 0 else "-"
+                imgui.text_disabled(f"Direction: {sign}{direction}   G: reverse   O/P: left/right")
+                changed, feedback = imgui.slider_float("Fluid feedback", controls.feedback_scale, 0., 2.,
+                                                       format="%.1f",
+                                                       flags=imgui.SliderFlags_.always_clamp)
+                if changed:
+                    # Keep both mouse dragging and typed values on 0.1 steps.
+                    controls.set_feedback_scale(round(feedback * 10) / 10)
+                changed, slow = imgui.checkbox("Fluid slow motion x0.5 (X)", controls.slow_motion)
+                if changed:
+                    controls.set_slow_motion(slow)
+                imgui.pop_item_width()
+                if controls.error:
+                    imgui.text_wrapped(f"Fluid update failed: {controls.error}")
             imgui.text_disabled("Enter: pause  Space: step  R: reset")
-            imgui.text_disabled("Mouse / WASD: camera  H: hide UI")
-            imgui.text_disabled("Right-drag: pull a body")
         imgui.end()

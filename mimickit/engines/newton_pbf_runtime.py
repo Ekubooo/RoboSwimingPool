@@ -89,9 +89,12 @@ class PBFScene:
         self.static_hull_count = len(hulls)
 
     def _validate_initial_layout(self):
-        """AABB separation is conservative for these spheres and aligned boxes."""
-        water = np.array([self.config.block_start, self.config.block_end])
-        obstacles = [("initial_water", water), ("static_bunny", self.bunny.bounds)]
+        """Keep rigid bodies inside the pool and separate from each other.
+
+        Initial water and internal static geometry may overlap bodies. Their
+        ordinary collision/boundary solvers handle these starts during playback.
+        """
+        obstacles = []
         records = []
         for spec in assets.RIGIDS:
             radius = spec.size / 2 if spec.kind == "box" else spec.size

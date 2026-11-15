@@ -7,7 +7,7 @@ parameters have one definition. For example:
 ```python
 DEFAULT_SETTINGS = FluidSettings(
     pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
-                  block_start=(1.32, .02, .04), block_end=(2.96, .82, 1.96)),
+                  block_start=(1.56, .50, .10), block_end=(2.96, 2.08, 1.25)),
     time_scale=1.0,
     feedback_scale=1.0,
     max_dt=1.0 / 300.0,
@@ -41,9 +41,8 @@ second; 150 FPS is real time. Slow motion therefore depends on actual FPS.
 Higher speeds increase the actual step count
 to respect `max_dt`; this bound alone does not guarantee numerical stability.
 
-The right-side water block spans world bounds X=1.32–2.96, Y=0.04–1.96,
-Z=0.02–0.82 m. The existing 0.02 m lattice yields 300,105 particles; centers
-span X=1.34–2.94, Y=0.06–1.94, Z=0.04–0.80 m. The initial block deliberately
+The right-side water block spans world bounds X=1.56–2.96, Y=0.75–1.90,
+Z=0.50–2.08 m. The existing 0.02 m lattice yields 301,392 particles. The initial block deliberately
 includes the static bunny's interior, without filtering or changing the solver.
 `PBFConfig` itself retains the reference defaults; only RSP's `DEFAULT_SETTINGS`
 selects this demo configuration. `play_spawn_xy` in the environment YAML places
@@ -59,9 +58,39 @@ gravity is independent of rigid gravity. Container dimensions must match the
 existing pool assets. Radius changes use the existing asset preparation path;
 this feature does not add arbitrary pool generation or alter that pipeline.
 
-Physical coefficients are compilation constants in the existing solver.
-Restart after changing configuration. This version has no parameter UI and
-does not support hot reconfiguration of a solver or CUDA Graph.
+Other physical coefficients remain compilation constants in the existing solver;
+restart after editing them. Runtime controls below only edit fluid gravity,
+feedback scaling and the fluid timestep, without changing the numerical solver.
+
+## Interactive fluid controls
+
+The panel keeps Pause, Step, Reset and Policy: scene sphere. Gravity strength
+ranges from 0 to 20 m/s² (default 9.81); release the slider to apply it without
+changing direction. Feedback ranges from 0 to 2 (default 1), with live updates
+to a persistent GPU scalar. Zero disables feedback but leaves rigid-to-fluid
+interaction enabled. No GPU state is read back to populate the panel.
+
+G reverses fluid gravity. O/P select world -X/+X; press the same direction key
+again to restore -Z. G clears the horizontal selection. X and the slow-motion
+checkbox toggle fluid-only half speed: two 1/600 s fluid steps per frame,
+instead of two 1/300 s steps. Rigid steps and the five-frame policy interval
+stay unchanged. Feedback uses the actual fluid dt, then the separate multiplier;
+no speed compensation is applied. The fluid clock accumulates elapsed time
+across speed changes without reinterpreting past ticks.
+
+R and the Reset button share the same queued reset: restore default gravity,
+feedback and speed, reset both clocks and the scene, clear single-step requests,
+and pause. Scene-sphere selection is preserved. Initial application startup
+still runs normally. UI text input suppresses application shortcuts; held
+toggle keys do not repeat, and releasing a key or losing focus clears it.
+
+`FluidInteraction` owns CPU settings/commands. `PlaybackRunner` binds it to the
+existing solver and UI, and applies edits on the playback stream between frames.
+Gravity and speed edits invalidate `ClockedStepGraph`, which recaptures lazily
+on a Warp-owned stream before advancing again. The capture preserves counters,
+elapsed time and prediction-buffer parity. A failed capture pauses playback
+and reports an error; it does not launch the stale graph. Feedback-only edits
+update device data and never recapture. Human/model gravity is not modified.
 
 ## State and feedback
 
@@ -79,8 +108,8 @@ Capture restores host counters on success or failure. Replay advances the
 rigid counter by the configured rigid count and fluid counter by its own step
 count. Odd fluid counts require two graphs for PBF prediction-buffer parity.
 Odd rigid counts use the existing backend's final GPU copy to its persistent
-views. The default four-step schedule does not require it. All graph parameters
-are fixed at startup.
+views. The default four-step schedule does not require it. Interactive edits
+leave the number of fluid and rigid calls unchanged.
 
 ## Checks
 
@@ -117,7 +146,7 @@ The original `_compute_obs` remains available for construction and numerical
 comparison, but ordinary playback updates use the GPU builder.
 
 The viewer owns pause/single-step state. Enter toggles pause, Space advances
-one 1/150 s simulation frame and stays paused, and R queues a reset. Reset and
+one 1/150 s simulation frame and stays paused, and R resets defaults and pauses. Reset and
 policy-input switches take effect between frames. Paused frames still draw and
 process camera/UI events. The application's former 30 Hz limiter is removed;
 other engine backends retain their existing behavior.

@@ -1,8 +1,8 @@
 """Code-configured fluid playback relative to each simulation frame.
 
-Edit DEFAULT_SETTINGS before starting the application. All physical parameters
-come from the existing WarpLab-compatible PBFConfig; frame_dt is derived from
-time_scale, not a second speed multiplier. No runtime UI or hot reconfiguration.
+All physical defaults come from the existing WarpLab-compatible PBFConfig.
+The playback controls can halve the fluid timestep without changing the rigid
+clock or the number of solver calls. Other configuration is startup-only.
 """
 from dataclasses import dataclass, field, replace
 import math
@@ -61,6 +61,7 @@ class FluidClock:
     def reset(self):
         self.rigid_ticks = 0
         self.fluid_ticks = 0
+        self.elapsed = 0.0
 
     @property
     def phase(self):
@@ -68,15 +69,18 @@ class FluidClock:
 
     @property
     def time(self):
-        return self.fluid_ticks * self.schedule.fluid_dt
+        return self.elapsed
 
     def advance(self):
-        self.fluid_ticks += self.schedule.calls[self.phase]
+        count = self.schedule.calls[self.phase]
+        self.fluid_ticks += count
+        self.elapsed += count * self.schedule.fluid_dt
         self.rigid_ticks += 1
 
     def advance_frame(self):
         self.rigid_ticks += self.schedule.rigid_steps
         self.fluid_ticks += self.schedule.fluid_steps
+        self.elapsed += self.schedule.fluid_frame_dt
 
 
 # PBFConfig exposes every fluid parameter, including radius, density, viscosity,
@@ -84,8 +88,8 @@ class FluidClock:
 # overrides here, e.g. pbf=PBFConfig(substeps=2, viscosity=0.25).
 DEFAULT_SETTINGS = FluidSettings(
     pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
-                  # Authored Y-up: low, broad water block on the right. The
-                  # regular lattice deliberately includes the static bunny.
-                  block_start=(1.32, .02, .04), block_end=(2.96, .82, 1.96)),
+                  # Authored Y-up: restore the high block, translated right.
+                  # The regular lattice deliberately includes the static bunny.
+                  block_start=(1.56, .50, .10), block_end=(2.96, 2.08, 1.25)),
     time_scale=1.0,
 )

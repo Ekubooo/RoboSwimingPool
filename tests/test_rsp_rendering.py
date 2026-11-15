@@ -315,6 +315,8 @@ class ViewerUIChecks(unittest.TestCase):
         viewer = NewtonBillboardViewer(width=640, height=480, headless=False, vsync=False)
         viewer.renderer.window.set_visible(False)
         try:
+            from RSP.runtime.interaction import FluidInteraction
+            viewer.gui.fluid_controls = FluidInteraction(None)
             viewer.set_model(particle_model())
             viewer.show_particles = True
             state = viewer.model.state()
@@ -327,6 +329,7 @@ class ViewerUIChecks(unittest.TestCase):
             resets = []
             viewer.set_reset_callback(lambda: resets.append(True))
             viewer.renderer._on_key_press(key.ENTER, 0)
+            viewer.renderer._on_key_release(key.ENTER, 0)
             self.assertTrue(viewer.is_paused())
             self.assertFalse(viewer.should_step())
             viewer.renderer._on_key_press(key.SPACE, 0)

@@ -44,6 +44,8 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         if self.gui is not None:
             from .playback_ui import PlaybackGui
             self.gui = PlaybackGui(self.gui)
+            self.renderer.register_key_release(self.gui.handle_key_release)
+            self.renderer.window.push_handlers(on_deactivate=self.gui.clear_pressed_keys)
         # RSP's application already owns pacing. Newton's requested 1 ms wait
         # can become a Windows timer tick, masking faster GPU uploads. Adapt
         # this renderer instance only; retain all event and camera processing.
