@@ -97,20 +97,20 @@ class ControlChecks(unittest.TestCase):
             gui.handle_key_press(symbol)
             gui.handle_key_release(symbol)
 
-        gui.handle_key_press(key.O)
+        gui.handle_key_press(key.Q)
         self.assertEqual(controls.direction, (-1., 0., 0.))
-        gui.handle_key_press(key.O)  # OS repeat must not restore vertical gravity.
+        gui.handle_key_press(key.Q)  # OS repeat must not restore vertical gravity.
         self.assertEqual(controls.direction, (-1., 0., 0.))
-        gui.handle_key_release(key.O)
-        press(key.O)
+        gui.handle_key_release(key.Q)
+        press(key.Q)
         self.assertEqual(controls.direction, (0., 0., -1.))
-        press(key.P)
+        press(key.E)
         self.assertEqual(controls.direction, (1., 0., 0.))
         press(key.G)
         self.assertEqual(controls.direction, (-1., 0., 0.))
-        press(key.P)  # G cleared the previous right-direction selection.
+        press(key.E)  # G cleared the previous right-direction selection.
         self.assertEqual(controls.direction, (1., 0., 0.))
-        press(key.P)
+        press(key.E)
         press(key.G)
         self.assertEqual(controls.direction, (0., 0., 1.))
         base.is_keyboard_capturing.return_value = True
@@ -119,9 +119,9 @@ class ControlChecks(unittest.TestCase):
         base.is_keyboard_capturing.return_value = False
         press(key.X)
         self.assertTrue(controls.slow_motion)
-        gui.handle_key_press(key.ENTER)
+        gui.handle_key_press(key.SPACE)
         gui.clear_pressed_keys()  # Losing focus must not leave a key latched.
-        press(key.ENTER)
+        press(key.SPACE)
         self.assertFalse(viewer._paused)
         controls.set_feedback_scale(2.)
         controls.set_gravity_strength(15.)

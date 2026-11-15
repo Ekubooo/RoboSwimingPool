@@ -6,13 +6,15 @@ parameters have one definition. For example:
 
 ```python
 DEFAULT_SETTINGS = FluidSettings(
-    pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
-                  block_start=(1.56, .50, .10), block_end=(2.96, 2.08, 1.25)),
+    pbf=PBFConfig(particle_radius=0.0125, substeps=2, pressure_iterations=3,
+                  block_start=(1.56, .50, .10), block_end=(2.96, 3.55, 1.25)),
     time_scale=1.0,
     feedback_scale=1.0,
     max_dt=1.0 / 300.0,
 )
 ```
+
+The default block contains 299,475 particles (radius 0.0125 m); its world Z range is 0.50 to 3.55 m.
 
 `time_scale` is relative to the simulation frame clock. `frame_dt` is derived
 from that multiplier; setting `PBFConfig.frame_dt` does not add a second speed
@@ -70,7 +72,7 @@ changing direction. Feedback ranges from 0 to 2 (default 1), with live updates
 to a persistent GPU scalar. Zero disables feedback but leaves rigid-to-fluid
 interaction enabled. No GPU state is read back to populate the panel.
 
-G reverses fluid gravity. O/P select world -X/+X; press the same direction key
+O/P move the camera down/up. G reverses fluid gravity. Q/E select world -X/+X; press the same direction key
 again to restore -Z. G clears the horizontal selection. X and the slow-motion
 checkbox toggle fluid-only half speed: two 1/600 s fluid steps per frame,
 instead of two 1/300 s steps. Rigid steps and the five-frame policy interval
@@ -145,7 +147,7 @@ normal frames do not require a CPU synchronization for observation construction.
 The original `_compute_obs` remains available for construction and numerical
 comparison, but ordinary playback updates use the GPU builder.
 
-The viewer owns pause/single-step state. Enter toggles pause, Space advances
+The viewer owns pause/single-step state. Space toggles pause, Enter advances
 one 1/150 s simulation frame and stays paused, and R resets defaults and pauses. Reset and
 policy-input switches take effect between frames. Paused frames still draw and
 process camera/UI events. The application's former 30 Hz limiter is removed;

@@ -328,16 +328,16 @@ class ViewerUIChecks(unittest.TestCase):
             from pyglet.window import key
             resets = []
             viewer.set_reset_callback(lambda: resets.append(True))
-            viewer.renderer._on_key_press(key.ENTER, 0)
-            viewer.renderer._on_key_release(key.ENTER, 0)
+            viewer.renderer._on_key_press(key.SPACE, 0)
+            viewer.renderer._on_key_release(key.SPACE, 0)
             self.assertTrue(viewer.is_paused())
             self.assertFalse(viewer.should_step())
-            viewer.renderer._on_key_press(key.SPACE, 0)
+            viewer.renderer._on_key_press(key.ENTER, 0)
             self.assertTrue(viewer.should_step())
             self.assertFalse(viewer.should_step())
             viewer.renderer._on_key_press(key.R, 0)
             self.assertEqual(resets, [True])
-            viewer.renderer._on_key_press(key.ENTER, 0)
+            viewer.renderer._on_key_press(key.SPACE, 0)
             self.assertFalse(viewer.is_paused())
         finally:
             viewer.close()

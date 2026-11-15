@@ -69,6 +69,9 @@ class PBFPlayEnv(SMPEnv):
                 color=np.array(spec.color))
             self._scene_obj_ids.append(obj_id)
 
+    def _get_char_color(self):
+        return np.array([1.0, 0.0, 1.0])
+
     def _build_character(self, env_id, env_config, color=None):
         obj_id = super()._build_character(env_id, env_config, color)
         kin = self._kin_char_model

@@ -90,10 +90,10 @@ class PlaybackChecks(unittest.TestCase):
         config = runtime_config(1/150, 4)
         particles = SimpleNamespace(config=config)
         init_scene_parameters(particles)
-        self.assertEqual(particles.n, 301392)
+        self.assertEqual(particles.n, 299475)
         for actual, expected in zip(config.block_start, (1.56, .75, .50)):
             self.assertAlmostEqual(actual, expected)
-        for actual, expected in zip(config.block_end, (2.96, 1.90, 2.08)):
+        for actual, expected in zip(config.block_end, (2.96, 1.90, 3.55)):
             self.assertAlmostEqual(actual, expected)
 
     def test_gsi_velocities_keep_the_policy_sample_period(self):

@@ -29,7 +29,7 @@ class PlaybackGui:
     def handle_key_press(self, symbol, close_fn=None):
         from pyglet.window import key
 
-        toggles = (key.ENTER, key.SPACE, key.R, key.G, key.O, key.P, key.X)
+        toggles = (key.ENTER, key.SPACE, key.R, key.G, key.Q, key.E, key.X)
         if symbol in toggles:
             if symbol in self._pressed_keys:
                 return
@@ -37,21 +37,28 @@ class PlaybackGui:
         if self.is_keyboard_capturing():
             return
         viewer = self._base._viewer
-        if symbol == key.ENTER:
+        if symbol == key.SPACE:
             viewer._paused = not viewer._paused
-        elif symbol == key.SPACE:
+        elif symbol == key.ENTER:
             viewer._paused = True
             viewer._step_requested = True
         elif symbol == key.R:
             self.request_reset()
         elif self.fluid_controls is not None and symbol == key.G:
             self.fluid_controls.reverse_gravity()
-        elif self.fluid_controls is not None and symbol in (key.O, key.P):
-            self.fluid_controls.select_horizontal(-1 if symbol == key.O else 1)
+        elif self.fluid_controls is not None and symbol in (key.Q, key.E):
+            self.fluid_controls.select_horizontal(-1 if symbol == key.Q else 1)
         elif self.fluid_controls is not None and symbol == key.X:
             self.fluid_controls.set_slow_motion(not self.fluid_controls.slow_motion)
         else:
             self._base.handle_key_press(symbol, close_fn=close_fn)
+
+    def update_camera_from_keys(self, dt, is_key_down):
+        from pyglet.window import key
+
+        # Newton polls held keys separately from the press/release callbacks.
+        remap = {key.Q: key.O, key.E: key.P}
+        self._base.update_camera_from_keys(dt, lambda symbol: is_key_down(remap.get(symbol, symbol)))
 
     def handle_key_release(self, symbol, modifiers=0):
         self._pressed_keys.discard(symbol)
@@ -120,7 +127,7 @@ class PlaybackGui:
                     controls.commit_gravity()
                 direction = next((label for value, label in zip(controls.direction, ("X", "Y", "Z")) if value), "Z")
                 sign = "+" if sum(controls.direction) > 0 else "-"
-                imgui.text_disabled(f"Direction: {sign}{direction}   G: reverse   O/P: left/right")
+                imgui.text_disabled(f"Direction: {sign}{direction}   G: reverse   Q/E: left/right")
                 changed, feedback = imgui.slider_float("Fluid feedback", controls.feedback_scale, 0., 2.,
                                                        format="%.1f",
                                                        flags=imgui.SliderFlags_.always_clamp)
@@ -133,5 +140,5 @@ class PlaybackGui:
                 imgui.pop_item_width()
                 if controls.error:
                     imgui.text_wrapped(f"Fluid update failed: {controls.error}")
-            imgui.text_disabled("Enter: pause  Space: step  R: reset")
+            imgui.text_disabled("Space: pause/play  Enter: step  R: reset")
         imgui.end()
