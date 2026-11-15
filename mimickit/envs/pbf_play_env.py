@@ -19,6 +19,9 @@ class PBFPlayEnv(SMPEnv):
         if engine_config["engine_name"] != "newton_pbf" or num_envs != 1:
             raise ValueError("pbf_play requires one newton_pbf environment")
         self.policy_use_scene_sphere = bool(env_config.get("policy_use_scene_sphere", False))
+        self._spawn_xy = tuple(env_config.get("play_spawn_xy", (.65, 1.)))
+        if len(self._spawn_xy) != 2 or not np.isfinite(self._spawn_xy).all():
+            raise ValueError("play_spawn_xy must contain two finite world coordinates")
         self._scene_obj_ids = []
         self._pending_reset = False
         self._pending_sphere = None
@@ -122,7 +125,12 @@ class PBFPlayEnv(SMPEnv):
             self._engine.set_root_rot(env_ids, obj_id, torch.tensor([0., 0., 0., 1.], device=self._device))
             self._engine.set_root_vel(env_ids, obj_id, 0.)
             self._engine.set_root_ang_vel(env_ids, obj_id, 0.)
-        self._engine.place_character(self._get_char_id())
+        # Preserve MimicKit's sampled pose, root height and velocity. Only move
+        # its horizontal origin to the left clearing; no lift above the water.
+        char_id = self._get_char_id()
+        root = self._engine.get_root_pos(char_id)[env_ids].clone()
+        root[:, :2] = root.new_tensor(self._spawn_xy)
+        self._engine.set_root_pos(env_ids, char_id, root)
         self._engine.reset_play_scene()
 
     def _build_camera(self, env_config):

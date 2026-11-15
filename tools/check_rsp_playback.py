@@ -63,7 +63,7 @@ def main():
         runner.reset()
         eng, viewer = env._engine, runner.viewer
         clock = eng._runtime._solver.clock
-        assert eng.get_sim_model().particle_count == 301392
+        assert eng.get_sim_model().particle_count == 300105
         assert clock.schedule.calls == (0, 1, 0, 1)
         assert abs(clock.schedule.control_dt - 1/150) < 1e-12
         assert abs(clock.schedule.fluid_dt - 1/300) < 1e-12

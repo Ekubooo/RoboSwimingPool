@@ -98,4 +98,5 @@ class PlaybackGui:
                 callback(imgui)
             imgui.text_disabled("Enter: pause  Space: step  R: reset")
             imgui.text_disabled("Mouse / WASD: camera  H: hide UI")
+            imgui.text_disabled("Right-drag: pull a body")
         imgui.end()

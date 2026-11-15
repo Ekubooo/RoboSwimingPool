@@ -7,7 +7,7 @@ parameters have one definition. For example:
 ```python
 DEFAULT_SETTINGS = FluidSettings(
     pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
-                  block_end=(1.5, 2.08, 1.25)),
+                  block_start=(1.32, .02, .04), block_end=(2.96, .82, 1.96)),
     time_scale=1.0,
     feedback_scale=1.0,
     max_dt=1.0 / 300.0,
@@ -41,9 +41,14 @@ second; 150 FPS is real time. Slow motion therefore depends on actual FPS.
 Higher speeds increase the actual step count
 to respect `max_dt`; this bound alone does not guarantee numerical stability.
 
-The water block spans height 0.50–2.08 m and contains 301,392 particles under
-the existing lattice rule. `PBFConfig` itself retains the reference defaults;
-only RSP's `DEFAULT_SETTINGS` selects this demo configuration.
+The right-side water block spans world bounds X=1.32–2.96, Y=0.04–1.96,
+Z=0.02–0.82 m. The existing 0.02 m lattice yields 300,105 particles; centers
+span X=1.34–2.94, Y=0.06–1.94, Z=0.04–0.80 m. The initial block deliberately
+includes the static bunny's interior, without filtering or changing the solver.
+`PBFConfig` itself retains the reference defaults; only RSP's `DEFAULT_SETTINGS`
+selects this demo configuration. `play_spawn_xy` in the environment YAML places
+the humanoid at (0.65, 1.0) on the left, preserving MimicKit's sampled root
+height, pose and velocities instead of lifting it above the water.
 
 All other PBF fields retain their names/defaults: density,
 pressure regularization, gravity, viscosity, vorticity, maximum speed,

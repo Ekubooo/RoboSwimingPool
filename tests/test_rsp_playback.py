@@ -90,9 +90,11 @@ class PlaybackChecks(unittest.TestCase):
         config = runtime_config(1/150, 4)
         particles = SimpleNamespace(config=config)
         init_scene_parameters(particles)
-        self.assertEqual(particles.n, 301392)
-        self.assertEqual(tuple(config.block_start), (.1, .75, .5))
-        self.assertEqual(tuple(config.block_end), (1.5, 1.9, 2.08))
+        self.assertEqual(particles.n, 300105)
+        for actual, expected in zip(config.block_start, (1.32, .04, .02)):
+            self.assertAlmostEqual(actual, expected)
+        for actual, expected in zip(config.block_end, (2.96, 1.96, .82)):
+            self.assertAlmostEqual(actual, expected)
 
     def test_gsi_velocities_keep_the_policy_sample_period(self):
         import torch

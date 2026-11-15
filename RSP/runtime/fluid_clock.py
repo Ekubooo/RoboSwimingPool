@@ -84,6 +84,8 @@ class FluidClock:
 # overrides here, e.g. pbf=PBFConfig(substeps=2, viscosity=0.25).
 DEFAULT_SETTINGS = FluidSettings(
     pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
-                  block_end=(1.5, 2.08, 1.25)),
+                  # Authored Y-up: low, broad water block on the right. The
+                  # regular lattice deliberately includes the static bunny.
+                  block_start=(1.32, .02, .04), block_end=(2.96, .82, 1.96)),
     time_scale=1.0,
 )

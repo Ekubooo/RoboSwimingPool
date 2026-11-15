@@ -19,3 +19,4 @@ key_bodies: [head, right_hand, left_hand, right_foot, left_foot]
 contact_bodies: [right_foot, left_foot]
 motion_file: data/datasets/dataset_humanoid_locomotion.yaml
 policy_use_scene_sphere: false
+play_spawn_xy: [0.65, 1.0]

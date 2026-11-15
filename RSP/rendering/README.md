@@ -5,6 +5,12 @@
 camera and UI. MimicKit's `PBFViewer` name remains the application entry point;
 the same viewer is used by the headless video recorder. `RigidBatch` also owns
 one shared CUDA/OpenGL buffer for all rigid instances in a layer.
+Right-drag pulls a rigid body using Newton's original picking forces. The
+selection-only model in `picking.py` excludes collision-only geometry so the
+invisible pool walls cannot intercept the ray. Visible static geometry still
+occludes selection; the complete collision model is unchanged. Mouse picking
+and its helper line retain Newton's interaction-time readbacks.
+
 Importing the backend does not initialize OpenGL; a context is needed only when
 constructing a viewer, so non-visual simulation retains its display-free path.
 

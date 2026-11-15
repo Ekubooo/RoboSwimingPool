@@ -66,6 +66,12 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
                 # Same xlib compatibility exception as Newton's event pump.
                 pass
 
+    def set_model(self, model):
+        super().set_model(model)
+        if model is not None and self.picking is not None:
+            from .picking import VisiblePickModel
+            self.picking.model = VisiblePickModel(model)
+
     def _drop_rigid_batch(self):
         entry = self._rigid_batches.pop(id(getattr(self, "layer", None)), None)
         if entry is not None:
@@ -134,6 +140,9 @@ pass classification is refreshed only on this explicit edit notification.
         self.renderer._make_current()
         self._drop_rigid_batch()
         self._rebuild_shape_batches_for_opacity_groups()
+        if self.picking is not None:
+            from .picking import VisiblePickModel
+            self.picking.model = VisiblePickModel(self.model)
 
     def log_state(self, state):
         self._last_state = state
