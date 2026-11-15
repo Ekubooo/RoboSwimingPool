@@ -6,15 +6,17 @@ parameters have one definition. For example:
 
 ```python
 DEFAULT_SETTINGS = FluidSettings(
-    pbf=PBFConfig(particle_radius=0.0125, substeps=2, pressure_iterations=3,
-                  block_start=(1.56, .50, .10), block_end=(2.96, 3.55, 1.25)),
+    pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
+                  block_start=(1.56, .50, .10), block_end=(2.96, 3.10, 1.25)),
     time_scale=1.0,
     feedback_scale=1.0,
     max_dt=1.0 / 300.0,
 )
 ```
 
-The default block contains 299,475 particles (radius 0.0125 m); its world Z range is 0.50 to 3.55 m.
+The default block contains 498,456 particles (radius 0.01 m); its world Z range is 0.50 to 3.10 m.
+The existing world-space lattice has 69 × 56 × 129 particles; this is the closest
+to 500,000 obtainable by changing only the block height at the existing spacing.
 
 `time_scale` is relative to the simulation frame clock. `frame_dt` is derived
 from that multiplier; setting `PBFConfig.frame_dt` does not add a second speed
@@ -44,7 +46,7 @@ Higher speeds increase the actual step count
 to respect `max_dt`; this bound alone does not guarantee numerical stability.
 
 The right-side water block spans world bounds X=1.56–2.96, Y=0.75–1.90,
-Z=0.50–2.08 m. The existing 0.02 m lattice yields 301,392 particles. The initial block deliberately
+Z=0.50–3.10 m. The existing 0.02 m lattice yields 498,456 particles. The initial block deliberately
 includes the static bunny's interior, without filtering or changing the solver.
 `PBFConfig` itself retains the reference defaults; only RSP's `DEFAULT_SETTINGS`
 selects this demo configuration. `play_spawn_xy` in the environment YAML places

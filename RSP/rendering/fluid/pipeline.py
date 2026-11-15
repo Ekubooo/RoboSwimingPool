@@ -3,7 +3,7 @@ import ctypes
 import time
 import numpy as np
 from pyglet import gl
-from .config import MODES, SSFR_PRESETS, FluidRenderConfig
+from .config import MODES, SSFR_PRESETS, WATER_COLORS, FluidRenderConfig
 from . import shaders as s
 from .resources import ParticleBuffer, Target, program, matrix, texture
 
@@ -15,6 +15,8 @@ class FluidPipeline:
         self.pending = None
         self.ssfr_preset = 'Water'
         self.pending_preset = None
+        self.water_color = 'Current'
+        self.pending_water_color = None
         self.error = None
         self.config = FluidRenderConfig()
         self.batch = None
@@ -33,11 +35,13 @@ class FluidPipeline:
         self.pending = mode
 
     def apply_pending(self):
-        if self.pending is None and self.pending_preset is None:
+        if self.pending is None and self.pending_preset is None and self.pending_water_color is None:
             return
         mode = self.pending or self.mode
         preset = self.pending_preset or self.ssfr_preset
+        water_color = self.pending_water_color or self.water_color
         self.pending = self.pending_preset = None
+        self.pending_water_color = None
         start = time.perf_counter()
         try:
             self.viewer.renderer._make_current()
@@ -50,6 +54,7 @@ class FluidPipeline:
                     self.batch._resize(count)
             self.mode, self.error = mode, None
             self.ssfr_preset = preset
+            self.water_color = water_color
         except Exception as error:
             self.error = f'Cannot enable {mode} / {preset}: {error}'
         finally:
@@ -60,6 +65,11 @@ class FluidPipeline:
         if preset not in SSFR_PRESETS:
             raise ValueError(preset)
         self.pending_preset = preset
+
+    def request_water_color(self, color):
+        if color not in WATER_COLORS:
+            raise ValueError(color)
+        self.pending_water_color = color
 
     def prepare(self, mode, preset=None):
         velocity = mode == 'SSFR' and (preset or self.ssfr_preset) == 'Velocity'

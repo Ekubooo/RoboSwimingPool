@@ -98,6 +98,9 @@ uniform vec3 sky_up, sky_down, sun, absorption;
 uniform vec3 base_color;
 #ifdef VELOCITY
 uniform sampler2D material_color, material_coverage;
+uniform float white_opacity;
+#else
+uniform bool billboard_blue;
 #endif
 uniform float ior;
 vec3 eyePoint(vec2 p,float z){vec3 ray=position(p,.5);return ray*(z/max(-ray.z,1e-6));}
@@ -118,6 +121,8 @@ vec3 trans=exp(-absorption*t);
 // Selective RGB absorption shifts pale speed colors towards orange. Keep
 // thickness attenuation, but make it neutral for this visualization preset.
 trans=vec3(exp(-dot(absorption,vec3(1./3.))*t));
+#else
+if(billboard_blue)trans=vec3(exp(-dot(absorption,vec3(1./3.))*t));
 #endif
 vec3 color=base_color;
 float coverage=0.;
@@ -128,7 +133,8 @@ if(weighted.a>1e-6){
     coverage=clamp(texture(material_coverage,uv).r/weighted.a,0.,1.);
 }
 #endif
-vec3 transmitted=texture(background,sampleUV).rgb*trans+color*(1.-trans);
+vec3 refracted_background=texture(background,sampleUV).rgb;
+vec3 transmitted=refracted_background*trans+color*(1.-trans);
 vec3 reflected=normalize(mat3(inv_view)*reflect(-v,n));
 vec3 env=mix(sky_down,sky_up,smoothstep(-.2,.7,reflected.z));
 // Match Newton's Z-up equirectangular environment orientation.
@@ -137,6 +143,11 @@ vec3 worldN=normalize(mat3(inv_view)*n),worldV=normalize(mat3(inv_view)*v);
 float spec=pow(max(dot(worldN,normalize(sun+worldV)),0.),100.);
 float f0=pow((ior-1.)/(ior+1.),2.);float f=f0+(1.-f0)*pow(1.-max(dot(n,v),0.),5.);
 vec3 water=mix(transmitted,env,f)+vec3(spec*.35);
+#ifdef VELOCITY
+// The fast endpoint retains background transmission even in thick fluid.
+// Scaling coverage alone would leave opaque Water underneath it.
+color=mix(refracted_background,color,white_opacity);
+#endif
 result=vec4(mix(water,color,coverage),1);}
 '''
 SURFACE_VELOCITY = SURFACE.replace('#version 330 core\n', '#version 330 core\n#define VELOCITY\n', 1)

@@ -39,10 +39,14 @@ def render(context):
         matrix(shader,'inv_view',np.linalg.inv(np.asarray(r._view_matrix).reshape(4,4,order='F')).T)
         shader['size'] = context.size
         shader['ior'], shader['absorption'] = context.config.ior, context.config.absorption
-        shader['base_color'] = context.config.base_color
+        use_billboard_color = velocity or context.water_color == 'Billboard blue'
+        shader['base_color'] = context.config.billboard_color if use_billboard_color else context.config.base_color
         if velocity:
+            shader['white_opacity'] = context.config.alpha_high
             texture(shader, 'material_color', thickness.textures[1], 5)
             texture(shader, 'material_coverage', thickness.textures[2], 6)
+        else:
+            shader['billboard_blue'] = context.water_color == 'Billboard blue'
         shader['sky_up'], shader['sky_down'] = tuple(r.sky_upper), tuple(r.sky_lower)
         shader['sun'] = tuple(r._sun_direction)
         environment = getattr(r, '_env_texture', None)

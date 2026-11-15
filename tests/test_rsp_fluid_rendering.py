@@ -5,6 +5,35 @@ from tests.test_rsp_rendering import BillboardChecks, particle_model, wp, OUTPUT
 
 
 class FluidModeChecks(BillboardChecks):
+    def test_water_color_switch_preserves_resources_and_current_look(self):
+        self.setup_model(particle_model())
+        pipeline = self.viewer.fluid_pipeline
+        pipeline.request('SSFR')
+        current = self.frame()
+        self.assertEqual(pipeline.water_color, 'Current')
+        targets = dict(pipeline.targets)
+        registration = pipeline.batch._registered
+        positions = self.state.particle_q.numpy().copy()
+        self.viewer._paused = True
+        pipeline.request_water_color('Billboard blue')
+        blue = self.frame()
+        self.assertGreater(int(blue[96,96,2]), int(current[96,96,2]))
+        self.assertEqual(pipeline.targets, targets)
+        self.assertIs(pipeline.batch._registered, registration)
+        self.assertTrue(self.viewer._paused)
+        np.testing.assert_array_equal(positions, self.state.particle_q.numpy())
+        with patch.object(wp.array, 'numpy', side_effect=AssertionError('readback')):
+            self.viewer.log_state(self.state)
+            self.viewer.end_frame()
+        pipeline.request('Original')
+        self.frame()
+        pipeline.request('SSFR')
+        np.testing.assert_array_equal(blue, self.frame())
+        self.assertEqual(pipeline.water_color, 'Billboard blue')
+        pipeline.request_water_color('Current')
+        np.testing.assert_array_equal(current, self.frame())
+        self.assertEqual(gl.glGetError(), gl.GL_NO_ERROR)
+
     def material_sample(self):
         """Diagnostic-only attachment readback, never used during timing."""
         target = self.viewer.fluid_pipeline.targets['thickness_velocity']
@@ -49,7 +78,9 @@ class FluidModeChecks(BillboardChecks):
             if speed == 2.:
                 self.assertGreater(pixels[96,96,2], pixels[96,96,0])
             if speed == 6.5:
-                self.assertTrue(np.all(pixels[96,96] >= 254), pixels[96,96])
+                # White over the black background must transmit 10%, even
+                # when the underlying Water material contributes opacity.
+                np.testing.assert_allclose(pixels[96,96], [230]*3, atol=1)
         np.testing.assert_array_equal(original_positions, self.state.particle_q.numpy())
         with patch.object(wp.array, 'numpy', side_effect=AssertionError('readback')):
             self.viewer.log_state(self.state)
@@ -89,12 +120,24 @@ class FluidModeChecks(BillboardChecks):
         self.assertEqual(pipeline.size, (self.viewer.renderer._screen_width,self.viewer.renderer._screen_height))
         self.assertEqual(gl.glGetError(), gl.GL_NO_ERROR)
 
+    def test_transparent_fast_white_has_ninety_percent_opacity(self):
+        self.setup_model(particle_model(velocities=[(6.5,0.,0.)]))
+        pipeline = self.viewer.fluid_pipeline
+        pipeline.request('Transparent')
+        pixels = self.frame()
+        np.testing.assert_allclose(pixels[96,96], [230]*3, atol=1)
+        # Five m/s is no longer the white endpoint in either optional mode.
+        self.state.particle_qd.assign(np.array([(5.,0.,0.)],dtype=np.float32))
+        slower = self.frame()
+        self.assertLess(int(slower[96,96,0]), int(pixels[96,96,0]))
+        self.assertEqual(gl.glGetError(), gl.GL_NO_ERROR)
+
     def test_gpu_opacity_thresholds(self):
         from RSP.rendering.fluid.resources import opacity
         velocity = wp.array([(v,0.,0.) for v in (0.,2.,4.25,6.5,20.)],dtype=wp.vec3,device='cuda:0')
         packed = wp.zeros(10,dtype=wp.vec4,device='cuda:0')
-        wp.launch(opacity,5,inputs=[velocity,packed,2.,6.5,.15,.8],device='cuda:0')
-        np.testing.assert_allclose(packed.numpy()[1::2,3],[.15,.15,.475,.8,.8],atol=1e-6)
+        wp.launch(opacity,5,inputs=[velocity,packed,2.,6.5,.15,.9],device='cuda:0')
+        np.testing.assert_allclose(packed.numpy()[1::2,3],[.15,.15,.525,.9,.9],atol=1e-6)
 
     def test_modes_preserve_state_and_original_image(self):
         positions = [(x*.25, y*.25, z*.25) for x in range(-2,3) for y in range(-1,2) for z in range(-2,3)]

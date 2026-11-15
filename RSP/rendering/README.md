@@ -7,7 +7,8 @@ The UI's **Fluid rendering** selector switches at the next frame boundary:
 - **Original** (default): the unchanged opaque square billboard implementation.
 - **Transparent**: square billboards with the original speed palette, weighted
   blended OIT and scene-depth intersection fading. Opacity increases smoothly
-  from 0.15 at 2 m/s to 0.8 at 6.5 m/s, clamped outside this interval.
+  from 0.15 at 2 m/s to 0.9 at 6.5 m/s, clamped outside this interval.
+  Scene intersections still apply the existing soft depth fade.
 - **SSFR**: sphere depth and thickness, separable bilateral depth smoothing,
   reconstructed normals, thickness absorption, Fresnel environment reflection
   and screen-space refraction. Surface radius is 1.5 times the physical radius;
@@ -15,15 +16,23 @@ The UI's **Fluid rendering** selector switches at the next frame boundary:
 
 Within SSFR, **SSFR material** selects **Water** (default) or **Velocity**:
 
-- Water uses the original billboard low-speed blue as its absorption/scattering
-  base color while retaining thickness, refraction, reflection and highlights.
+- Water defaults to the first SSFR implementation's deep-blue base color
+  `(0.02, 0.12, 0.2)`, retaining thickness, refraction, reflection and highlights.
+  **Water color** selects **Current** (this original water material) or
+  **Billboard blue** (`(29,119,231)/255` with neutral thickness absorption to
+  preserve the billboard blue hue).
+  This selection can change while paused and persists across reset/mode changes.
 - Velocity reuses the billboard's blue/light-blue/white palette. Coverage rises
   with `smoothstep(2, 6.5, speed)`; at 6.5 m/s a uniformly fast visible surface
-  becomes opaque white, overriding reflection and refraction. Mixed surface
+  uses 90% white and 10% refracted background, overriding reflection/highlights.
+  Mixed surface
   particles contribute a depth-weighted average, so an isolated fast particle
   does not whiten an entire layer.
   Its thickness attenuation uses the mean absorption coefficient equally for
   RGB; this avoids warm color shifts from Water's selective RGB absorption.
+  Both optional modes use the original billboard's 2 / 6.5 m/s color thresholds.
+  `alpha_high` in `fluid/config.py` controls the optional modes' white opacity;
+  it does not affect Original or Water's thickness-based material.
 
 Velocity adds color/weight/coverage attachments to the thickness pass, using
 the existing packed GPU data. Only fragments within two display radii of the
