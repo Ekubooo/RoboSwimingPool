@@ -24,3 +24,17 @@
 - **WarpLab 阶梯兔子**：当前 `pipelines/container.py` 保留对应生成配方，本轮实际执行默认几何生成及容器校验通过（2,257 顶点、4,506 三角面、24 个静态碰撞盒；保留已有薄三角形警告）。容器校验和 SDF 核心函数与 WarpLab 对应实现的 AST 一致。资产层具备复现基础；当前 PBF play 场景不同，历史 preset 尚有旧 `PBF` 导入／接口，完整场景启动需要单独接回新版链路。本轮未烘焙整场资产、未运行完整仿真或录像检查。
 
 参考：[Trimesh 修复接口](https://trimesh.org/trimesh.repair.html)、[CGAL 几何谓词与内外判定](https://doc.cgal.org/6.2/Polygon_mesh_processing/index.html)、[Warp 绕数距离查询](https://nvidia.github.io/warp/latest/language_reference/_generated/warp.mesh_query_point_sign_winding_number.html)。参考资料不代表当前依赖已升级或新增。
+
+## 脱离 MimicKit 与独立运行方案（2026-11-15）
+
+以下是当前依赖情况与后续建议，尚未实施分离；目标仅为脱离 MimicKit，继续基于 Newton／Warp。
+
+1. **独立仓库与子模块可以兼顾**：RSP 应有自己的依赖配置、资源路径和启动入口，单独克隆即可运行；MimicKit 也可以通过 Git submodule 引用同一份 RSP。子模块负责版本管理，不会自动解除代码依赖。独立性的验收标准是：移走 MimicKit 目录后，RSP 仍能加载策略、初始化场景并运行，资源不再依赖父仓库路径。
+
+2. **演示可以移除在线 GSI**：GSI 是生成式状态初始化，当前通过运动先验生成动作片段，再还原姿态、速度并缓存，供重置时采样。流程可以分离，但完整保留会带入 TinyMDM 采样、归一化、骨架重建等依赖。论文中 GSI 主要用于训练探索和初始状态采样，不是已训练 Actor 执行的必要环节。建议演示改为加载一个或少量已验证的初始状态，可先从现有 GSI 导出并保留姿态与速度。这样主要减少启动耗时、显存和依赖，逐帧收益有限。当前仅设置 `enable_gsi=False` 仍会加载先验，重置还会退回动作库，因此须同时精简加载与重置链。
+
+3. **Engine 接口可以直接迁入，再小范围整理**：当前 `mimickit/engines/engine.py` 为 234 行，`newton_pbf_api.py` 为 217 行，主要是基类、类型定义和接口转发；无需先重写整套接口。可将这些代码与已有 Newton-PBF 实现迁入 RSP，再清理日志、资源定位及录像接口等外围依赖。RSP 作为实现的唯一维护位置，MimicKit 若继续接入，仅保留薄适配层，避免两份 Engine 分别修改。
+
+4. **建议实施顺序**：先迁移 Engine、Solver 和必要小工具；再使演示直接加载 Actor、归一化参数和初始状态，解除对原 Agent／Env 构造过程的依赖。保持观测定义、动作处理、PD、求解器和资产算法不变。独立启动验证通过后，再整理独立仓库与 submodule；当前不需要复杂插件体系。只做相关的必要检查，不测试录像，保留录像接口。
+
+参考：[Git 子模块](https://git-scm.com/docs/gitsubmodules)、[SMP 论文 §5.2：GSI](https://arxiv.org/html/2512.03028v1#S5.SS2)、[Newton SolverBase 接口](https://newton-physics.github.io/newton/1.7.0/api/_generated/newton.solvers.SolverBase.html)。
