@@ -26,19 +26,55 @@ float sceneZ(vec2 p){return -position(p,texture(scene_depth,p).r).z;}
 '''
 TRANSPARENT = '#version 330 core\n' + COMMON + '''
 in vec2 local;in vec3 eye;in vec4 tint;in float radius;
-uniform float soft_width;
 layout(location=0) out vec4 accumulation;
 layout(location=1) out float reveal;
+layout(location=2) out float weighted_depth;
+uniform bool depth_enabled;
 void main(){float z=-eye.z;float gap=sceneZ(gl_FragCoord.xy/size)-z;if(gap<=0.)discard;
-float a=tint.a*smoothstep(0.,max(radius*soft_width,1e-5),gap);
+float a=tint.a;
 float d=z/10.;float w=a*clamp(10./(1e-5+pow(2.*d,2.)+pow(.6*d,6.)),.01,300.);
-accumulation=vec4(tint.rgb*a,a)*w;reveal=a;}
+accumulation=vec4(tint.rgb*a,a)*w;reveal=a;
+weighted_depth=depth_enabled?z*a*w:0.;}
 '''
 RESOLVE = '''#version 330 core
 in vec2 uv;uniform sampler2D background, accumulation, reveal;
+uniform sampler2D weighted_depth, depth_range;
+uniform bool depth_enabled;
+uniform float depth_strength;
 out vec4 result;
 void main(){vec4 a=texture(accumulation,uv);float t=clamp(texture(reveal,uv).r,0.,1.);
-result=vec4(mix(a.rgb/max(a.a,1e-5),texture(background,uv).rgb,t),1);}
+vec3 color=a.rgb/max(a.a,1e-5);
+if(depth_enabled && a.a>1e-5){
+    vec2 range=texelFetch(depth_range,ivec2(0),0).rg;
+    float z=texture(weighted_depth,uv).r/a.a;
+    // Nearly flat surfaces have no useful depth contrast; do not amplify noise.
+    if(range.y-range.x>max(.01,abs(range.x)*.001)){
+        float d=smoothstep(range.x,range.y,z);
+        color*=mix(1.+.1*depth_strength,1.-.5*depth_strength,d);
+    }
+}
+result=vec4(mix(color,texture(background,uv).rgb,t),1);}
+'''
+DEPTH_RANGE = '''#version 330 core
+uniform sampler2D source, accumulation;
+uniform bool first_level;
+out vec2 result;
+void main(){
+    ivec2 size=textureSize(source,0), origin=ivec2(gl_FragCoord.xy)*2;
+    vec2 bounds=vec2(1e20,-1e20);
+    for(int y=0;y<2;y++)for(int x=0;x<2;x++){
+        ivec2 p=origin+ivec2(x,y);
+        if(any(greaterThanEqual(p,size)))continue;
+        vec2 sample_range;
+        if(first_level){
+            float weight=texelFetch(accumulation,p,0).a;
+            if(weight<=1e-5)continue;
+            sample_range=vec2(texelFetch(source,p,0).r/weight);
+        }else sample_range=texelFetch(source,p,0).rg;
+        bounds=vec2(min(bounds.x,sample_range.x),max(bounds.y,sample_range.y));
+    }
+    result=bounds;
+}
 '''
 DEPTH = '#version 330 core\n' + COMMON + '''
 in vec2 local;in vec3 eye;in vec4 tint;in float radius;

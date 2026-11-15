@@ -5,6 +5,50 @@ from tests.test_rsp_rendering import BillboardChecks, particle_model, wp, OUTPUT
 
 
 class FluidModeChecks(BillboardChecks):
+    def test_transparent_depth_shading_and_controls(self):
+        points = [(-.6,-1.,0.), (.6,1.,0.)]
+        self.setup_model(particle_model(points))
+        pipeline = self.viewer.fluid_pipeline
+        pipeline.request('Transparent')
+        pipeline.request_transparent(depth_enabled=False)
+        plain = self.frame()
+        self.assertFalse(any(k.startswith('depth_range_') for k in pipeline.targets))
+        r = self.viewer.renderer
+        view = np.asarray(r._view_matrix).reshape(4,4,order='F')
+        proj = np.asarray(r._projection_matrix).reshape(4,4,order='F')
+        centers = []
+        for point in points:
+            p = proj @ view @ np.array([*point,1.])
+            x,y = ((p[:2]/p[3]+1)*96).astype(int)
+            centers.append((191-y,x))
+        self.viewer._paused = True
+        pipeline.request_transparent(depth_enabled=True, strength=1.)
+        shaded = self.frame()
+        self.assertTrue(np.all(shaded[centers[0]] >= plain[centers[0]]))
+        self.assertGreater(int(shaded[centers[0]][0]), int(plain[centers[0]][0]))
+        self.assertTrue(np.all(shaded[centers[1]] < plain[centers[1]]))
+        # Uncovered background and all opacity/scene-depth logic stay intact.
+        np.testing.assert_array_equal(shaded[0,0], plain[0,0])
+        pipeline.request_transparent(strength=0.)
+        np.testing.assert_array_equal(self.frame(), plain)
+        pipeline.request_transparent(minimum=61.2, maximum=92.8)
+        self.frame()
+        self.assertEqual(pipeline.config.transparent_alpha_low, .61)
+        self.assertEqual(pipeline.config.transparent_alpha_high, .93)
+        pipeline.request_transparent(minimum=99, maximum=2, strength=1.)
+        self.frame()
+        self.assertEqual(pipeline.config.transparent_alpha_low, .8)
+        self.assertEqual(pipeline.config.transparent_alpha_high, .8)
+        self.assertEqual(pipeline.config.alpha_high, .9)  # SSFR untouched.
+        with patch.object(wp.array, 'numpy', side_effect=AssertionError('readback')):
+            self.viewer.log_state(self.state)
+            self.viewer.end_frame()
+        self.viewer.renderer.window.set_size(241,161)
+        self.frame()
+        self.assertEqual(list(pipeline.depth_range_levels())[-1][1:], (1,1))
+        self.assertTrue(self.viewer._paused)
+        self.assertEqual(gl.glGetError(),gl.GL_NO_ERROR)
+
     def test_water_color_switch_preserves_resources_and_current_look(self):
         self.setup_model(particle_model())
         pipeline = self.viewer.fluid_pipeline
@@ -120,16 +164,24 @@ class FluidModeChecks(BillboardChecks):
         self.assertEqual(pipeline.size, (self.viewer.renderer._screen_width,self.viewer.renderer._screen_height))
         self.assertEqual(gl.glGetError(), gl.GL_NO_ERROR)
 
-    def test_transparent_fast_white_has_ninety_percent_opacity(self):
+    def test_transparent_opacity_and_hard_depth_intersection(self):
         self.setup_model(particle_model(velocities=[(6.5,0.,0.)]))
         pipeline = self.viewer.fluid_pipeline
         pipeline.request('Transparent')
         pixels = self.frame()
-        np.testing.assert_allclose(pixels[96,96], [230]*3, atol=1)
+        np.testing.assert_allclose(pixels[96,96], [255]*3, atol=1)
         # Five m/s is no longer the white endpoint in either optional mode.
         self.state.particle_qd.assign(np.array([(5.,0.,0.)],dtype=np.float32))
         slower = self.frame()
         self.assertLess(int(slower[96,96,0]), int(pixels[96,96,0]))
+        self.state.particle_qd.assign(np.zeros((1,3),dtype=np.float32))
+        np.testing.assert_allclose(self.frame()[96,96], np.array([29,119,231])*.8, atol=1)
+        # A particle just in front of the box remains fully opaque; behind
+        # the box it is still occluded rather than blended over the geometry.
+        self.setup_model(particle_model([(0.,-.71,0.)], [(6.5,0.,0.)], occluder=True))
+        np.testing.assert_allclose(self.frame()[96,96], [255]*3, atol=1)
+        self.state.particle_q.assign(np.array([(0.,0.,0.)],dtype=np.float32))
+        self.assertFalse(np.all(self.frame()[96,96] >= 254))
         self.assertEqual(gl.glGetError(), gl.GL_NO_ERROR)
 
     def test_gpu_opacity_thresholds(self):

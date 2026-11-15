@@ -119,6 +119,24 @@ class PlaybackGui:
                 changed, selection = imgui.combo("Fluid rendering", MODES.index(pipeline.mode), list(MODES))
                 if changed:
                     pipeline.request(MODES[selection])
+                if pipeline.mode == "Transparent":
+                    config = pipeline.config
+                    changed, value = imgui.checkbox("Depth shading (automatic range)", config.transparent_depth_enabled)
+                    if changed:
+                        pipeline.request_transparent(depth_enabled=value)
+                    imgui.begin_disabled(not config.transparent_depth_enabled)
+                    changed, value = imgui.slider_float("Depth strength", config.transparent_depth_strength, 0., 1.)
+                    if changed:
+                        pipeline.request_transparent(strength=value)
+                    imgui.end_disabled()
+                    changed, value = imgui.slider_int("Minimum opacity (%)", round(config.transparent_alpha_low*100), 60, 80,
+                                                      flags=imgui.SliderFlags_.always_clamp)
+                    if changed:
+                        pipeline.request_transparent(minimum=value)
+                    changed, value = imgui.slider_int("Maximum opacity (%)", round(config.transparent_alpha_high*100), 80, 100,
+                                                      flags=imgui.SliderFlags_.always_clamp)
+                    if changed:
+                        pipeline.request_transparent(maximum=value)
                 if pipeline.mode == "SSFR":
                     changed, selection = imgui.combo("SSFR material", SSFR_PRESETS.index(pipeline.ssfr_preset),
                                                      list(SSFR_PRESETS))

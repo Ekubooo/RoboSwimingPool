@@ -27,7 +27,7 @@ class PBFConfig:
     pressure_iterations: int = 3
     lambda_regularization: float = 2.0
     gravity: tuple = (0.0, -9.81, 0.0)
-    viscosity: float = 0.5
+    viscosity: float = 0.35
     vorticity_confinement: float = 0.5
     max_speed: float = 6.5
     artificial_pressure_strength: float = 0.0005

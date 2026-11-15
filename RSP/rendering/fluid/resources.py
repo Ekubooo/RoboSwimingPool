@@ -17,7 +17,9 @@ def opacity(velocity: wp.array(dtype=wp.vec3), packed: wp.array(dtype=wp.vec4),
 
 
 class ParticleBuffer(BillboardBatch):
-    def update(self, positions, velocities, radii, config):
+    def update(self, positions, velocities, radii, config, *, transparent=False):
+        alpha_low = config.transparent_alpha_low if transparent else config.alpha_low
+        alpha_high = config.transparent_alpha_high if transparent else config.alpha_high
         count = len(positions)
         if count != self._capacity:
             self._resize(count)
@@ -30,7 +32,7 @@ class ParticleBuffer(BillboardBatch):
                 self.speed_color_mid, self.speed_color_max, wp.vec3(*LOW_SPEED_COLOR),
                 wp.vec3(*MID_SPEED_COLOR), wp.vec3(*HIGH_SPEED_COLOR)], outputs=[data], device=self.device)
             wp.launch(opacity, count, inputs=[velocities, data, config.speed_low, config.speed_high,
-                      config.alpha_low, config.alpha_high], device=self.device)
+                      alpha_low, alpha_high], device=self.device)
         finally:
             self._registered.unmap()
         self.count = count

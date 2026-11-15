@@ -18,14 +18,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('Original','Transparent','SSFR'))
     parser.add_argument('--ssfr-preset', choices=('Water', 'Velocity'))
+    parser.add_argument('--transparent-depth', choices=('off','on'))
     parser.add_argument('--check-materials', action='store_true', help='Check paused material switches/reset after sampling')
     parser.add_argument('--check-switches', action='store_true', help='Short paused-switch/reset check instead of sampling')
     args = parser.parse_args()
+    if args.transparent_depth and args.mode != 'Transparent':
+        parser.error('--transparent-depth requires Transparent mode')
     if (args.ssfr_preset or args.check_materials) and args.mode != 'SSFR':
         parser.error('SSFR material options require SSFR mode')
     output = ROOT/'output/rsp_render_profile/fluid_modes'/args.mode
     if args.ssfr_preset:
         output = ROOT/'output/rsp_render_profile/ssfr_presets'/args.ssfr_preset
+    if args.transparent_depth:
+        output = ROOT/'output/rsp_render_profile/transparent_depth'/args.transparent_depth
     output.mkdir(parents=True, exist_ok=True)
     tempfile.tempdir = str(ROOT/'output/newton_pbf_refactor_checks/tmp')
     import torch
@@ -96,6 +101,8 @@ def main():
         with torch.no_grad():
             runner.reset()
             pipeline.request(args.mode)
+            if args.transparent_depth:
+                pipeline.request_transparent(depth_enabled=args.transparent_depth == 'on')
             if args.ssfr_preset:
                 pipeline.request_ssfr_preset(args.ssfr_preset)
             start = time.perf_counter()
@@ -187,6 +194,7 @@ def main():
             if args.check_materials:
                 material_switches = check_materials()
             report=dict(mode=args.mode,ssfr_preset=args.ssfr_preset,first_render_ms=switch_ms,
+                transparent_depth=args.transparent_depth,
                 material_switches=material_switches,readback_guard=True,
                 particles=eng.get_sim_model().particle_count,seed=1234,warmup=30,frames=180,
                 summary={k:statistics([row.get(k,0) for row in rows]) for k in set().union(*rows)},samples=rows)

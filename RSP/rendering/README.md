@@ -6,13 +6,37 @@ The UI's **Fluid rendering** selector switches at the next frame boundary:
 
 - **Original** (default): the unchanged opaque square billboard implementation.
 - **Transparent**: square billboards with the original speed palette, weighted
-  blended OIT and scene-depth intersection fading. Opacity increases smoothly
-  from 0.15 at 2 m/s to 0.9 at 6.5 m/s, clamped outside this interval.
-  Scene intersections still apply the existing soft depth fade.
+  blended OIT and scene-depth occlusion, without intersection fading. Opacity
+  increases smoothly from 0.8 at 2 m/s to 1.0 at 6.5 m/s, clamped outside this
+  interval. `transparent_alpha_low/high` configure this mode independently.
 - **SSFR**: sphere depth and thickness, separable bilateral depth smoothing,
   reconstructed normals, thickness absorption, Fresnel environment reflection
   and screen-space refraction. Surface radius is 1.5 times the physical radius;
   this never changes simulation geometry. The default refractive index is 1.333.
+
+Transparent has two integer **opacity (%)** sliders: minimum 60–80% (default
+80%) and maximum 80–100% (default 100%), each stepping by 1%. They affect only
+this mode and are applied at the next frame boundary, including while paused.
+
+**Depth shading (automatic range)** enables near-bright/far-dark fluid color;
+**Depth strength** ranges from 0 to 1, default 0.5. At the default strength,
+the nearest visible fluid is multiplied by 1.05 and the farthest by 0.75, with
+a smooth transition. Strength zero or disabling the effect restores unmodified
+OIT color. White may clip when brightened. Neither opacity accumulation nor
+background color is changed by this effect.
+
+The particle pass accumulates weighted linear camera depth in an extra R32F
+attachment. A GPU-only 2×2 min/max reduction of visible fluid pixels supplies
+the current near/far range; no particle positions or depth limits are read to
+the CPU. Empty and nearly flat depth ranges skip shading. Range textures are
+cached and recreated on resize. Disabling the effect skips reduction passes.
+No manual near/far distance controls are provided. The automatic range follows
+camera/visibility changes and is not temporally filtered.
+
+Compare the effect with `python tools/profile_rsp_fluid_modes.py Transparent --transparent-depth off`
+and `--transparent-depth on`. Both use the same 80/100%
+opacity settings; results go to `output/rsp_render_profile/transparent_depth/`.
+See `docs/transparent_depth_results.md` for the measured cost and check results.
 
 Within SSFR, **SSFR material** selects **Water** (default) or **Velocity**:
 
@@ -31,7 +55,7 @@ Within SSFR, **SSFR material** selects **Water** (default) or **Velocity**:
   Its thickness attenuation uses the mean absorption coefficient equally for
   RGB; this avoids warm color shifts from Water's selective RGB absorption.
   Both optional modes use the original billboard's 2 / 6.5 m/s color thresholds.
-  `alpha_high` in `fluid/config.py` controls the optional modes' white opacity;
+  `alpha_high` in `fluid/config.py` controls SSFR Velocity's white opacity;
   it does not affect Original or Water's thickness-based material.
 
 Velocity adds color/weight/coverage attachments to the thickness pass, using

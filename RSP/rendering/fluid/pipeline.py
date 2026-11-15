@@ -1,6 +1,7 @@
 """Post-scene fluid composition, before Newton's UI and displayed-frame copy."""
 import ctypes
 import time
+from dataclasses import replace
 import numpy as np
 from pyglet import gl
 from .config import MODES, SSFR_PRESETS, WATER_COLORS, FluidRenderConfig
@@ -17,6 +18,7 @@ class FluidPipeline:
         self.pending_preset = None
         self.water_color = 'Current'
         self.pending_water_color = None
+        self.pending_transparent = {}
         self.error = None
         self.config = FluidRenderConfig()
         self.batch = None
@@ -35,18 +37,20 @@ class FluidPipeline:
         self.pending = mode
 
     def apply_pending(self):
-        if self.pending is None and self.pending_preset is None and self.pending_water_color is None:
+        if self.pending is None and self.pending_preset is None and self.pending_water_color is None and not self.pending_transparent:
             return
         mode = self.pending or self.mode
         preset = self.pending_preset or self.ssfr_preset
         water_color = self.pending_water_color or self.water_color
+        config = replace(self.config, **self.pending_transparent)
+        self.pending_transparent.clear()
         self.pending = self.pending_preset = None
         self.pending_water_color = None
         start = time.perf_counter()
         try:
             self.viewer.renderer._make_current()
             if mode != 'Original':
-                self.prepare(mode, preset)
+                self.prepare(mode, preset, config)
                 # Validate CUDA registration before committing the switch. It
                 # must fail here, rather than after hiding the previous mode.
                 count = self.viewer.model.particle_count
@@ -55,6 +59,7 @@ class FluidPipeline:
             self.mode, self.error = mode, None
             self.ssfr_preset = preset
             self.water_color = water_color
+            self.config = config
         except Exception as error:
             self.error = f'Cannot enable {mode} / {preset}: {error}'
         finally:
@@ -71,7 +76,20 @@ class FluidPipeline:
             raise ValueError(color)
         self.pending_water_color = color
 
-    def prepare(self, mode, preset=None):
+    def request_transparent(self, *, minimum=None, maximum=None, depth_enabled=None, strength=None):
+        """Queue CPU settings only; opacity controls use whole percentages."""
+        for value, low, high, name in (
+            (minimum, 60, 80, 'transparent_alpha_low'),
+            (maximum, 80, 100, 'transparent_alpha_high')):
+            if value is not None:
+                self.pending_transparent[name] = min(high, max(low, round(value))) / 100.
+        if depth_enabled is not None:
+            self.pending_transparent['transparent_depth_enabled'] = bool(depth_enabled)
+        if strength is not None:
+            self.pending_transparent['transparent_depth_strength'] = min(1., max(0., float(strength)))
+
+    def prepare(self, mode, preset=None, config=None):
+        config = config or self.config
         velocity = mode == 'SSFR' and (preset or self.ssfr_preset) == 'Velocity'
         if self.batch is None:
             self.batch = ParticleBuffer(self.viewer.device, **self.viewer._billboard_settings)
@@ -82,6 +100,8 @@ class FluidPipeline:
         if velocity:
             definitions.update(thickness_velocity=(s.PARTICLE, s.THICKNESS_VELOCITY),
                                surface_velocity=(s.QUAD, s.SURFACE_VELOCITY))
+        if mode == 'Transparent':
+            definitions['depth_range'] = (s.QUAD, s.DEPTH_RANGE)
         for name, sources in definitions.items():
             if name not in self.programs:
                 self.programs[name] = program(*sources)
@@ -94,7 +114,8 @@ class FluidPipeline:
             self.size = size
         formats = {'output': [(gl.GL_RGBA16F, gl.GL_RGBA)]}
         if mode == 'Transparent':
-            formats['oit'] = [(gl.GL_RGBA32F, gl.GL_RGBA), (gl.GL_R16F, gl.GL_RED)]
+            formats['oit'] = [(gl.GL_RGBA32F, gl.GL_RGBA), (gl.GL_R16F, gl.GL_RED),
+                              (gl.GL_R32F, gl.GL_RED)]
         else:
             for name in ('depth', 'horizontal', 'smooth'):
                 formats[name] = [(gl.GL_RG32F, gl.GL_RG)]
@@ -108,11 +129,26 @@ class FluidPipeline:
         for name, fmt in formats.items():
             if name not in self.targets:
                 self.targets[name] = Target(*size, fmt)
+        if mode == 'Transparent' and config.transparent_depth_enabled and config.transparent_depth_strength > 0:
+            for name, width, height in self.depth_range_levels():
+                if name not in self.targets:
+                    self.targets[name] = Target(width, height, [(gl.GL_RG32F, gl.GL_RG)])
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+
+    def depth_range_levels(self):
+        width, height = self.size
+        level = 0
+        while True:
+            width, height = max(1, (width+1)//2), max(1, (height+1)//2)
+            yield f'depth_range_{level}', width, height
+            if width == height == 1:
+                break
+            level += 1
 
     def update(self, state):
         points = self.viewer._apply_layer_transform_to_points(state.particle_q)
-        self.batch.update(points, state.particle_qd, self.viewer.model.particle_radius, self.config)
+        self.batch.update(points, state.particle_qd, self.viewer.model.particle_radius, self.config,
+                          transparent=self.mode == 'Transparent')
 
     def full_screen(self):
         gl.glBindVertexArray(self.vao)
@@ -131,8 +167,8 @@ class FluidPipeline:
             shader['radius_scale'] = radius
             texture(shader, 'scene_depth', r._frame_depth_texture, 0)
             if name == 'transparent':
-                shader['soft_width'] = self.config.soft_intersection
-            elif name == 'thickness_velocity':
+                shader['depth_enabled'] = self.config.transparent_depth_enabled and self.config.transparent_depth_strength > 0
+            if name == 'thickness_velocity':
                 texture(shader, 'nearest_depth', self.targets['depth'].textures[0], 1)
                 shader['alpha_range'] = (self.config.alpha_low, self.config.alpha_high)
                 shader['attribute_depth_range'] = self.config.attribute_depth_range

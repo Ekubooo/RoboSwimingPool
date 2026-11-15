@@ -10,9 +10,12 @@ WATER_COLORS = ("Current", "Billboard blue")
 class FluidRenderConfig:
     alpha_low: float = .15
     alpha_high: float = .9
+    transparent_alpha_low: float = .8
+    transparent_alpha_high: float = 1.
+    transparent_depth_enabled: bool = True
+    transparent_depth_strength: float = .5
     speed_low: float = 2.
     speed_high: float = 6.5
-    soft_intersection: float = 1.
     surface_radius: float = 1.5
     filter_radius: int = 12
     ior: float = 1.333
