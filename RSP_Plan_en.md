@@ -9,8 +9,9 @@ For reference regarding experimental or previous implementations, please consult
 Current Status and Tasks:
 1. The PBF (Position Based Fluids) solver is integrated into the Newton engine as a custom solver. It utilizes a "volume map" method to achieve two-way coupling between the fluid and solid objects.
 2. The integration of the custom solver with the Newton engine backend is largely complete. The asset pipeline, rendering integration, global time-stepping logic, and a high-performance, lightweight observation system for single-environment Reinforcement Learning (RL) are all functional. The current demo demonstrates good overall performance.
-3. The system is currently held together by a temporary "glue" layer; the next step is to gradually phase out this layer to refine the overall program architecture.
-4. The primary objective is to run existing RL policies—specifically those developed for the "dodgeball" task within the MimicKit SMP framework—by loading a humanoid robot into the fluid-solid coupled environment to observe its behavior. The focus is on visual demonstration and system execution; machine learning training and multi-environment parallel execution are not currently in scope.
+3. The current architecture and code structure of each module are basically reasonable and complete.
+4. The system is currently held together by a temporary "glue" layer; the next step is to gradually phase out this layer to refine the overall program architecture.
+5. The primary objective is to run existing RL policies—specifically those developed for the "dodgeball" task within the MimicKit SMP framework—by loading a humanoid robot into the fluid-solid coupled environment to observe its behavior. The focus is on visual demonstration and system execution; machine learning training and multi-environment parallel execution are not currently in scope.
 
 Important Notes:
 1. Preservation: It is critical to maintain—or at least minimize disruption to—the existing architecture of the MimicKit-Newton backend, the PBF solver, the core solver methods/structures, and the established asset pipeline.

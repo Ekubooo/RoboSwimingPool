@@ -29,9 +29,14 @@ in vec2 local;in vec3 eye;in vec4 tint;in float radius;
 layout(location=0) out vec4 accumulation;
 layout(location=1) out float reveal;
 layout(location=2) out float weighted_depth;
-uniform bool depth_enabled;
+uniform bool depth_enabled, layer_blending;
 void main(){float z=-eye.z;float gap=sceneZ(gl_FragCoord.xy/size)-z;if(gap<=0.)discard;
 float a=tint.a;
+if(!layer_blending){
+    // Depth testing selects one square face; transmit the background once.
+    accumulation=vec4(tint.rgb*a,a);reveal=1.-a;
+    weighted_depth=depth_enabled?z*a:0.;return;
+}
 float d=z/10.;float w=a*clamp(10./(1e-5+pow(2.*d,2.)+pow(.6*d,6.)),.01,300.);
 accumulation=vec4(tint.rgb*a,a)*w;reveal=a;
 weighted_depth=depth_enabled?z*a*w:0.;}

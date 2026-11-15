@@ -5,6 +5,54 @@ from tests.test_rsp_rendering import BillboardChecks, particle_model, wp, OUTPUT
 
 
 class FluidModeChecks(BillboardChecks):
+    def test_transparent_nearest_layer(self):
+        points = [(0.,-1.,0.), (0.,1.,0.)]
+        velocities = [(0.,0.,0.), (10.,0.,0.)]
+        self.setup_model(particle_model(points, velocities))
+        pipeline = self.viewer.fluid_pipeline
+        pipeline.request('Transparent')
+        pipeline.request_transparent(depth_enabled=False)
+        layered = self.frame()
+        self.assertTrue(pipeline.config.transparent_layer_blending)
+        self.assertNotIn('nearest', pipeline.targets)
+        self.viewer._paused = True
+        pipeline.request_transparent(layer_blending=False)
+        single = self.frame()
+        np.testing.assert_allclose(single[96,96], np.array([29,119,231])*.8, atol=1)
+        self.assertFalse(np.array_equal(single[96,96], layered[96,96]))
+        np.testing.assert_array_equal(single[0,0], layered[0,0])
+        # A closer slow particle wins regardless of draw order or rear color.
+        self.state.particle_q.assign(np.array(points[::-1], dtype=np.float32))
+        self.state.particle_qd.assign(np.array(velocities[::-1], dtype=np.float32))
+        np.testing.assert_array_equal(self.frame(), single)
+        pipeline.request_transparent(minimum=60)
+        np.testing.assert_allclose(self.frame()[96,96], np.array([29,119,231])*.6, atol=1)
+        pipeline.request_transparent(minimum=80, layer_blending=True)
+        np.testing.assert_allclose(self.frame(), layered, atol=1)
+        pipeline.request_transparent(layer_blending=False, depth_enabled=True)
+        self.frame()
+        with patch.object(wp.array, 'numpy', side_effect=AssertionError('readback')):
+            self.viewer.log_state(self.state)
+            self.viewer.end_frame()
+        self.assertTrue(self.viewer._paused)
+        # Opaque scene geometry still wins, even against a white particle.
+        self.setup_model(particle_model(velocities=[(10.,0.,0.)], occluder=True))
+        occluded = self.frame()
+        pipeline.visible = False
+        background = self.frame(update=False)
+        np.testing.assert_array_equal(occluded[96,96], background[96,96])
+        old = pipeline.targets['nearest']
+        self.viewer.renderer.window.set_size(241,161)
+        self.viewer.renderer.window.dispatch_events()
+        self.viewer.renderer.resize(241,161)
+        # Exercise resource resize without Newton's cached screenshot buffer.
+        self.viewer.begin_frame(0.)
+        self.viewer.log_state(self.state)
+        self.viewer.end_frame()
+        self.assertEqual(old.depth.value, 0)
+        self.assertNotEqual(pipeline.targets['nearest'].depth.value, 0)
+        self.assertEqual(gl.glGetError(), gl.GL_NO_ERROR)
+
     def test_transparent_depth_shading_and_controls(self):
         points = [(-.6,-1.,0.), (.6,1.,0.)]
         self.setup_model(particle_model(points))

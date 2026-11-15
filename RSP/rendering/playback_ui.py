@@ -121,6 +121,9 @@ class PlaybackGui:
                     pipeline.request(MODES[selection])
                 if pipeline.mode == "Transparent":
                     config = pipeline.config
+                    changed, value = imgui.checkbox("Transparent layer blending", config.transparent_layer_blending)
+                    if changed:
+                        pipeline.request_transparent(layer_blending=value)
                     changed, value = imgui.checkbox("Depth shading (automatic range)", config.transparent_depth_enabled)
                     if changed:
                         pipeline.request_transparent(depth_enabled=value)

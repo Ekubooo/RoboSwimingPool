@@ -18,6 +18,18 @@ Transparent has two integer **opacity (%)** sliders: minimum 60–80% (default
 80%) and maximum 80–100% (default 100%), each stepping by 1%. They affect only
 this mode and are applied at the next frame boundary, including while paused.
 
+**Transparent layer blending** is enabled by default and preserves weighted
+OIT. Disabling it selects only the nearest square particle face per pixel,
+then blends its speed color with the opaque scene once using its own opacity.
+Rear particles contribute neither color nor opacity. A private depth buffer
+selects the face without sorting or CPU readback; scene depth remains unchanged.
+Speed colors, opacity sliders and automatic depth shading work in both settings.
+The private target is allocated on first use, cached across switches and freed
+on resize/close. Equally deep faces use the first drawn face; changing which
+particle is nearest can expose square edges and cause color changes.
+The fixed-scene render-only check is `python tools/profile_rsp_transparent_layers.py`;
+see `docs/transparent_layer_results.md` for results and limitations.
+
 **Depth shading (automatic range)** enables near-bright/far-dark fluid color;
 **Depth strength** ranges from 0 to 1, default 0.5. At the default strength,
 the nearest visible fluid is multiplied by 1.05 and the farthest by 0.75, with

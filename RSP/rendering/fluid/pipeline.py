@@ -76,7 +76,8 @@ class FluidPipeline:
             raise ValueError(color)
         self.pending_water_color = color
 
-    def request_transparent(self, *, minimum=None, maximum=None, depth_enabled=None, strength=None):
+    def request_transparent(self, *, minimum=None, maximum=None, depth_enabled=None, strength=None,
+                            layer_blending=None):
         """Queue CPU settings only; opacity controls use whole percentages."""
         for value, low, high, name in (
             (minimum, 60, 80, 'transparent_alpha_low'),
@@ -85,6 +86,8 @@ class FluidPipeline:
                 self.pending_transparent[name] = min(high, max(low, round(value))) / 100.
         if depth_enabled is not None:
             self.pending_transparent['transparent_depth_enabled'] = bool(depth_enabled)
+        if layer_blending is not None:
+            self.pending_transparent['transparent_layer_blending'] = bool(layer_blending)
         if strength is not None:
             self.pending_transparent['transparent_depth_strength'] = min(1., max(0., float(strength)))
 
@@ -114,8 +117,9 @@ class FluidPipeline:
             self.size = size
         formats = {'output': [(gl.GL_RGBA16F, gl.GL_RGBA)]}
         if mode == 'Transparent':
-            formats['oit'] = [(gl.GL_RGBA32F, gl.GL_RGBA), (gl.GL_R16F, gl.GL_RED),
-                              (gl.GL_R32F, gl.GL_RED)]
+            name = 'oit' if config.transparent_layer_blending else 'nearest'
+            formats[name] = [(gl.GL_RGBA32F, gl.GL_RGBA), (gl.GL_R16F, gl.GL_RED),
+                             (gl.GL_R32F, gl.GL_RED)]
         else:
             for name in ('depth', 'horizontal', 'smooth'):
                 formats[name] = [(gl.GL_RG32F, gl.GL_RG)]
@@ -128,7 +132,7 @@ class FluidPipeline:
                 ]
         for name, fmt in formats.items():
             if name not in self.targets:
-                self.targets[name] = Target(*size, fmt)
+                self.targets[name] = Target(*size, fmt, depth=name == 'nearest')
         if mode == 'Transparent' and config.transparent_depth_enabled and config.transparent_depth_strength > 0:
             for name, width, height in self.depth_range_levels():
                 if name not in self.targets:
@@ -168,6 +172,7 @@ class FluidPipeline:
             texture(shader, 'scene_depth', r._frame_depth_texture, 0)
             if name == 'transparent':
                 shader['depth_enabled'] = self.config.transparent_depth_enabled and self.config.transparent_depth_strength > 0
+                shader['layer_blending'] = self.config.transparent_layer_blending
             if name == 'thickness_velocity':
                 texture(shader, 'nearest_depth', self.targets['depth'].textures[0], 1)
                 shader['alpha_range'] = (self.config.alpha_low, self.config.alpha_high)

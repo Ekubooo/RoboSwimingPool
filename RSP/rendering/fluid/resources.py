@@ -59,8 +59,9 @@ def texture(shader, name, target, unit):
 
 
 class Target:
-    def __init__(self, width, height, formats):
+    def __init__(self, width, height, formats, *, depth=False):
         self.fbo = gl.GLuint()
+        self.depth = gl.GLuint()
         self.textures = []
         gl.glGenFramebuffers(1, ctypes.byref(self.fbo))
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.fbo)
@@ -78,6 +79,13 @@ class Target:
                 gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0+i, gl.GL_TEXTURE_2D, tex, 0)
             attachments = (gl.GLenum*len(formats))(*(gl.GL_COLOR_ATTACHMENT0+i for i in range(len(formats))))
             gl.glDrawBuffers(len(formats), attachments)
+            if depth:
+                gl.glGenRenderbuffers(1, ctypes.byref(self.depth))
+                gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, self.depth)
+                gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH_COMPONENT32F, width, height)
+                gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT,
+                                             gl.GL_RENDERBUFFER, self.depth)
+                gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, 0)
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
                 raise RuntimeError('Fluid framebuffer is incomplete')
         except BaseException:
@@ -91,6 +99,9 @@ class Target:
                 gl.glClearBufferfv(gl.GL_COLOR, i, (gl.GLfloat*4)(*value))
 
     def close(self):
+        if self.depth.value:
+            gl.glDeleteRenderbuffers(1, ctypes.byref(self.depth))
+            self.depth.value = 0
         for tex in self.textures:
             gl.glDeleteTextures(1, ctypes.byref(tex))
         self.textures.clear()

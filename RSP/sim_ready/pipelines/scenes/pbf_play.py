@@ -22,7 +22,7 @@ from ..boundary.prepare import prepare_boundary_asset
 
 
 POOL_SIZE = np.array([3.0, 2.0, 5.0])
-WALL_THICKNESS = 0.1
+WALL_THICKNESS = 0.3
 Y_TO_Z = np.array([[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]])
 SCENE_TRANSFORM = np.eye(4)
 SCENE_TRANSFORM[:3, :3] = Y_TO_Z
