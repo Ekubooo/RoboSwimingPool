@@ -115,10 +115,15 @@ class PlaybackGui:
             imgui.separator()
             pipeline = getattr(viewer, "fluid_pipeline", None)
             if pipeline is not None:
-                from .fluid.config import MODES
+                from .fluid.config import MODES, SSFR_PRESETS
                 changed, selection = imgui.combo("Fluid rendering", MODES.index(pipeline.mode), list(MODES))
                 if changed:
                     pipeline.request(MODES[selection])
+                if pipeline.mode == "SSFR":
+                    changed, selection = imgui.combo("SSFR material", SSFR_PRESETS.index(pipeline.ssfr_preset),
+                                                     list(SSFR_PRESETS))
+                    if changed:
+                        pipeline.request_ssfr_preset(SSFR_PRESETS[selection])
                 if pipeline.error:
                     imgui.text_wrapped(pipeline.error)
             for callback in self._base._ui_callbacks["side"]:

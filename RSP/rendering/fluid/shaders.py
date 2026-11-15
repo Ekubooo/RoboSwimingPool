@@ -49,11 +49,34 @@ result=vec2(z,radius);}
 '''
 THICKNESS = '#version 330 core\n' + COMMON + '''
 in vec2 local;in vec3 eye;in vec4 tint;in float radius;
-out float result;
+layout(location=0) out float result;
+#ifdef VELOCITY
+uniform sampler2D nearest_depth;
+uniform vec2 alpha_range;
+uniform float attribute_depth_range;
+layout(location=1) out vec4 color_weight;
+layout(location=2) out float coverage_weight;
+#endif
 void main(){float r=dot(local,local);if(r>1.)discard;float h=radius*sqrt(1.-r);
 float front=-eye.z-h;float back=min(-eye.z+h,sceneZ(gl_FragCoord.xy/size));
-result=max(0.,back-max(front,0.));}
+result=max(0.,back-max(front,0.));
+#ifdef VELOCITY
+color_weight=vec4(0.);
+coverage_weight=0.;
+float nearest=texture(nearest_depth,gl_FragCoord.xy/size).r;
+float delta=max(0.,front-nearest)/max(radius,1e-6);
+if(result>0. && delta<=attribute_depth_range){
+    float weight=(1.-r)*exp(-.5*delta*delta);
+    // The existing GPU packer stores alpha = low + (high-low)*smoothstep(speed).
+    // Recover that same coverage without another velocity buffer or upload.
+    float coverage=clamp((tint.a-alpha_range.x)/(alpha_range.y-alpha_range.x),0.,1.);
+    color_weight=vec4(tint.rgb*weight,weight);
+    coverage_weight=coverage*weight;
+}
+#endif
+}
 '''
+THICKNESS_VELOCITY = THICKNESS.replace('#version 330 core\n', '#version 330 core\n#define VELOCITY\n', 1)
 BLUR = '''#version 330 core
 in vec2 uv;out vec2 result;uniform sampler2D source;
 uniform vec2 size, axis;uniform float focal;uniform int max_radius;
@@ -72,6 +95,10 @@ uniform sampler2D background, surface, thickness, environment;
 uniform bool has_environment;
 uniform mat4 inv_view;
 uniform vec3 sky_up, sky_down, sun, absorption;
+uniform vec3 base_color;
+#ifdef VELOCITY
+uniform sampler2D material_color, material_coverage;
+#endif
 uniform float ior;
 vec3 eyePoint(vec2 p,float z){vec3 ray=position(p,.5);return ray*(z/max(-ray.z,1e-6));}
 void main(){vec3 bg=texture(background,uv).rgb;float z=texture(surface,uv).r;
@@ -87,7 +114,21 @@ vec3 refr=refract(-v,n,1./ior);vec4 q=projection*vec4(p+refr*min(t,1.),1);
 vec2 sampleUV=q.xy/q.w*.5+.5;
 if(any(lessThan(sampleUV,vec2(0)))||any(greaterThan(sampleUV,vec2(1)))||sceneZ(sampleUV)<z)sampleUV=uv;
 vec3 trans=exp(-absorption*t);
-vec3 transmitted=texture(background,sampleUV).rgb*trans+vec3(.02,.12,.2)*(1.-trans);
+#ifdef VELOCITY
+// Selective RGB absorption shifts pale speed colors towards orange. Keep
+// thickness attenuation, but make it neutral for this visualization preset.
+trans=vec3(exp(-dot(absorption,vec3(1./3.))*t));
+#endif
+vec3 color=base_color;
+float coverage=0.;
+#ifdef VELOCITY
+vec4 weighted=texture(material_color,uv);
+if(weighted.a>1e-6){
+    color=weighted.rgb/weighted.a;
+    coverage=clamp(texture(material_coverage,uv).r/weighted.a,0.,1.);
+}
+#endif
+vec3 transmitted=texture(background,sampleUV).rgb*trans+color*(1.-trans);
 vec3 reflected=normalize(mat3(inv_view)*reflect(-v,n));
 vec3 env=mix(sky_down,sky_up,smoothstep(-.2,.7,reflected.z));
 // Match Newton's Z-up equirectangular environment orientation.
@@ -95,5 +136,7 @@ if(has_environment){vec2 e=vec2(atan(-reflected.y,reflected.x)/6.2831853+.5,asin
 vec3 worldN=normalize(mat3(inv_view)*n),worldV=normalize(mat3(inv_view)*v);
 float spec=pow(max(dot(worldN,normalize(sun+worldV)),0.),100.);
 float f0=pow((ior-1.)/(ior+1.),2.);float f=f0+(1.-f0)*pow(1.-max(dot(n,v),0.),5.);
-result=vec4(mix(transmitted,env,f)+vec3(spec*.35),1);}
+vec3 water=mix(transmitted,env,f)+vec3(spec*.35);
+result=vec4(mix(water,color,coverage),1);}
 '''
+SURFACE_VELOCITY = SURFACE.replace('#version 330 core\n', '#version 330 core\n#define VELOCITY\n', 1)

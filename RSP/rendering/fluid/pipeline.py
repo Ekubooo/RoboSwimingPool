@@ -3,7 +3,7 @@ import ctypes
 import time
 import numpy as np
 from pyglet import gl
-from .config import MODES, FluidRenderConfig
+from .config import MODES, SSFR_PRESETS, FluidRenderConfig
 from . import shaders as s
 from .resources import ParticleBuffer, Target, program, matrix, texture
 
@@ -13,6 +13,8 @@ class FluidPipeline:
         self.viewer = viewer
         self.mode = 'Original'
         self.pending = None
+        self.ssfr_preset = 'Water'
+        self.pending_preset = None
         self.error = None
         self.config = FluidRenderConfig()
         self.batch = None
@@ -31,33 +33,45 @@ class FluidPipeline:
         self.pending = mode
 
     def apply_pending(self):
-        if self.pending is None:
+        if self.pending is None and self.pending_preset is None:
             return
-        mode, self.pending = self.pending, None
+        mode = self.pending or self.mode
+        preset = self.pending_preset or self.ssfr_preset
+        self.pending = self.pending_preset = None
         start = time.perf_counter()
         try:
             self.viewer.renderer._make_current()
             if mode != 'Original':
-                self.prepare(mode)
+                self.prepare(mode, preset)
                 # Validate CUDA registration before committing the switch. It
                 # must fail here, rather than after hiding the previous mode.
                 count = self.viewer.model.particle_count
                 if count and self.batch._capacity != count:
                     self.batch._resize(count)
             self.mode, self.error = mode, None
+            self.ssfr_preset = preset
         except Exception as error:
-            self.error = f'Cannot enable {mode}: {error}'
+            self.error = f'Cannot enable {mode} / {preset}: {error}'
         finally:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
         self.last_switch_ms = (time.perf_counter()-start)*1000
 
-    def prepare(self, mode):
+    def request_ssfr_preset(self, preset):
+        if preset not in SSFR_PRESETS:
+            raise ValueError(preset)
+        self.pending_preset = preset
+
+    def prepare(self, mode, preset=None):
+        velocity = mode == 'SSFR' and (preset or self.ssfr_preset) == 'Velocity'
         if self.batch is None:
             self.batch = ParticleBuffer(self.viewer.device, **self.viewer._billboard_settings)
             gl.glGenVertexArrays(1, ctypes.byref(self.vao))
         definitions = {'transparent': (s.PARTICLE, s.TRANSPARENT), 'resolve': (s.QUAD, s.RESOLVE)} if mode == 'Transparent' else {
             'depth': (s.PARTICLE, s.DEPTH), 'thickness': (s.PARTICLE, s.THICKNESS),
             'blur': (s.QUAD, s.BLUR), 'surface': (s.QUAD, s.SURFACE)}
+        if velocity:
+            definitions.update(thickness_velocity=(s.PARTICLE, s.THICKNESS_VELOCITY),
+                               surface_velocity=(s.QUAD, s.SURFACE_VELOCITY))
         for name, sources in definitions.items():
             if name not in self.programs:
                 self.programs[name] = program(*sources)
@@ -75,6 +89,12 @@ class FluidPipeline:
             for name in ('depth', 'horizontal', 'smooth'):
                 formats[name] = [(gl.GL_RG32F, gl.GL_RG)]
             formats['thickness'] = [(gl.GL_R16F, gl.GL_RED)]
+            if velocity:
+                formats['thickness_velocity'] = [
+                    (gl.GL_R16F, gl.GL_RED),     # Unchanged fluid thickness.
+                    (gl.GL_RGBA16F, gl.GL_RGBA), # Weighted RGB and weight.
+                    (gl.GL_R16F, gl.GL_RED),     # Weighted speed coverage.
+                ]
         for name, fmt in formats.items():
             if name not in self.targets:
                 self.targets[name] = Target(*size, fmt)
@@ -102,6 +122,10 @@ class FluidPipeline:
             texture(shader, 'scene_depth', r._frame_depth_texture, 0)
             if name == 'transparent':
                 shader['soft_width'] = self.config.soft_intersection
+            elif name == 'thickness_velocity':
+                texture(shader, 'nearest_depth', self.targets['depth'].textures[0], 1)
+                shader['alpha_range'] = (self.config.alpha_low, self.config.alpha_high)
+                shader['attribute_depth_range'] = self.config.attribute_depth_range
             self.batch.draw_instances()
 
     def transparent(self):

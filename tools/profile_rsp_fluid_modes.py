@@ -17,9 +17,15 @@ from profile_rsp_render import statistics
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('Original','Transparent','SSFR'))
+    parser.add_argument('--ssfr-preset', choices=('Water', 'Velocity'))
+    parser.add_argument('--check-materials', action='store_true', help='Check paused material switches/reset after sampling')
     parser.add_argument('--check-switches', action='store_true', help='Short paused-switch/reset check instead of sampling')
     args = parser.parse_args()
+    if (args.ssfr_preset or args.check_materials) and args.mode != 'SSFR':
+        parser.error('SSFR material options require SSFR mode')
     output = ROOT/'output/rsp_render_profile/fluid_modes'/args.mode
+    if args.ssfr_preset:
+        output = ROOT/'output/rsp_render_profile/ssfr_presets'/args.ssfr_preset
     output.mkdir(parents=True, exist_ok=True)
     tempfile.tempdir = str(ROOT/'output/newton_pbf_refactor_checks/tmp')
     import torch
@@ -58,18 +64,59 @@ def main():
         gl = renderer.gl
         def drain():
             wp.synchronize(); gl.glFinish()
+        def check_materials():
+            viewer._paused = True
+            sim_time = eng.get_sim_time()
+            fluid_time = runner._runtime._solver.clock.time
+            graph = runner._runtime._graph
+            switches = []
+            for preset in ('Velocity', 'Water', 'Velocity'):
+                pipeline.request_ssfr_preset(preset)
+                start = time.perf_counter()
+                # Presentation ends the previous frame before logging the next
+                # state. First tick commits the request; second displays it.
+                assert runner.tick() is False
+                assert runner.tick() is False
+                drain()
+                elapsed = (time.perf_counter()-start)*1000
+                assert pipeline.error is None, pipeline.error
+                assert pipeline.ssfr_preset == preset and viewer._paused
+                assert eng.get_sim_time() == sim_time
+                assert runner._runtime._solver.clock.time == fluid_time
+                assert runner._runtime._graph is graph
+                switches.append(dict(preset=preset, completed_frame_ms=elapsed,
+                                     prepare_ms=pipeline.last_switch_ms))
+                Image.fromarray(viewer.get_frame(render_ui=True).numpy()).save(output/f'paused_{preset}.png')
+            viewer.gui.request_reset()
+            assert runner.tick() is False
+            assert runner.tick() is False
+            assert pipeline.ssfr_preset == 'Velocity' and viewer._paused
+            drain()
+            return switches
         with torch.no_grad():
             runner.reset()
             pipeline.request(args.mode)
+            if args.ssfr_preset:
+                pipeline.request_ssfr_preset(args.ssfr_preset)
             start = time.perf_counter()
+            env.render_only()
+            # Presentation logs the new mode after ending the previous frame.
+            # Complete one more render-only frame before measuring readiness.
             env.render_only()
             drain()
             switch_ms = (time.perf_counter()-start)*1000
             assert pipeline.error is None, pipeline.error
             if args.check_switches:
-                for _ in range(2):
+                # Reach the same visual state as 30 warmup + 180 sample + two
+                # readback-guard frames, without repeating performance sampling.
+                for _ in range(212 if args.check_materials else 2):
                     runner.tick()
                 drain()
+                if args.check_materials:
+                    checks = check_materials()
+                    (output/'material_switch_checks.json').write_text(json.dumps(checks, indent=2))
+                    print('MATERIAL_SWITCH_CHECKS', json.dumps(checks), flush=True)
+                    return
                 viewer._paused = True
                 sim_time = eng.get_sim_time()
                 fluid_time = runner._runtime._solver.clock.time
@@ -136,7 +183,11 @@ def main():
             with patch.object(wp.array,'numpy',side_effect=AssertionError('readback')):
                 for _ in range(2): runner.tick()
             Image.fromarray(viewer.get_frame(render_ui=True).numpy()).save(output/'frame.png')
-            report=dict(mode=args.mode,first_render_ms=switch_ms,readback_guard=True,
+            material_switches = []
+            if args.check_materials:
+                material_switches = check_materials()
+            report=dict(mode=args.mode,ssfr_preset=args.ssfr_preset,first_render_ms=switch_ms,
+                material_switches=material_switches,readback_guard=True,
                 particles=eng.get_sim_model().particle_count,seed=1234,warmup=30,frames=180,
                 summary={k:statistics([row.get(k,0) for row in rows]) for k in set().union(*rows)},samples=rows)
             (output/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')

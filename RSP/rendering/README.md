@@ -13,6 +13,33 @@ The UI's **Fluid rendering** selector switches at the next frame boundary:
   and screen-space refraction. Surface radius is 1.5 times the physical radius;
   this never changes simulation geometry. The default refractive index is 1.333.
 
+Within SSFR, **SSFR material** selects **Water** (default) or **Velocity**:
+
+- Water uses the original billboard low-speed blue as its absorption/scattering
+  base color while retaining thickness, refraction, reflection and highlights.
+- Velocity reuses the billboard's blue/light-blue/white palette. Coverage rises
+  with `smoothstep(2, 6.5, speed)`; at 6.5 m/s a uniformly fast visible surface
+  becomes opaque white, overriding reflection and refraction. Mixed surface
+  particles contribute a depth-weighted average, so an isolated fast particle
+  does not whiten an entire layer.
+  Its thickness attenuation uses the mean absorption coefficient equally for
+  RGB; this avoids warm color shifts from Water's selective RGB absorption.
+
+Velocity adds color/weight/coverage attachments to the thickness pass, using
+the existing packed GPU data. Only fragments within two display radii of the
+nearest fluid surface contribute attributes; opaque scene depth also clips
+them. Water skips this accumulation. Both presets share the unchanged depth,
+thickness and smoothing algorithms. Switching is queued at the frame boundary,
+works while paused, and preserves the selection across reset and mode changes.
+No simulation Graph or physical parameters are changed.
+
+Profile a preset with `python tools/profile_rsp_fluid_modes.py SSFR --ssfr-preset Water`
+(or `Velocity`). Add `--check-materials` to perform a short
+paused-switch/reset check after the timed batch. Preset measurements use a
+separate `output/rsp_render_profile/ssfr_presets/` directory so previous mode
+results remain available for historical comparison.
+See `docs/ssfr_material_presets_results.md` for the measured preset comparison.
+
 Optional implementations live in `fluid/`; edit `fluid/config.py` for their
 startup settings. They share a private CUDA–GL particle buffer, borrowing the
 legacy packing/resource implementation without changing its source. Only the
