@@ -1,10 +1,9 @@
 """Newton 1.7 ViewerGL adapter for the independent billboard batch.
 
-Newton has no public custom-pass API. Its scene object protocol (render/destroy,
-cast_shadow/draw_edge/has_transparency) is the only integration point used here.
-Keep that version-specific knowledge here instead of patching RendererGL or
-changing Presentation's frame order. The opaque pass shares rigid-body depth
-and precedes transparent compositing, MSAA resolution, and the existing UI.
+Newton has no public custom-pass API. Original uses its scene object protocol;
+optional fluid modes compose after this viewer instance's scene render call.
+Version-specific access stays in the rendering adapters, without changing
+Presentation's frame order or the installed Newton package.
 """
 
 import newton
@@ -41,6 +40,8 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         self._billboard_closed = False
         self._billboard_settings = {"speed_color_mid": speed_color_mid, "speed_color_max": speed_color_max}
         super().__init__(*args, **kwargs)
+        from .fluid.pipeline import FluidPipeline
+        self.fluid_pipeline = FluidPipeline(self)
         if self.gui is not None:
             from .playback_ui import PlaybackGui
             self.gui = PlaybackGui(self.gui)
@@ -176,14 +177,21 @@ pass classification is refreshed only on this explicit edit notification.
             marker.hidden = True
 
     def _log_particles(self, state):
+        self.fluid_pipeline.apply_pending()
         name = self._qualify("/model/particles")
         drawable = self.objects.get(name)
         hidden = not self.show_particles or self._layer_force_hidden() or not self.model.particle_count
+        self.fluid_pipeline.visible = not hidden
         if hidden:
             if drawable is not None:
                 drawable.hidden = True
             return
         self.renderer._make_current()
+        if self.fluid_pipeline.mode != "Original":
+            if drawable is not None:
+                drawable.hidden = True
+            self.fluid_pipeline.update(state)
+            return
         if drawable is None:
             drawable = _BillboardObject(self.renderer, self.device, **self._billboard_settings)
             self.objects[name] = drawable
@@ -195,6 +203,11 @@ pass classification is refreshed only on this explicit edit notification.
         renderer = getattr(self, "renderer", None)
         if renderer is not None:
             renderer._make_current()
+        if hasattr(self, "fluid_pipeline"):
+            mode = self.fluid_pipeline.mode
+            self.fluid_pipeline.close()
+            self.fluid_pipeline.mode = "Original"
+            self.fluid_pipeline.request(mode)
         self._drop_rigid_batch()
         # Newton calls destroy() on layer-owned scene objects, including ours.
         super().clear_model()
@@ -213,6 +226,7 @@ pass classification is refreshed only on this explicit edit notification.
         window = getattr(renderer, "window", None)
         if window is not None and window.context is not None:
             renderer._make_current()
+            self.fluid_pipeline.close()
             for batch, _groups in self._rigid_batches.values():
                 batch.close()
             self._rigid_batches.clear()

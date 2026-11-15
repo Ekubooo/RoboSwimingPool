@@ -113,6 +113,14 @@ class PlaybackGui:
                 if imgui.button("Reset"):
                     self.request_reset()
             imgui.separator()
+            pipeline = getattr(viewer, "fluid_pipeline", None)
+            if pipeline is not None:
+                from .fluid.config import MODES
+                changed, selection = imgui.combo("Fluid rendering", MODES.index(pipeline.mode), list(MODES))
+                if changed:
+                    pipeline.request(MODES[selection])
+                if pipeline.error:
+                    imgui.text_wrapped(pipeline.error)
             for callback in self._base._ui_callbacks["side"]:
                 callback(imgui)
             controls = self.fluid_controls

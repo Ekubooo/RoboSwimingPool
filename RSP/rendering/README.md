@@ -1,5 +1,46 @@
 # RSP GPU rendering
 
+## Optional fluid modes
+
+The UI's **Fluid rendering** selector switches at the next frame boundary:
+
+- **Original** (default): the unchanged opaque square billboard implementation.
+- **Transparent**: square billboards with the original speed palette, weighted
+  blended OIT and scene-depth intersection fading. Opacity increases smoothly
+  from 0.15 at 2 m/s to 0.8 at 6.5 m/s, clamped outside this interval.
+- **SSFR**: sphere depth and thickness, separable bilateral depth smoothing,
+  reconstructed normals, thickness absorption, Fresnel environment reflection
+  and screen-space refraction. Surface radius is 1.5 times the physical radius;
+  this never changes simulation geometry. The default refractive index is 1.333.
+
+Optional implementations live in `fluid/`; edit `fluid/config.py` for their
+startup settings. They share a private CUDA–GL particle buffer, borrowing the
+legacy packing/resource implementation without changing its source. Only the
+selected mode uploads particles and draws. New modes lazily allocate shaders
+and textures, so their first use can pause briefly; resources are reused until
+resize/model replacement/close. Scene reset preserves the selected mode.
+
+`FluidPipeline` wraps this viewer instance's scene render call: Newton first
+draws the scene and resolves MSAA, then the new mode samples that color/depth
+into separate targets and commits the result before UI/display-frame capture.
+Original takes the unchanged draw path with no optional framebuffer allocation.
+No solver Graph is recaptured and no particle state is read back. Model changes
+and shutdown release CUDA registration before GL storage. An initialization
+failure keeps the previous mode and reports the error in the panel.
+
+SSFR approximates only the visible surface; refraction is limited to the current
+screen. No foam, spray, anisotropy, caustics or multiple optical bounces are added.
+The first version uses single-sample fluid targets over the resolved MSAA scene.
+
+Necessary checks: `tests/test_rsp_fluid_rendering.py`; per-mode performance tool:
+`python tools/profile_rsp_fluid_modes.py Original` (or `Transparent` / `SSFR`).
+The tool warms 30 frames and samples 180 once, with GPU timestamps resolved
+after the batch. Nested GPU timings are attribution, not additive CPU costs.
+It produces one still image per mode, with no recording tests or video files.
+Use `--check-switches` for the short paused-switch/reset check instead of timing
+another batch. Measurements and limitations are in
+`docs/rendering_fluid_modes_results.md` at the repository root.
+
 `BillboardBatch` owns one CUDA/OpenGL instance buffer, a quad and its shaders.
 `NewtonBillboardViewer` adapts that batch to Newton 1.7's existing scene, window,
 camera and UI. MimicKit's `PBFViewer` name remains the application entry point;
