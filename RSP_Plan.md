@@ -1,14 +1,14 @@
-当前仓库是克隆了最新mimickit，在Newton引擎层初步接入自定流体求解器、完善了资产管线能力。
+当前仓库克隆了最新mimickit，在Newton引擎层接入自定流体求解器。
 
 当前已经有适配最新稳定版本的 Newton引擎/Nvidia warp dsl/mujoco warp，使用conda环境"warpsim"。
 
 接入的实验性实现/过往实现可以参考另其他的两个项目: 
-1. 流体求解器。 D:\ComputerScience\PROJECT\WarpLab 。流体项目主要参考其根目录下的PBF与simready。忽略demo文件夹，是归档过往代码。
+1. 流体求解器。 D:\ComputerScience\PROJECT\WarpLab 。流体项目主要参考其根目录下的PBF与simready。请忽略demo文件夹，是归档过往代码。
 2. 适配新newton的mimickit及其工具、mimickit newton修复。D:/ComputerScience/PROJECT/MimicKit
 
 当前状态与任务：
 1. PBF流体程序当前以自定义solver接入Newton引擎，PBF使用volume map方法，实现弱流体固体的双向耦合
-2. 当前Newton物理引擎的自定义solver与引擎后端适配已经基本完备，资产管线能力与管线定义基本完备，渲染与整体步长安排基本完备，简易且性能良好的单环境的RL策略观测功能基本完备，当前demo整体性能良好。
+2. 当前Newton物理引擎的自定义solver与引擎后端适配已经基本完备，资产管线能力与管线定义基本完备，渲染端与整体步长安排基本完备，简易且性能良好的单环境的RL策略观测功能基本完备，当前demo整体性能良好。
 3. 当前上层由临时胶水层进行组合组装。接下来准备逐步拆除胶水层以完善程序整体流程。
 4. 当前运行目标，主要是运行mimickit的SMP路径下的躲避球task相关的已完成RL策略，加载已有RL策略的人形机器人进入流固耦合环境，以观察人形机器人流体行为表现。主要以视觉呈现、程序运行为主，暂不考虑机器学习训练相关，暂不考虑多环境运行。 
 
