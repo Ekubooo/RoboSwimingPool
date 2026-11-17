@@ -104,7 +104,9 @@ class BackendContracts(unittest.TestCase):
             return {name: str(inspect.signature(method))
                     for name, method in inspect.getmembers(cls, inspect.isfunction)
                     if not name.startswith("_") or name == "__init__"}
-        self.assertEqual(signatures(original.NewtonEngine), signatures(current.NewtonEngine))
+        legacy, actual = signatures(original.NewtonEngine), signatures(current.NewtonEngine)
+        self.assertEqual(actual.keys() - legacy.keys(), {"set_fluid_controls", "prepare_playback_step"})
+        self.assertEqual(legacy, {name: actual[name] for name in legacy})
 
     def test_api_delegation(self):
         eng = current.NewtonEngine.__new__(current.NewtonEngine)
@@ -134,6 +136,25 @@ class BackendContracts(unittest.TestCase):
         eng._presentation.register_ui_callback.reset_mock()
         eng.register_ui_callback(callback, position="overlay")
         eng._presentation.register_ui_callback.assert_called_once_with(callback, "overlay")
+
+    def test_playback_backend_boundary(self):
+        eng = current.NewtonEngine.__new__(current.NewtonEngine)
+        runtime = current.SimulationRuntime.__new__(current.SimulationRuntime)
+        eng._runtime = runtime
+        runtime._solver = Mock()
+        runtime._graph = None
+        settings = dict(gravity=(0., 0., -9.81), feedback_scale=.5, slow_motion=True)
+        eng.set_fluid_controls(**settings)
+        runtime._solver.set_fluid_controls.assert_called_once_with(**settings)
+        eng.prepare_playback_step()  # Eager execution has no graph to prepare.
+        runtime._graph = SimpleNamespace(ensure_current=Mock())
+        eng.prepare_playback_step()
+        runtime._graph.ensure_current.assert_called_once_with()
+        runtime._solver.step.assert_not_called()
+        runtime._graph.ensure_current.side_effect = RuntimeError("capture rejected")
+        with self.assertRaisesRegex(RuntimeError, "capture rejected"):
+            eng.prepare_playback_step()
+        runtime._solver.step.assert_not_called()
 
     def test_base_initialization(self):
         # Exercise the real constructor without allocating a scene or a viewer.

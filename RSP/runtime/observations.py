@@ -4,37 +4,47 @@ Small heading components are amplified by the trained normalizer. Keeping the
 original Torch operations also preserves their rounding, while CUDA Graphs
 remove the per-frame Python joint loop, allocations and kernel submissions.
 """
+from dataclasses import dataclass, fields
+
 import torch
 import warp as wp
+
+
+@dataclass(frozen=True, eq=False)
+class CharacterStateViews:
+    """Borrowed GPU views; their storage must remain stable across graph replays."""
+
+    root_pos: torch.Tensor
+    root_rot: torch.Tensor
+    root_vel: torch.Tensor
+    root_ang_vel: torch.Tensor
+    dof_pos: torch.Tensor
+    dof_vel: torch.Tensor
+    body_pos: torch.Tensor
 
 
 class ObservationBuilder:
     """Capture once for each projectile mode; replay without reading GPU state."""
 
-    def __init__(self, env):
+    def __init__(self, *, state_views: CharacterStateViews, joints, key_body_ids,
+                 inactive_sphere_state, scene_sphere_state, output,
+                 global_obs, root_height_obs, use_scene_sphere=False):
         from util import torch_util
         from .observation_math import character_observation, projectile_observation, exp_map_to_quat
 
-        if env._enable_phase_obs or env._enable_tar_obs:
-            raise ValueError("PBF playback observations require phase/target observations disabled")
-        engine, kin = env._engine, env._kin_char_model
-        char = env._get_char_id()
-        self._state = [getattr(engine, name)(char) for name in (
-            "get_root_pos", "get_root_rot", "get_root_vel", "get_root_ang_vel",
-            "get_dof_pos", "get_dof_vel", "get_body_pos")]
-        self.output = env._obs_buf
+        self._state = state_views
+        self.output = output
         if not self.output.is_cuda or any(t.dtype != torch.float32 or t.device != self.output.device
-                                         for t in self._state):
+                                         for t in (getattr(state_views, f.name) for f in fields(state_views))):
             raise ValueError("Playback observations require FP32 CUDA state on the observation device")
-        root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel, body_pos = self._state
-        self._keys = env._key_body_ids
-        sphere = env._scene_obj_ids[-1]
-        self._spheres = ((env._inactive_sphere_pos, env._inactive_sphere_vel),
-                         (engine.get_root_pos(sphere).unsqueeze(1), engine.get_root_vel(sphere).unsqueeze(1)))
-        global_obs, height = env._global_obs, env._root_height_obs
+        root_pos, root_rot = state_views.root_pos, state_views.root_rot
+        root_vel, root_ang_vel = state_views.root_vel, state_views.root_ang_vel
+        dof_pos, dof_vel, body_pos = state_views.dof_pos, state_views.dof_vel, state_views.body_pos
+        self._keys = key_body_ids
+        self._spheres = (inactive_sphere_state, scene_sphere_state)
         # Topology and axis tensors are fixed. Only their GPU values change on
         # replay; no per-frame traversal of the kinematic model is needed.
-        joints = [kin.get_joint(j) for j in range(1, kin.get_num_joints())]
+        joints = tuple(joints)
         self._joint_rot = dof_pos.new_empty((dof_pos.shape[0], len(joints), 4))
         joint_rot = self._joint_rot
 
@@ -55,7 +65,7 @@ class ObservationBuilder:
                 joint_rot[:, index].copy_(rotation)
             keys = body_pos[:, self._keys] if len(self._keys) else body_pos.new_zeros((0,))
             character = character_observation(root_pos, root_rot, root_vel, root_ang_vel,
-                joint_rot, dof_vel, keys, global_obs, height)
+                joint_rot, dof_vel, keys, global_obs, root_height_obs)
             task = projectile_observation(root_pos, root_rot, sphere_pos, sphere_vel)
             self.output.copy_(torch.cat((character, task), dim=-1))
 
@@ -76,7 +86,7 @@ class ObservationBuilder:
                     compute(sphere_pos, sphere_vel)
                 self._graphs.append(graph)
         caller_stream.wait_stream(stream)
-        self.update(use_scene_sphere=getattr(env, "policy_use_scene_sphere", False))
+        self.update(use_scene_sphere=use_scene_sphere)
 
     def update(self, env_ids=None, *, use_scene_sphere=False):
         # PBFPlayEnv has one world; empty reset selections must be a no-op.

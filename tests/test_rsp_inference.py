@@ -19,10 +19,11 @@ from envs.char_env import compute_char_obs
 from envs.task_dodgeball_env import compute_dodgeball_observations
 from learning.base_agent import AgentMode
 from learning.ppo_agent import PPOAgent
+from learning.smp_agent import SMPAgent
 from learning.normalizer import Normalizer
 from learning.distribution_gaussian_diag import DistributionGaussianDiagBuilder, StdType
 from RSP.runtime.inference import PolicyInference
-from RSP.runtime.observations import ObservationBuilder
+from RSP.runtime.observations import CharacterStateViews, ObservationBuilder
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA observation path")
@@ -52,34 +53,36 @@ class InferenceChecks(unittest.TestCase):
                      dof_pos=positions, dof_vel=torch.randn(count, dofs, device=device),
                      body_pos=torch.randn(count, joints + 1, 7, device=device)[..., :3])
         ball_pos, ball_vel = torch.randn(count, 3, device=device), torch.randn(count, 3, device=device)
-        engine = SimpleNamespace()
-        for name, value in state.items():
-            ball = ball_pos if name == "root_pos" else ball_vel
-            setattr(engine, "get_" + name, lambda obj, v=value, b=ball: v if obj == 0 else b)
         keys = torch.tensor([kin.get_body_names().index(name) for name in
                              ("head", "right_hand", "left_hand", "right_foot", "left_foot")], device=device)
         width = 1 + 12 + 6 * joints + dofs + 3 * len(keys) + 6
-        env = SimpleNamespace(_engine=engine, _kin_char_model=kin, _get_char_id=lambda: 0,
-                              _scene_obj_ids=[1], _key_body_ids=keys,
-                              _enable_phase_obs=False, _enable_tar_obs=False,
-                              _root_height_obs=True, _global_obs=False,
-                              _obs_buf=torch.empty(count, width, device=device),
-                              _inactive_sphere_pos=torch.tensor([[[10., 10., .1]]], device=device).expand(count, 1, 3),
-                              _inactive_sphere_vel=torch.zeros(count, 1, 3, device=device))
+        output = torch.empty(count, width, device=device)
+        inactive_pos = torch.tensor([[[10., 10., .1]]], device=device).expand(count, 1, 3)
+        inactive_vel = torch.zeros(count, 1, 3, device=device)
         with wp.ScopedStream(wp.stream_from_torch(device), sync_exit=True):
-            builder = ObservationBuilder(env)
+            builder = ObservationBuilder(
+                state_views=CharacterStateViews(**state),
+                joints=[kin.get_joint(j) for j in range(1, kin.get_num_joints())],
+                key_body_ids=keys, output=output, global_obs=False, root_height_obs=True,
+                inactive_sphere_state=(inactive_pos, inactive_vel),
+                scene_sphere_state=(ball_pos[:, None], ball_vel[:, None]))
+            pointer = output.data_ptr()
             for use_ball in (False, True):
+                previous = output.clone()
+                state["root_vel"].add_(.25)
                 expected = compute_char_obs(state["root_pos"], state["root_rot"], state["root_vel"],
                     state["root_ang_vel"], kin.dof_to_rot(state["dof_pos"]), state["dof_vel"],
                     state["body_pos"][:, keys], False, True)
                 task = compute_dodgeball_observations(state["root_pos"], state["root_rot"],
-                    ball_pos[:, None] if use_ball else env._inactive_sphere_pos,
-                    ball_vel[:, None] if use_ball else env._inactive_sphere_vel)
+                    ball_pos[:, None] if use_ball else inactive_pos,
+                    ball_vel[:, None] if use_ball else inactive_vel)
                 builder.update(use_scene_sphere=use_ball)
-                torch.testing.assert_close(env._obs_buf, torch.cat((expected, task), -1), rtol=1e-5, atol=1e-6)
-            saved = env._obs_buf.clone()
+                self.assertEqual(output.data_ptr(), pointer)
+                self.assertFalse(torch.equal(previous, output))
+                torch.testing.assert_close(output, torch.cat((expected, task), -1), rtol=1e-5, atol=1e-6)
+            saved = output.clone()
             builder.update(torch.empty(0, dtype=torch.long, device=device))
-            torch.testing.assert_close(env._obs_buf, saved, rtol=0, atol=0)
+            torch.testing.assert_close(output, saved, rtol=0, atol=0)
 
     def test_actor_uses_original_normalization_and_action_inverse(self):
         torch.manual_seed(1234)
@@ -95,8 +98,16 @@ class InferenceChecks(unittest.TestCase):
         obs = torch.randn(9, 12, device=device) * 30
         with torch.no_grad():
             expected, _ = PPOAgent._decide_action(agent, obs, {})
-            actual = PolicyInference(agent).act(obs)
+            policy = PolicyInference(**SMPAgent.get_playback_policy_components(agent))
+            self.assertIs(policy.actor, model._actor_layers)
+            self.assertIs(policy.mean, model._action_dist._mean_net)
+            self.assertIs(policy.observation_normalizer, agent._obs_norm)
+            self.assertIs(policy.action_normalizer, agent._a_norm)
+            actual = policy.act(obs)
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        model._action_dist = object()
+        with self.assertRaisesRegex(ValueError, "continuous Gaussian"):
+            SMPAgent.get_playback_policy_components(agent)
 
 
 if __name__ == "__main__":

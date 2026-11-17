@@ -72,8 +72,8 @@ def main():
         def check_materials():
             viewer._paused = True
             sim_time = eng.get_sim_time()
-            fluid_time = runner._runtime._solver.clock.time
-            graph = runner._runtime._graph
+            fluid_time = eng._runtime._solver.clock.time
+            graph = eng._runtime._graph
             switches = []
             for preset in ('Velocity', 'Water', 'Velocity'):
                 pipeline.request_ssfr_preset(preset)
@@ -87,8 +87,8 @@ def main():
                 assert pipeline.error is None, pipeline.error
                 assert pipeline.ssfr_preset == preset and viewer._paused
                 assert eng.get_sim_time() == sim_time
-                assert runner._runtime._solver.clock.time == fluid_time
-                assert runner._runtime._graph is graph
+                assert eng._runtime._solver.clock.time == fluid_time
+                assert eng._runtime._graph is graph
                 switches.append(dict(preset=preset, completed_frame_ms=elapsed,
                                      prepare_ms=pipeline.last_switch_ms))
                 Image.fromarray(viewer.get_frame(render_ui=True).numpy()).save(output/f'paused_{preset}.png')
@@ -126,8 +126,8 @@ def main():
                     return
                 viewer._paused = True
                 sim_time = eng.get_sim_time()
-                fluid_time = runner._runtime._solver.clock.time
-                graph = runner._runtime._graph
+                fluid_time = eng._runtime._solver.clock.time
+                graph = eng._runtime._graph
                 switches = []
                 for mode in ('Transparent', 'SSFR', 'Original', 'SSFR'):
                     pipeline.request(mode)
@@ -138,8 +138,8 @@ def main():
                     assert pipeline.error is None, pipeline.error
                     assert pipeline.mode == mode and viewer._paused
                     assert eng.get_sim_time() == sim_time
-                    assert runner._runtime._solver.clock.time == fluid_time
-                    assert runner._runtime._graph is graph
+                    assert eng._runtime._solver.clock.time == fluid_time
+                    assert eng._runtime._graph is graph
                     switches.append(dict(mode=mode, completed_frame_ms=elapsed,
                                          prepare_ms=pipeline.last_switch_ms))
                 viewer.gui.request_reset()

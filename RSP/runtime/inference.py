@@ -7,16 +7,12 @@ import torch
 
 
 class PolicyInference:
-    def __init__(self, agent):
-        from learning.distribution_gaussian_diag import DistributionGaussianDiagBuilder
-
-        model = agent._model
-        if not isinstance(model._action_dist, DistributionGaussianDiagBuilder):
-            raise ValueError("Playback inference requires the existing continuous Gaussian actor")
-        self.actor = model._actor_layers
-        self.mean = model._action_dist._mean_net
-        self.observation_normalizer = agent._obs_norm
-        self.action_normalizer = agent._a_norm
+    def __init__(self, *, actor, mean, observation_normalizer, action_normalizer):
+        """Borrow loaded policy components without changing their ownership."""
+        self.actor = actor
+        self.mean = mean
+        self.observation_normalizer = observation_normalizer
+        self.action_normalizer = action_normalizer
 
     @torch.no_grad()
     def act(self, observations):

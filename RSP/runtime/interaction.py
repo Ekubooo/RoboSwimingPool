@@ -1,14 +1,14 @@
 """CPU-owned demo settings shared by the panel and keyboard commands.
 
-Only apply_pending() touches the solver, on the playback stream at a frame
+Only apply_pending() submits settings, on the playback stream at a frame
 boundary. UI readout uses these values, never simulator array readbacks.
 """
 import math
 
 
 class FluidInteraction:
-    def __init__(self, solver):
-        self.solver = solver
+    def __init__(self, apply_settings):
+        self._apply_settings = apply_settings
         self._reset_requested = False
         self._dirty = False
         self.error = None
@@ -66,7 +66,7 @@ class FluidInteraction:
         if reset:
             self.restore_defaults()
         if self._dirty:
-            self.solver.set_fluid_controls(
+            self._apply_settings(
                 gravity=tuple(value * self.gravity_strength for value in self.direction),
                 feedback_scale=self.feedback_scale, slow_motion=self.slow_motion)
             self._dirty = False

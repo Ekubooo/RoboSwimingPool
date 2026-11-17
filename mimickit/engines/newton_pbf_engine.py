@@ -1079,6 +1079,15 @@ class SimulationRuntime:
 
 
     # Execution: capture the same substep sequence that eager mode runs.
+    def set_fluid_controls(self, *, gravity, feedback_scale, slow_motion):
+        self._solver.set_fluid_controls(
+            gravity=gravity, feedback_scale=feedback_scale, slow_motion=slow_motion)
+
+    def prepare_playback_step(self):
+        """Publish current captured work; eager execution needs no preparation."""
+        if self._graph is not None:
+            self._graph.ensure_current()
+
     def build_graphs(self):
         self._graph = None
         if not self._enable_cuda_graph:

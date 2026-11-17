@@ -30,8 +30,29 @@ class PBFPlayEnv(SMPEnv):
         self._inactive_sphere_pos = torch.tensor([[[10., 10., .1]]], device=device)
         self._inactive_sphere_vel = torch.zeros_like(self._inactive_sphere_pos)
         super().__init__(env_config, engine_config, num_envs, device, visualize, record_video)
-        from RSP.runtime.observations import ObservationBuilder
-        self._play_observations = ObservationBuilder(self)
+        self._play_observations = self._create_playback_observations()
+
+    def _create_playback_observations(self):
+        """Bind playback inputs after the environment owns all persistent buffers."""
+        from RSP.runtime.observations import CharacterStateViews, ObservationBuilder
+
+        if self._enable_phase_obs or self._enable_tar_obs:
+            raise ValueError("PBF playback observations require phase/target observations disabled")
+        engine, kin = self._engine, self._kin_char_model
+        char, sphere = self._get_char_id(), self._scene_obj_ids[-1]
+        state = CharacterStateViews(
+            root_pos=engine.get_root_pos(char), root_rot=engine.get_root_rot(char),
+            root_vel=engine.get_root_vel(char), root_ang_vel=engine.get_root_ang_vel(char),
+            dof_pos=engine.get_dof_pos(char), dof_vel=engine.get_dof_vel(char),
+            body_pos=engine.get_body_pos(char))
+        return ObservationBuilder(
+            state_views=state, joints=[kin.get_joint(j) for j in range(1, kin.get_num_joints())],
+            key_body_ids=self._key_body_ids, output=self._obs_buf,
+            inactive_sphere_state=(self._inactive_sphere_pos, self._inactive_sphere_vel),
+            scene_sphere_state=(engine.get_root_pos(sphere).unsqueeze(1),
+                                engine.get_root_vel(sphere).unsqueeze(1)),
+            global_obs=self._global_obs, root_height_obs=self._root_height_obs,
+            use_scene_sphere=self.policy_use_scene_sphere)
 
     def get_policy_timestep(self):
         return 1.0 / POLICY_HZ

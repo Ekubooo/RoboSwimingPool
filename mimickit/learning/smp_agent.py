@@ -11,6 +11,17 @@ import learning.ppo_agent as ppo_agent
 from learning.tinymdm.tinymdm_model import TinyMDMModel
 
 class SMPAgent(ppo_agent.PPOAgent):
+    def get_playback_policy_components(self):
+        """Expose borrowed components for deterministic continuous-policy playback."""
+        from learning.distribution_gaussian_diag import DistributionGaussianDiagBuilder
+
+        if not isinstance(self._model._action_dist, DistributionGaussianDiagBuilder):
+            raise ValueError("Playback inference requires the existing continuous Gaussian actor")
+        return dict(actor=self._model._actor_layers,
+                    mean=self._model._action_dist._mean_net,
+                    observation_normalizer=self._obs_norm,
+                    action_normalizer=self._a_norm)
+
     def __init__(self, config, env, device):
         super().__init__(config, env, device)
 

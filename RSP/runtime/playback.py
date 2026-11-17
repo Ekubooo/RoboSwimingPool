@@ -21,7 +21,7 @@ POLICY_HZ = 30
 class PlaybackRunner:
     def __init__(self, env, agent, *, policy=None, policy_hz=POLICY_HZ):
         self.env = env
-        self.policy = policy if policy is not None else PolicyInference(agent)
+        self.policy = policy if policy is not None else PolicyInference(**agent.get_playback_policy_components())
         self.viewer = env._engine.get_viewer()
         self.obs = env._obs_buf
         self.info = env._info
@@ -37,8 +37,8 @@ class PlaybackRunner:
             self._warp_stream = wp.stream_from_torch(self._torch_stream)
         # This single composition boundary is the existing MimicKit demo glue.
         # The controller, UI and coupled solver themselves do not depend on Env.
-        self._runtime = getattr(env._engine, "_runtime", None)
-        self.fluid_controls = FluidInteraction(self._runtime._solver) if self._runtime is not None else None
+        apply_settings = getattr(env._engine, "set_fluid_controls", None)
+        self.fluid_controls = FluidInteraction(apply_settings) if apply_settings is not None else None
         if self.viewer is not None and self.fluid_controls is not None:
             self.viewer.gui.fluid_controls = self.fluid_controls
             self.viewer.set_reset_callback(self.fluid_controls.request_reset)
@@ -74,9 +74,9 @@ class PlaybackRunner:
         if self.viewer is not None and not self.viewer.should_step():
             self.env.render_only()
             return False
-        if self.fluid_controls is not None and self._runtime._graph is not None:
+        if self.fluid_controls is not None:
             try:
-                self._runtime._graph.ensure_current()
+                self.env._engine.prepare_playback_step()
                 self.fluid_controls.error = None
             except Exception as error:
                 if self.viewer is None:

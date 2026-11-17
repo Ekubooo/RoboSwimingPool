@@ -161,6 +161,15 @@ class NewtonEngineAPI(Engine):
     def get_sim_time(self):
         return self._runtime.get_sim_time()
 
+    def set_fluid_controls(self, *, gravity, feedback_scale, slow_motion):
+        """Apply playback settings on the caller's simulation stream."""
+        return self._runtime.set_fluid_controls(
+            gravity=gravity, feedback_scale=feedback_scale, slow_motion=slow_motion)
+
+    def prepare_playback_step(self):
+        """Refresh captured work before policy evaluation, without advancing time."""
+        return self._runtime.prepare_playback_step()
+
     # Display, interaction callbacks and recording.
 
     def get_viewer(self):

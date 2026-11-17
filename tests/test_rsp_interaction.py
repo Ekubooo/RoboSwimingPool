@@ -53,12 +53,12 @@ class ControlChecks(unittest.TestCase):
 
     def test_runner_reset_pauses_before_policy_and_failed_capture_cannot_advance(self):
         from RSP.runtime.playback import PlaybackRunner
-        graph = SimpleNamespace(ensure_current=Mock())
-        runtime = SimpleNamespace(_solver=Mock(), _graph=graph)
+        prepare_step = Mock()
         viewer = SimpleNamespace(gui=SimpleNamespace(), _paused=False, _step_requested=True)
         viewer.set_reset_callback = lambda callback: setattr(viewer, "reset_callback", callback)
         viewer.should_step = lambda: not viewer._paused
-        env = SimpleNamespace(_engine=SimpleNamespace(_runtime=runtime, get_viewer=lambda: viewer,
+        env = SimpleNamespace(_engine=SimpleNamespace(set_fluid_controls=Mock(), prepare_playback_step=prepare_step,
+                              get_viewer=lambda: viewer,
                               get_timestep=lambda: 1/150), _obs_buf="obs", _info={}, _device="cpu")
         env.request_reset = Mock()
         env.apply_playback_commands = lambda: env.request_reset.called
@@ -76,17 +76,21 @@ class ControlChecks(unittest.TestCase):
         self.assertFalse(runner.fluid_controls.slow_motion)
         env.request_reset.reset_mock()
         viewer._paused = False
-        graph.ensure_current.side_effect = RuntimeError("capture rejected")
+        prepare_step.side_effect = RuntimeError("capture rejected")
         with self.assertLogs(level="ERROR"):
             self.assertFalse(runner.tick())
         self.assertTrue(viewer._paused)
         self.assertEqual(runner.fluid_controls.error, "capture rejected")
+        policy.act.assert_not_called()
+        runner.viewer = None
+        with self.assertRaisesRegex(RuntimeError, "capture rejected"):
+            runner.tick()
         env.step.assert_not_called()
 
     def test_keyboard_directions_repeat_capture_and_reset(self):
         from pyglet.window import key
         solver = Mock()
-        controls = FluidInteraction(solver)
+        controls = FluidInteraction(solver.set_fluid_controls)
         viewer = SimpleNamespace(_paused=False, _step_requested=False,
                                  _reset_callback=controls.request_reset)
         base = SimpleNamespace(_viewer=viewer, is_keyboard_capturing=Mock(return_value=False),
@@ -134,7 +138,7 @@ class ControlChecks(unittest.TestCase):
 
     def test_gravity_commit_and_batched_upload(self):
         solver = Mock()
-        controls = FluidInteraction(solver)
+        controls = FluidInteraction(solver.set_fluid_controls)
         controls.set_gravity_strength(12., commit=False)
         controls.apply_pending()
         solver.set_fluid_controls.assert_not_called()
