@@ -7,6 +7,14 @@ enqueue commands, rather than resetting the simulation during a draw call.
 """
 
 
+def draw_policy_controls(imgui, *, get_scene_sphere, request_scene_sphere):
+    """Display CPU policy options and queue edits without updating simulation."""
+    imgui.text("PBF play / SMP policy")
+    changed, enabled = imgui.checkbox("Policy: scene sphere", get_scene_sphere())
+    if changed:
+        request_scene_sphere(enabled)
+
+
 class PlaybackGui:
     def __init__(self, gui):
         self._base = gui
@@ -38,10 +46,9 @@ class PlaybackGui:
             return
         viewer = self._base._viewer
         if symbol == key.SPACE:
-            viewer._paused = not viewer._paused
+            viewer.set_paused(not viewer.is_paused())
         elif symbol == key.ENTER:
-            viewer._paused = True
-            viewer._step_requested = True
+            viewer.request_step()
         elif symbol == key.R:
             self.request_reset()
         elif self.fluid_controls is not None and symbol == key.G:
@@ -102,11 +109,13 @@ class PlaybackGui:
         scale = self.ui.dpi_scale
         imgui.set_next_window_pos(imgui.ImVec2(10 * scale, 10 * scale), imgui.Cond_.first_use_ever)
         if imgui.begin("RSP Playback", flags=imgui.WindowFlags_.always_auto_resize):
-            _, viewer._paused = imgui.checkbox("Pause", viewer._paused)
+            changed, paused = imgui.checkbox("Pause", viewer.is_paused())
+            if changed:
+                viewer.set_paused(paused)
             imgui.same_line()
-            imgui.begin_disabled(not viewer._paused)
+            imgui.begin_disabled(not viewer.is_paused())
             if imgui.button("Step"):
-                viewer._step_requested = True
+                viewer.request_step()
             imgui.end_disabled()
             if viewer._reset_callback is not None:
                 imgui.same_line()

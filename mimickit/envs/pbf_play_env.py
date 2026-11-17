@@ -115,6 +115,13 @@ class PBFPlayEnv(SMPEnv):
         self.policy_use_scene_sphere = bool(enabled)
         self._update_observations()
 
+    def get_policy_use_scene_sphere(self):
+        return self.policy_use_scene_sphere
+
+    def request_policy_use_scene_sphere(self, enabled):
+        """Queue an observation option for the next playback frame boundary."""
+        self._pending_sphere = bool(enabled)
+
     def _compute_obs(self, env_ids=None):
         obs = super()._compute_obs(env_ids)
         char_id = self._get_char_id()
@@ -162,23 +169,22 @@ class PBFPlayEnv(SMPEnv):
                               pos=np.array([5., -5., 4.1]), target=np.array([1.5, 1., 1.5]))
 
     def _setup_gui(self):
-        # PlaybackGui owns Enter/Space/R; do not also register SimEnv's keys.
-        self._engine.get_viewer().set_reset_callback(self.request_reset)
-        self._engine.register_ui_callback(self._draw_play_controls)
+        """Playback bindings own UI setup; suppress SimEnv's keyboard hooks."""
 
     def request_reset(self):
         self._pending_reset = True
 
-    def apply_playback_commands(self):
-        """Apply UI changes between frames, before the next policy decision."""
+    def consume_reset_request(self) -> bool:
+        """Consume coalesced requests; the runner owns full playback reset."""
         reset = self._pending_reset
         self._pending_reset = False
-        if reset:
-            self.reset()
+        return reset
+
+    def apply_playback_commands(self):
+        """Apply observation options after reset, before the next decision."""
         if self._pending_sphere is not None:
             enabled, self._pending_sphere = self._pending_sphere, None
             self.set_policy_use_scene_sphere(enabled)
-        return reset
 
     def render_only(self):
         if self._visualize:
@@ -188,9 +194,3 @@ class PBFPlayEnv(SMPEnv):
     def _render(self):
         # The runner owns stepping; a paused redraw must never block env.step.
         self.render_only()
-
-    def _draw_play_controls(self, imgui):
-        imgui.text("PBF play / SMP policy")
-        changed, enabled = imgui.checkbox("Policy: scene sphere", self.policy_use_scene_sphere)
-        if changed:
-            self._pending_sphere = enabled

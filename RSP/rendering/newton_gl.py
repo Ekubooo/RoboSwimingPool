@@ -55,6 +55,22 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         # block runs. Release interop resources while that context still exists.
         self.renderer.window.push_handlers(on_close=self._close_window)
 
+    def set_paused(self, paused):
+        """Set playback state and cancel any previously requested single step."""
+        self._paused = bool(paused)
+        self._step_requested = False
+
+    def request_step(self):
+        """Let Newton's should_step() consume one step while paused."""
+        self._paused = True
+        self._step_requested = True
+
+    def bind_playback_controls(self, fluid_controls, reset_callback):
+        """Connect CPU controls without requiring an available GUI."""
+        if self.gui is not None:
+            self.gui.fluid_controls = fluid_controls
+        self.set_reset_callback(reset_callback)
+
     def _poll_events(self):
         import ctypes
         import pyglet

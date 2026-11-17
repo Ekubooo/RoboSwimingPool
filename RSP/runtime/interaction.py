@@ -9,7 +9,6 @@ import math
 class FluidInteraction:
     def __init__(self, apply_settings):
         self._apply_settings = apply_settings
-        self._reset_requested = False
         self._dirty = False
         self.error = None
         self._defaults()
@@ -51,26 +50,18 @@ class FluidInteraction:
         self.slow_motion = bool(enabled)
         self._dirty = True
 
-    def request_reset(self):
-        self._reset_requested = True
-
     def restore_defaults(self):
         self._defaults()
         self._dirty = True
-        self._reset_requested = False
         self.error = None
 
     def apply_pending(self):
-        """Return a reset request for the existing environment reset path."""
-        reset = self._reset_requested
-        if reset:
-            self.restore_defaults()
+        """Submit changed settings once, on the playback stream."""
         if self._dirty:
             self._apply_settings(
                 gravity=tuple(value * self.gravity_strength for value in self.direction),
                 feedback_scale=self.feedback_scale, slow_motion=self.slow_motion)
             self._dirty = False
-        return reset
 
     @staticmethod
     def _bounded(value, maximum, name):

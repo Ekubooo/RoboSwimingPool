@@ -12,6 +12,8 @@ import numpy as np
 import warp as wp
 
 from RSP.rendering.playback_ui import PlaybackGui
+from RSP.rendering.newton_gl import NewtonBillboardViewer
+from envs.pbf_play_env import PBFPlayEnv
 from RSP.runtime.coupling import ClockedPBFMuJoCo, ClockedStepGraph, _apply_feedback
 from RSP.runtime.fluid_clock import DEFAULT_SETTINGS, FluidClock
 from RSP.runtime.interaction import FluidInteraction
@@ -55,20 +57,30 @@ class ControlChecks(unittest.TestCase):
         from RSP.runtime.playback import PlaybackRunner
         prepare_step = Mock()
         viewer = SimpleNamespace(gui=SimpleNamespace(), _paused=False, _step_requested=True)
+        viewer.set_paused = lambda paused: NewtonBillboardViewer.set_paused(viewer, paused)
         viewer.set_reset_callback = lambda callback: setattr(viewer, "reset_callback", callback)
+        viewer.bind_playback_controls = lambda controls, reset: NewtonBillboardViewer.bind_playback_controls(viewer, controls, reset)
         viewer.should_step = lambda: not viewer._paused
         env = SimpleNamespace(_engine=SimpleNamespace(set_fluid_controls=Mock(), prepare_playback_step=prepare_step,
                               get_viewer=lambda: viewer,
                               get_timestep=lambda: 1/150), _obs_buf="obs", _info={}, _device="cpu")
-        env.request_reset = Mock()
-        env.apply_playback_commands = lambda: env.request_reset.called
+        env._pending_reset = False
+        env.request_reset = Mock(side_effect=lambda: PBFPlayEnv.request_reset(env))
+        env.consume_reset_request = lambda: PBFPlayEnv.consume_reset_request(env)
+        env.reset = Mock(return_value=("reset", {}))
+        env.apply_playback_commands = Mock()
         env.render_only, env.step = Mock(), Mock()
         policy = SimpleNamespace(act=Mock())
+        env.get_policy_use_scene_sphere = Mock(return_value=False)
+        env.request_policy_use_scene_sphere = Mock()
+        if env._engine.get_viewer() is not None:
+            env._engine.get_viewer().register_ui_callback = Mock()
         runner = PlaybackRunner(env, None, policy=policy)
         runner.fluid_controls.set_slow_motion(True)
         viewer.reset_callback()
         self.assertFalse(runner.tick())
         env.request_reset.assert_called_once()
+        env.reset.assert_called_once_with()
         self.assertTrue(viewer._paused)
         self.assertFalse(viewer._step_requested)
         policy.act.assert_not_called()
@@ -92,7 +104,10 @@ class ControlChecks(unittest.TestCase):
         solver = Mock()
         controls = FluidInteraction(solver.set_fluid_controls)
         viewer = SimpleNamespace(_paused=False, _step_requested=False,
-                                 _reset_callback=controls.request_reset)
+                                 _reset_callback=Mock())
+        viewer.set_paused = lambda paused: NewtonBillboardViewer.set_paused(viewer, paused)
+        viewer.is_paused = lambda: viewer._paused
+        viewer.request_step = lambda: NewtonBillboardViewer.request_step(viewer)
         base = SimpleNamespace(_viewer=viewer, is_keyboard_capturing=Mock(return_value=False),
                                handle_key_press=Mock())
         gui = PlaybackGui(base)
@@ -130,11 +145,11 @@ class ControlChecks(unittest.TestCase):
         controls.set_feedback_scale(2.)
         controls.set_gravity_strength(15.)
         press(key.R)
-        self.assertTrue(controls.apply_pending())
-        self.assertEqual((controls.gravity_strength, controls.feedback_scale, controls.slow_motion), (9.81, 1., False))
-        gui.request_reset()  # Same entry used by the actual Reset button.
-        self.assertTrue(controls.apply_pending())
-        self.assertFalse(controls.apply_pending())
+        viewer._reset_callback.assert_called_once_with()
+        # UI only requests reset; the runner restores settings at a frame boundary.
+        self.assertEqual(controls.gravity_strength, 15.)
+        gui.request_reset()
+        self.assertEqual(viewer._reset_callback.call_count, 2)
 
     def test_gravity_commit_and_batched_upload(self):
         solver = Mock()
