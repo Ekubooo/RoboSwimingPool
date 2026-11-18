@@ -5,7 +5,7 @@ from pathlib import Path
 
 from RSP.sim_ready.catalog import AssetRef
 from .assembly import asset_label
-from .profiles import read_yaml
+from .profiles import read_yaml, load_characters, character_for_scene, LaunchRequest
 
 
 @dataclass
@@ -16,11 +16,13 @@ class PropChoice:
 
 
 class SelectionPanel:
-    def __init__(self, choices, presets, default_preset):
+    def __init__(self, choices, presets, default_preset, *, characters=None):
         self.choices, self.presets = choices, presets
         self.preset_scenes = {name: read_yaml(path) for name, path in presets.items()}
         self.mode = "preset"
         self.preset = next(name for name, path in presets.items() if path == default_preset)
+        self.characters = load_characters() if characters is None else characters
+        self.character = character_for_scene(choices.template, self.characters).profile_id
         self.container = asset_label(AssetRef(**choices.template["container"]))
         defaults = {x["asset"]["name"]: asset_label(AssetRef(**x["asset"])) for x in choices.template["instances"]}
         self.props = {name: PropChoice(name in defaults, 1, defaults.get(name, next(iter(versions))))
@@ -54,10 +56,12 @@ class SelectionPanel:
 
     def generate(self):
         try:
+            character = self.characters[self.character]
+            character.require_available()
             counts = {self.choices.props[name][p.version]: p.count if p.enabled else 0
                       for name, p in self.props.items()}
             self.layout = self.choices.build(self.choices.containers[self.container], counts,
-                mode=self.placement, seed=self.seed, use_sphere=self.use_sphere)
+                mode=self.placement, seed=self.seed, use_sphere=self.use_sphere, character=character.asset)
             self.status = f"已生成 {len(self.layout['instances'])} 个刚体，随机种子 {self.seed}"
             return True
         except (OSError, ValueError, KeyError) as error:
@@ -66,10 +70,19 @@ class SelectionPanel:
             return False
 
     def request_start(self):
-        if self.mode == "preset":
-            self.result = self.presets[self.preset]
-        elif self.layout is not None or self.generate():
-            self.result = deepcopy(self.layout)
+        try:
+            if self.mode == "preset":
+                choice = character_for_scene(self.preset_scenes[self.preset], self.characters)
+                self.result = LaunchRequest(choice.profile_id, self.presets[self.preset])
+            elif self.layout is not None or self.generate():
+                self.characters[self.character].require_available()
+                self.result = LaunchRequest(self.character, deepcopy(self.layout))
+        except (ValueError, KeyError) as error:
+            self.status = str(error)
+
+    def select_character(self, profile_id):
+        self.character = profile_id
+        self.invalidate()
 
     @staticmethod
     def _combo(imgui, label, selected, options):
@@ -81,7 +94,13 @@ class SelectionPanel:
         changed, self.container = self._combo(imgui, "容器 × 1", self.container, self.choices.containers)
         if changed:
             self.invalidate()
-        imgui.text("人形 × 1：默认 humanoid / 当前 SMP 策略")
+        ids = list(self.characters)
+        labels = [c.label + ("（不可用）" if c.error else "") for c in self.characters.values()]
+        changed, index = imgui.combo("人形 × 1", ids.index(self.character), labels)
+        if changed:
+            self.select_character(ids[index])
+        if self.characters[self.character].error:
+            imgui.text_wrapped(self.characters[self.character].error)
         imgui.text_disabled("出生状态、水域及物理参数沿用当前 demo")
         imgui.separator()
         for name, p in self.props.items():
@@ -141,6 +160,10 @@ class SelectionPanel:
             if self.mode == "preset":
                 _, self.preset = self._combo(imgui, "预设", self.preset, self.presets)
                 summary = self.preset_scenes[self.preset]
+                try:
+                    imgui.text(character_for_scene(summary, self.characters).label)
+                except ValueError as error:
+                    imgui.text_wrapped(str(error))
             else:
                 self._custom(imgui)
                 summary = self.layout

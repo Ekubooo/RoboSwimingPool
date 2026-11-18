@@ -17,7 +17,7 @@ from RSP.sim_ready.pipelines.scenes.container_recipe import add_collisions
 from RSP.sim_ready.pipelines.scenes.spec import load_scene
 from RSP.sim_ready.lib.storage.hull_io import load_hulls
 from RSP.sim_ready.lib.asset_validation import (ValidationReport, diagnostic_scope,
-    validate_physical_asset, validate_skeleton)
+    validate_physical_asset, validate_skeleton, validate_coverage)
 from RSP.sim_ready.adapters.newton import describe_articulations, validate_model_for_mimickit
 from solvers.pbf import boundary_model, pbf_helper
 from RSP.runtime import fluid_clock
@@ -85,7 +85,23 @@ class PBFScene:
     def register_character(self, obj_id, skeleton, excluded_links=()):
         self.register_instance(obj_id, self.spec.character)
         self._skeletons[obj_id] = skeleton
-        self._excluded_links[obj_id] = tuple(excluded_links)
+        published = tuple(self._object_assets[obj_id].record.get("excluded_links", ()))
+        if excluded_links and set(excluded_links) != set(published):
+            raise ValueError("Environment exclusions differ from the published character")
+        self._excluded_links[obj_id] = published
+
+    @staticmethod
+    def validate_published_links(physical, record):
+        """A published boundary or an explicit collision-free exclusion owns every body."""
+        excluded = tuple(record.get("excluded_links", ()))
+        links = record["links"]
+        names = {body.name for body in physical.bodies}
+        if set(links) - names or set(links).intersection(excluded):
+            raise ValueError("Unknown or excluded body in published boundaries")
+        prepared = [i for i, body in enumerate(physical.bodies) if body.name in links]
+        validate_coverage(physical, prepared, excluded).require_valid()
+        if any(body.shapes for body in physical.bodies if body.name in excluded):
+            raise ValueError("Only collision-free bodies may be excluded from published coupling")
 
     def validate_model(self, model):
         if self._validated_model is model:
@@ -94,6 +110,7 @@ class PBFScene:
             bindings = describe_articulations(model)
         self.validation.extend(validate_model_for_mimickit(model, bindings))
         for obj_id, binding in enumerate(bindings):
+            self.validate_published_links(binding.asset, self._object_assets[obj_id].record)
             self.validation.extend(validate_physical_asset(binding.asset, self._excluded_links.get(obj_id, ())))
             if obj_id in self._skeletons:
                 self.validation.extend(validate_skeleton(binding.asset, self._skeletons[obj_id]))
@@ -139,11 +156,9 @@ class PBFScene:
             if physical_signature(binding.asset) != asset.record["physical_signature"]:
                 raise ValueError(f"Published physical model differs from runtime object {obj_id}")
             links = asset.record["links"]
-            if set(links) != {body.name for body in binding.asset.bodies}:
-                raise ValueError("Published boundary link coverage differs from runtime model")
-            if self._excluded_links.get(obj_id):
-                raise ValueError("Reference published assets do not support excluded links")
             for local_id, body in enumerate(binding.asset.bodies):
+                if body.name in self._excluded_links.get(obj_id, ()):
+                    continue
                 path = asset.file(links[body.name])
                 boundary_record = json.loads(path.read_text(encoding="utf-8"))
                 mesh_path = (path.parent / boundary_record["files"]["mesh"]).resolve()

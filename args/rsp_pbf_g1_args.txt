@@ -1,0 +1,13 @@
+# RSP launcher profile; preserves the saved G1 environment and agent configuration.
+--mode test
+--num_envs 1
+--devices cuda:0
+--visualize true
+--video false
+--rand_seed 1234
+--engine_config data/engines/newton_pbf_engine.yaml
+--env_config output/g1_lafan_full_20261107_r01/env_config.yaml
+--agent_config output/g1_lafan_full_20261107_r01/agent_config.yaml
+--model_file output/g1_lafan_full_20261107_r01/model.pt
+--scene_preset data/scenes/pbf_g1.yaml
+--out_dir output/pbf_play

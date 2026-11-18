@@ -51,7 +51,8 @@ def publish_package(ref, record, populate, *, root=PUBLISHED_ROOT):
     return read_asset(destination / "asset.json")
 
 
-def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_PLAY_ROOT, device="cuda:0"):
+def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_PLAY_ROOT,
+                    device="cuda:0", only=None):
     """Prepare only the explicitly supported reference recipes, using existing algorithms."""
     import newton
     from importlib.metadata import version
@@ -92,12 +93,23 @@ def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_P
         copy_file(source)
         return (Path("boundaries") / family.name / source.relative_to(family)).as_posix()
 
+    sources = scan_sources(origin)
+    if only is not None:
+        if only not in sources:
+            raise ValueError(f"Unknown source asset: {only}")
+        sources = {only: sources[only]}
     result = []
-    for ref, source in scan_sources(origin).items():
+    for ref, source in sources.items():
         inputs = {name: digest(contained(origin, name)) for name in source["inputs"]}
         code = {str(p): digest(p) for p in (Path(recipe.__file__), Path(boundary_prepare.__file__), Path(__file__))}
         identity = dict(source=source, inputs=inputs, code=code, support_radius=radius,
                         dependencies={name: version(name) for name in ("newton", "warp-lang", "trimesh")})
+        is_g1 = source["recipe"] == "mimickit_g1"
+        if is_g1:
+            from . import g1_recipe
+            if ref.category != "articulations" or ref.name != "g1" or source["inputs"]:
+                raise ValueError("mimickit_g1 requires articulations/g1 and repository-owned inputs")
+            identity["g1"] = g1_recipe.source_identity()
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
         def populate(stage):
@@ -115,7 +127,9 @@ def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_P
                 save_mesh_obj(bunny, stage / "bunny.obj", digits=17)
                 save_hulls(hulls, stage / "hulls.npz")
                 return dict(boundary=boundary, bunny="bunny.obj", hulls="hulls.npz", container=layout)
-            if source["recipe"] == "reference_prop":
+            if is_g1:
+                model_path = g1_recipe.copy_model(stage)
+            elif source["recipe"] == "reference_prop":
                 names = [spec.name for spec in recipe.RIGIDS]
                 if ref.category != "props" or ref.name not in names or source["inputs"]:
                     raise ValueError("Unsupported reference prop recipe")
@@ -128,18 +142,26 @@ def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_P
                     raise ValueError("External MJCF dependencies require an explicit import recipe")
             else:
                 raise ValueError(f"Unsupported preparation recipe: {source['recipe']}")
-            shutil.copyfile(model_path, stage / "model.xml")
+            if not is_g1:
+                shutil.copyfile(model_path, stage / "model.xml")
             builder = newton.ModelBuilder()
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
             builder.default_shape_cfg.mu = 1.0
             import_physical_asset(builder, model_path, fix_root=False, enable_self_collisions=True, report=report)
             model = finalize_model(builder, device=device, report=report)
             binding, = describe_articulations(model)
+            excluded = g1_recipe.EXCLUDED_LINKS if is_g1 else ()
+            if is_g1:
+                g1_recipe.check_collision_scope(binding.asset)
             prepared = prepare_articulated_asset(binding.asset, store=store, device=device,
-                bake_options=BakeOptions(voxel_size=.005, max_support_radius=radius), support_radius=radius)
+                bake_options=BakeOptions(voxel_size=.005, max_support_radius=radius), support_radius=radius,
+                excluded_links=excluded)
             links = {binding.asset.bodies[i].name: copy_boundary(artifact, stage)
                      for i, artifact in prepared.boundaries.items()}
-            return dict(model="model.xml", links=links, physical_signature=physical_signature(binding.asset))
+            metadata = dict(model="model.xml", links=links, physical_signature=physical_signature(binding.asset))
+            if is_g1:
+                metadata["excluded_links"] = list(excluded)
+            return metadata
 
         result.append(publish_package(ref, {"recipe_digest": key}, populate, root=published))
     return result

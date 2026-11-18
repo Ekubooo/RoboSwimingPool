@@ -80,8 +80,8 @@ def parse_scene(record):
             vector(entry.get("linear_velocity", [0, 0, 0]), 3, "linear_velocity"),
             vector(entry.get("angular_velocity", [0, 0, 0]), 3, "angular_velocity"), role))
     container, character = AssetRef(**record["container"]), AssetRef(**record["character"])
-    if container.category != "containers" or (character.category, character.name) != ("articulations", "humanoid"):
-        raise ValueError("Expected a container and the supported humanoid")
+    if container.category != "containers" or character.category != "articulations":
+        raise ValueError("Expected a container and an articulated character")
     enabled = record["policy_use_scene_sphere"]
     if not isinstance(enabled, bool) or (enabled and "policy_sphere" not in roles):
         raise ValueError("Scene sphere observations require a policy_sphere instance")

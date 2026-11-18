@@ -44,7 +44,7 @@ class SceneChoices:
             self._obstacles[container] = np.asarray(mesh.bounds)
         return self._obstacles[container]
 
-    def build(self, container, counts, *, mode="regular", seed=1234, use_sphere=False):
+    def build(self, container, counts, *, mode="regular", seed=1234, use_sphere=False, character=None):
         """Generate an entire layout or fail without dropping requested instances."""
         if container not in self.containers.values() or mode not in ("regular", "random"):
             raise ValueError("请选择可用容器及摆放方式")
@@ -58,6 +58,10 @@ class SceneChoices:
             names.add(ref.name)
             expanded.extend((ref, index + 1) for index in range(count))
         record = deepcopy(self.template)
+        if character is not None:
+            if character.category != "articulations" or character not in self.assets:
+                raise ValueError("请选择已发布的人形资产")
+            record["character"] = asdict(character)
         record["container"] = asdict(container)
         record["instances"] = []
         record["policy_use_scene_sphere"] = use_sphere

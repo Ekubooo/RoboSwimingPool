@@ -103,3 +103,46 @@ python tools/check_rsp_published_scene.py --preset pbf_wide --frames 2
 The second check uses the existing checkpoint, executes 11 headless frames and
 one reset, forbids preparation calls, and verifies published files are unchanged.
 Neither command tests recording.
+
+## G1 collision-based playback
+
+Prepare only the new G1 package (existing packages are not republished):
+
+```powershell
+python tools/prepare_rsp_assets.py --asset articulations/g1/1
+python tools/run_rsp.py --profile g1 --direct
+```
+
+The reference recipe reads `data/assets/g1/g1.xml` and its dependencies without
+changing them. It publishes a self-contained model, authored visual meshes and
+license under `published/articulations/g1/1`. Only the original collision
+primitives generate coupling boundaries: 27 shapes on 21 bodies. The manifest
+explicitly excludes the 10 collision-free bodies. All 31 bodies, their joints,
+inertias and visuals remain in the simulation; no visual-mesh repair is used.
+
+`data/playbacks/characters.yaml` associates a display name with an argument
+file. The G1 profile uses the existing `output/g1_lafan_full_20261107_r01`
+checkpoint and configuration, the current LaFAN prior, and the joint-limited
+motions referenced by `data/datasets/dataset_g1_locomotion.yaml`. These files
+remain at their original locations. Playback uses the shared SMPG1 agent state,
+G1 LaFAN initialization and native 243-observation/29-action interface. It does
+not run training or the original dodgeball projectile spawner.
+
+The default PBF engine schedule remains 150 frames/s with a 30 Hz policy. G1
+keeps its saved position-target margins and knee limits. `pbf_g1.yaml` uses the
+original pool, water region and prop arrangement. A reset retains GSI behavior;
+it does not promise a fixed pose or standing stability.
+
+Run `python tools/run_rsp.py` for selection in the existing Newton window.
+Presets select their matching humanoid/policy automatically. Custom assembly
+selects a complete humanoid profile, never a mesh with an unrelated policy.
+Unavailable profile resources are reported without preventing the default
+humanoid from running. Model and policy loading happen after selection.
+
+The explicit short integration check is:
+
+```powershell
+python tests/check_rsp_g1_playback.py
+python tests/check_rsp_g1_playback.py --custom empty
+python tests/check_rsp_g1_playback.py --custom multi
+```

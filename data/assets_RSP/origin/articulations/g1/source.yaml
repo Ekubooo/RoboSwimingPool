@@ -1,0 +1,7 @@
+schema: 1
+identity:
+  category: articulations
+  name: g1
+  version: '1'
+recipe: mimickit_g1
+inputs: []
