@@ -189,9 +189,12 @@ class AssetValidation(unittest.TestCase):
         from engines.newton_pbf_engine import SceneBuilder
         from engines.newton_pbf_runtime import PBFScene
         with tempfile.TemporaryDirectory(dir=OUTPUT / "tmp") as directory:
-            scene = PBFScene(directory, "cpu", 1 / 30, 8)
+            published = Mock(record={"model": "model.xml"})
+            published.file.return_value = Path(directory) / "model.xml"
+            with patch("engines.newton_pbf_runtime.resolve_asset", return_value=published):
+                scene = PBFScene(directory, "cpu", 1 / 30, 8)
             scene.register_character(0, replace(self.skeleton, body_names=tuple(reversed(self.skeleton.body_names))))
-            sentinel = scene.store.path("scene_manifest.json")
+            sentinel = Path(directory) / "scene_manifest.json"
             sentinel.write_text("previous successful run")
             builder = SceneBuilder.__new__(SceneBuilder)
             builder.device = "cpu"

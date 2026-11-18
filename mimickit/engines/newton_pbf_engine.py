@@ -595,8 +595,8 @@ class SceneBuilder:
 
     def __init__(self, config, num_envs, device, timestep, substeps):
         self.device = device
-        self.play_scene = PBFScene(config.get("pbf_asset_dir", PBF_PLAY_ROOT),
-                                   device, timestep, substeps)
+        self.play_scene = PBFScene(config.get("pbf_asset_dir"),
+                                   device, timestep, substeps, scene_spec=config.get("scene_spec"))
         self.num_envs = num_envs
         self.builder = self._create_model_builder()
         self._builder_cache = {}

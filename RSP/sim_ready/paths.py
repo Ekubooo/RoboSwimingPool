@@ -8,6 +8,8 @@ ASSET_ROOT = PROJECT_ROOT / "data" / "assets_RSP"
 ORIGIN_ROOT = ASSET_ROOT / "origin"
 PBF_PLAY_ROOT = ASSET_ROOT / "pbf_play"
 TEST_ROOT = ASSET_ROOT / "tests"
+PUBLISHED_ROOT = ASSET_ROOT / "published"
+SCENE_ROOT = PROJECT_ROOT / "data" / "scenes"
 
 
 def output_root(path):

@@ -1,5 +1,10 @@
 # RSP asset pipeline
 
+The playback entry now uses versioned published assets. See
+[Published reference scene](PUBLISHED_ASSETS.md) for preparation, preset selection,
+read-only runtime loading and the targeted checks. The preparation/cache details
+below remain applicable; runtime no longer invokes their build entry points.
+
 Asset preparation, storage and read-only runtime loading have separate owners.
 Geometry, SDF baking, volume integration and coupling retain their existing methods.
 

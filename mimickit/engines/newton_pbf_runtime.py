@@ -8,12 +8,15 @@ import trimesh
 import warp as wp
 
 from RSP.sim_ready.pipelines.scenes import pbf_play as assets
-from RSP.sim_ready.lib.storage.store import AssetStore
+from pathlib import Path
+from uuid import uuid4
+from RSP.sim_ready.paths import PUBLISHED_ROOT, PROJECT_ROOT
+from RSP.sim_ready.catalog import resolve_asset, physical_signature
+from RSP.sim_ready.pipelines.scenes.spec import load_scene
+from RSP.sim_ready.lib.storage.hull_io import load_hulls
 from RSP.sim_ready.lib.asset_validation import (ValidationReport, diagnostic_scope,
     validate_physical_asset, validate_skeleton)
 from RSP.sim_ready.adapters.newton import describe_articulations, validate_model_for_mimickit
-from RSP.sim_ready.pipelines.articulation import prepare_articulated_asset
-from RSP.sim_ready.config import BakeOptions
 from solvers.pbf import boundary_model, pbf_helper
 from RSP.runtime import fluid_clock
 
@@ -41,9 +44,12 @@ def runtime_config(control_dt, substeps, settings=None):
 
 
 class PBFScene:
-    def __init__(self, directory, device, control_dt, substeps):
-        self.store = AssetStore(directory)
-        self.directory = self.store.root
+    def __init__(self, directory, device, control_dt, substeps, *, scene_spec=None):
+        self.directory = Path(directory or PUBLISHED_ROOT).resolve()
+        spec = load_scene() if scene_spec is None else scene_spec
+        self.static_asset = resolve_asset(spec.container, self.directory)
+        self.dynamic_assets = tuple(resolve_asset(ref, self.directory) for ref in (spec.character, *spec.props))
+        self.report_directory = PROJECT_ROOT / "output" / "pbf_play" / "runs" / uuid4().hex
         self.device = device
         self.control_dt = control_dt
         self.rigid_dt = control_dt / substeps
@@ -52,7 +58,7 @@ class PBFScene:
         self.config = runtime_config(control_dt, substeps, self.fluid_settings)
         self.particles = SimpleNamespace(config=self.config)
         pbf_helper.init_scene_parameters(self.particles)
-        self.primitive_files = assets.primitive_files(self.store)
+        self.primitive_files = [str(asset.file(asset.record["model"])) for asset in self.dynamic_assets[1:]]
         self.body_meshes = {}
         self.boundaries = None
         self.validation = ValidationReport()
@@ -81,9 +87,10 @@ class PBFScene:
         self._validated_model = model
 
     def add_static(self, builder):
-        with diagnostic_scope(self.validation, "static.prepare", "pool and bunny"):
-            self.static_path, self.bunny, hulls = assets.prepare_static(
-                self.store, self.device, self.particles.smoothing_length, report=self.validation)
+        record = self.static_asset.record
+        self.static_path = self.static_asset.file(record["boundary"])
+        self.bunny = trimesh.load(self.static_asset.file(record["bunny"]), force="mesh", process=False)
+        hulls = load_hulls(self.static_asset.file(record["hulls"]))
         self.initial_clearances = self._validate_initial_layout()
         assets.add_static_collisions(builder, self.bunny, hulls)
         self.static_hull_count = len(hulls)
@@ -134,14 +141,21 @@ class PBFScene:
         for obj_id, binding in enumerate(self._bindings):
             if not selected.intersection(binding.body_ids):
                 continue
-            prepared = prepare_articulated_asset(binding.asset, store=self.store, device=self.device,
-                bake_options=BakeOptions(voxel_size=.005, max_support_radius=self.particles.smoothing_length),
-                support_radius=self.particles.smoothing_length,
-                excluded_links=self._excluded_links.get(obj_id, ()))
-            self.validation.extend(prepared.report)
-            for local_id, path in prepared.boundaries.items():
+            asset = self.dynamic_assets[obj_id]
+            if physical_signature(binding.asset) != asset.record["physical_signature"]:
+                raise ValueError(f"Published physical model differs from runtime object {obj_id}")
+            links = asset.record["links"]
+            if set(links) != {body.name for body in binding.asset.bodies}:
+                raise ValueError("Published boundary link coverage differs from runtime model")
+            if self._excluded_links.get(obj_id):
+                raise ValueError("Reference published assets do not support excluded links")
+            for local_id, body in enumerate(binding.asset.bodies):
+                path = asset.file(links[body.name])
+                boundary_record = json.loads(path.read_text(encoding="utf-8"))
+                mesh_path = (path.parent / boundary_record["files"]["mesh"]).resolve()
+                mesh_path = asset.file(mesh_path.relative_to(asset.root).as_posix())
+                mesh = trimesh.load(mesh_path, force="mesh", process=False)
                 body_id = binding.body_ids[local_id]
-                mesh = prepared.meshes[local_id]
                 self.body_meshes[body_id] = mesh
                 mapped_ids.append(body_id)
                 paths.append(path)
@@ -177,11 +191,9 @@ class PBFScene:
                              fluid_substeps=self.fluid_schedule.fluid_steps,
                              fluid_time_scale=self.fluid_settings.time_scale)
         self.manifest["asset_validation"] = self.validation.to_dict()
-        destination = self.store.path("scene_manifest.json")
-        with self.store.staging(destination) as stage:
-            source = stage / "scene_manifest.json"
-            source.write_text(json.dumps(self.manifest, indent=2) + "\n", encoding="utf-8")
-            self.store.publish([(source, destination)])
+        self.report_directory.mkdir(parents=True, exist_ok=True)
+        (self.report_directory / "scene_manifest.json").write_text(
+            json.dumps(self.manifest, indent=2) + "\n", encoding="utf-8")
         return self.boundaries
 
     def initialize_particles(self, *states):

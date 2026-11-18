@@ -18,6 +18,16 @@ class PBFPlayEnv(SMPEnv):
     def __init__(self, env_config, engine_config, num_envs, device, visualize, record_video=False):
         if engine_config["engine_name"] != "newton_pbf" or num_envs != 1:
             raise ValueError("pbf_play requires one newton_pbf environment")
+        from RSP.sim_ready.pipelines.scenes.spec import load_scene
+        from RSP.sim_ready.catalog import resolve_asset
+        from RSP.sim_ready.paths import PUBLISHED_ROOT, SCENE_ROOT
+        scene = load_scene(env_config.get("scene_preset", SCENE_ROOT / "pbf_play.yaml"))
+        env_config, engine_config = dict(env_config), dict(engine_config)
+        character = resolve_asset(scene.character, engine_config.get("pbf_asset_dir", PUBLISHED_ROOT))
+        env_config["char_file"] = str(character.file(character.record["model"]))
+        env_config["play_spawn_xy"] = scene.spawn_xy
+        env_config["policy_use_scene_sphere"] = scene.policy_use_scene_sphere
+        engine_config["scene_spec"] = scene
         self.policy_use_scene_sphere = bool(env_config.get("policy_use_scene_sphere", False))
         self._spawn_xy = tuple(env_config.get("play_spawn_xy", (.65, 1.)))
         if len(self._spawn_xy) != 2 or not np.isfinite(self._spawn_xy).all():

@@ -1,0 +1,8 @@
+schema: 1
+identity:
+  category: articulations
+  name: humanoid
+  version: '1'
+recipe: mjcf
+inputs:
+- articulations/humanoid/humanoid.xml
