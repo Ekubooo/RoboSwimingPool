@@ -22,10 +22,12 @@ class PlaybackGui:
         self.fluid_controls = None
         self._pressed_keys = set()
         self.selection_callback = None
+        self.selection_cancel = None
 
-    def set_selection_callback(self, callback):
+    def set_selection_callback(self, callback, *, cancel_callback=None):
         """Select the startup panel without registering persistent model callbacks."""
         self.selection_callback = callback
+        self.selection_cancel = cancel_callback
         if callback is not None:
             self.show_ui = True
         self.clear_pressed_keys()
@@ -46,8 +48,8 @@ class PlaybackGui:
         from pyglet.window import key
 
         if self.selection_callback is not None:
-            if symbol == key.ESCAPE and close_fn is not None:
-                close_fn()
+            if symbol == key.ESCAPE and self.selection_cancel is not None:
+                self.selection_cancel()
             return
 
         toggles = (key.ENTER, key.SPACE, key.R, key.G, key.Q, key.E, key.X)

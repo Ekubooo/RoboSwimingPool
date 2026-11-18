@@ -23,16 +23,28 @@ def scene_path(selection, profile):
 
 def select_scene(viewer, panel):
     """Finish the UI frame before any simulation construction."""
-    panel.attach(viewer)
-    viewer.gui.set_selection_callback(panel.draw)
+    from pyglet.event import EVENT_HANDLED
+
+    window = viewer.renderer.window
+    def cancel_close():
+        panel.cancel()
+        return EVENT_HANDLED  # Keep GL alive until the selection resources are gone.
+
+    window.push_handlers(on_close=cancel_close)
     try:
+        panel.attach(viewer)
+        viewer.gui.set_selection_callback(panel.draw, cancel_callback=panel.cancel)
         while viewer.is_running() and panel.result is None and not panel.cancelled:
+            panel.prepare_previews()
             viewer.begin_frame(0.)
             viewer.end_frame()
         return panel.result if viewer.is_running() and not panel.cancelled else None
     finally:
         viewer.gui.set_selection_callback(None)
-        panel.detach()
+        try:
+            panel.detach()
+        finally:
+            window.remove_handlers(on_close=cancel_close)
 
 
 @contextmanager
