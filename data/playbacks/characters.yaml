@@ -1,8 +1,8 @@
 schema: 1
 characters:
   humanoid:
-    name: 默认 humanoid
+    name: Default humanoid
     args: args/rsp_pbf_demo_args.txt
   g1:
-    name: G1 / LaFAN 躲避球
+    name: G1 / LaFAN Dodgeball
     args: args/rsp_pbf_g1_args.txt

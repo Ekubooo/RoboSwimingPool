@@ -15,10 +15,10 @@ def read_yaml(path):
 
 def project_file(value):
     if not isinstance(value, str) or not value:
-        raise ValueError("配置路径必须是非空字符串")
+        raise ValueError("Configuration path must be a non-empty string")
     path = PROJECT_ROOT / value
     if not path.is_file():
-        raise ValueError(f"缺少文件：{path}")
+        raise ValueError(f"Missing file: {path}")
     return path.resolve()
 
 
@@ -38,7 +38,7 @@ class PlaybackProfile:
 def character_entries():
     record = read_yaml(CONFIG_ROOT / "characters.yaml")
     if record["schema"] != 1:
-        raise ValueError("人形配套目录版本错误")
+        raise ValueError("Unsupported humanoid profile catalog version")
     return record["characters"]
 
 
@@ -47,7 +47,7 @@ def profile_arguments(profile_id):
 
     entries = character_entries()
     if profile_id not in entries:
-        raise ValueError(f"未知人形配套：{profile_id}")
+        raise ValueError(f"Unknown humanoid profile: {profile_id}")
     args = ArgParser()
     args.load_file(str(project_file(entries[profile_id]["args"])))
     return args
@@ -65,7 +65,7 @@ def load_profile(profile_id="humanoid"):
     devices = args.parse_strings("devices")
     if (args.parse_string("mode") != "test" or args.parse_int("num_envs") != 1
             or len(devices) != 1 or not args.parse_bool("visualize") or args.parse_bool("video")):
-        raise ValueError("场景选择入口需要单环境、可视化、无录像的 test demo 配置")
+        raise ValueError("Scene selection requires a single-environment test demo with visualization enabled and video disabled")
     files = {key: project_file(args.parse_string(key))
              for key in ("env_config", "engine_config", "agent_config", "model_file")}
     scene = profile_scene(args)
@@ -88,7 +88,7 @@ class CharacterChoice:
 
     def require_available(self):
         if self.error or self.profile is None:
-            raise ValueError(self.error or "人形配套不可用")
+            raise ValueError(self.error or "Humanoid profile unavailable")
         return self.profile
 
 
@@ -110,7 +110,7 @@ def load_characters():
             profile = load_profile(profile_id)
             ref = AssetRef(**template["character"])
             if ref not in published:
-                raise ValueError(f"人形尚未发布：{ref.relative}")
+                raise ValueError(f"Humanoid asset has not been published: {ref.relative}")
             for relative in published[ref].record["files"]:
                 published[ref].file(relative)
             env, agent = read_yaml(profile.env_config), read_yaml(profile.agent_config)
@@ -130,7 +130,7 @@ def character_for_scene(scene, characters):
     ref = AssetRef(**scene["character"])
     matches = [choice for choice in characters.values() if choice.asset == ref]
     if len(matches) != 1:
-        raise ValueError(f"场景人形缺少唯一播放配套：{ref.relative}")
+        raise ValueError(f"Scene humanoid must have exactly one playback profile: {ref.relative}")
     matches[0].require_available()
     return matches[0]
 
@@ -138,5 +138,5 @@ def character_for_scene(scene, characters):
 def load_presets():
     record = read_yaml(CONFIG_ROOT / "presets.yaml")
     if record["schema"] != 1:
-        raise ValueError("预设目录版本错误")
+        raise ValueError("Unsupported preset catalog version")
     return {name: project_file(path) for name, path in record["presets"].items()}

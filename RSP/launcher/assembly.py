@@ -47,20 +47,20 @@ class SceneChoices:
     def build(self, container, counts, *, mode="regular", seed=1234, use_sphere=False, character=None):
         """Generate an entire layout or fail without dropping requested instances."""
         if container not in self.containers.values() or mode not in ("regular", "random"):
-            raise ValueError("请选择可用容器及摆放方式")
+            raise ValueError("Select an available container and placement mode")
         names = set()
         expanded = []
         for ref, count in counts.items():
             if ref.name in names or ref not in self.props.get(ref.name, {}).values():
-                raise ValueError("每种刚体只能选择一个已发布版本")
+                raise ValueError("Select only one published version of each prop")
             if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= 3:
-                raise ValueError("选中种类的数量须为 1–3，未选中为 0")
+                raise ValueError("Enabled props require a quantity of 1–3; disabled props use 0")
             names.add(ref.name)
             expanded.extend((ref, index + 1) for index in range(count))
         record = deepcopy(self.template)
         if character is not None:
             if character.category != "articulations" or character not in self.assets:
-                raise ValueError("请选择已发布的人形资产")
+                raise ValueError("Select a published humanoid asset")
             record["character"] = asdict(character)
         record["container"] = asdict(container)
         record["instances"] = []
@@ -81,7 +81,7 @@ class SceneChoices:
         for ref, index in expanded:
             local_center, half = self.bounds(ref)
             if np.any(upper - lower < 2*half):
-                raise ValueError(f"{ref.name} 无法放入当前区域")
+                raise ValueError(f"{ref.name} does not fit in the current region")
             candidates = (rng.uniform(lower + half, upper - half) for _ in range(200)) if mode == "random" else grid
             for center in candidates:
                 center = np.asarray(center)
@@ -98,6 +98,6 @@ class SceneChoices:
                 record["instances"].append(item)
                 break
             else:
-                raise ValueError("当前摆放空间不足，请减少数量、更换容器或重新随机")
+                raise ValueError("Not enough space. Reduce quantities, choose another container, or reshuffle.")
         parse_scene(record)
         return record

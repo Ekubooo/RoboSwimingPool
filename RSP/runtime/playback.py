@@ -6,11 +6,13 @@ single source of pause/single-step state; the profiler uses this same loop.
 """
 import math
 import logging
+from time import perf_counter
 
 import torch
 import warp as wp
 
 from .mimickit_bindings import build_playback_components
+from .playback_stats import PlaybackStats
 
 
 # Policy frequency is measured in simulated time, independently of rendering.
@@ -24,6 +26,10 @@ class PlaybackRunner:
         self.policy = components.policy
         self.viewer = components.viewer
         self.fluid_controls = components.fluid_controls
+        self._stats_gui = getattr(self.viewer, "gui", None)
+        self._stats = PlaybackStats() if self._stats_gui is not None else None
+        if self._stats_gui is not None:
+            self._stats_gui.set_playback_fps(None)
         self.obs = env._obs_buf
         self.info = env._info
         frame_dt = env._engine.get_timestep()
@@ -38,6 +44,9 @@ class PlaybackRunner:
             self._warp_stream = wp.stream_from_torch(self._torch_stream)
 
     def reset(self):
+        if self._stats is not None:
+            self._stats.clear()
+            self._stats_gui.set_playback_fps(None)
         with torch.cuda.stream(self._torch_stream), wp.ScopedStream(self._warp_stream, sync_exit=True):
             self.env.consume_reset_request()
             if self.fluid_controls is not None:
@@ -52,10 +61,18 @@ class PlaybackRunner:
 
     def tick(self):
         """Process queued commands, then advance once or render a paused frame."""
+        started = perf_counter() if self._stats is not None else None
+        was_paused = self.viewer.is_paused() if self._stats is not None else False
         # Warp's enter/exit dependencies use device events, not a host wait.
         # This also covers direct tick/reset calls made outside run().
         with torch.cuda.stream(self._torch_stream), wp.ScopedStream(self._warp_stream, sync_exit=True):
-            return self._tick()
+            stepped = self._tick()
+        if self._stats is not None:
+            elapsed = perf_counter() - started
+            # Exclude paused drawing, single steps and pause/resume transitions.
+            continuous = stepped and not was_paused and not self.viewer.is_paused()
+            self._stats_gui.set_playback_fps(self._stats.record(elapsed, continuous=continuous))
+        return stepped
 
     def _tick(self):
         if self.env.consume_reset_request():

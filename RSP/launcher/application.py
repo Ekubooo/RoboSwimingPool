@@ -104,7 +104,7 @@ def run(*, profile_id="humanoid", direct=False):
                     return
                 selected_profile = characters[request.profile_id].require_available()
                 if selected_profile.device != profile.device:
-                    raise ValueError("同窗选择需要人形配套使用相同设备")
+                    raise ValueError("Humanoid profiles must use the same device to share a window")
                 profile, selection = selected_profile, request.scene
             if selection is None:
                 return

@@ -31,20 +31,20 @@ class SelectionPanel:
         self.use_sphere = False
         self.layout = self.result = None
         self.cancelled = False
-        self.status = "选择预设或自定义资产，然后点击开始仿真。"
+        self.status = "Select a preset or customize assets, then click Start simulation."
         self.font = None
         self.scale = 1.
         self.previews = None
 
     def attach(self, viewer):
         if viewer.gui is None or not viewer.ui.is_available:
-            raise RuntimeError("场景选择需要 Newton 的 ImGui 界面")
+            raise RuntimeError("Scene selection requires the Newton ImGui interface")
         from RSP.rendering.asset_preview import AssetPreviews
         self.previews = AssetPreviews(self.choices.assets)
         self.scale = viewer.ui.dpi_scale
         font_path = Path("C:/Windows/Fonts/msyh.ttc")
         if not font_path.is_file():
-            raise RuntimeError("找不到中文界面字体：C:/Windows/Fonts/msyh.ttc")
+            raise RuntimeError("UI font not found: C:/Windows/Fonts/msyh.ttc")
         self.font = viewer.ui.io.fonts.add_font_from_file_ttf(str(font_path), 18. * self.scale)
 
     def detach(self):
@@ -95,7 +95,7 @@ class SelectionPanel:
 
     def invalidate(self):
         self.layout = None
-        self.status = "选择已更新，启动前将重新生成布局。"
+        self.status = "Selection updated. The layout will be regenerated before starting."
         sphere = self.props.get("scene_sphere")
         if sphere is None or not sphere.enabled:
             self.use_sphere = False
@@ -108,7 +108,7 @@ class SelectionPanel:
                       for name, p in self.props.items()}
             self.layout = self.choices.build(self.choices.containers[self.container], counts,
                 mode=self.placement, seed=self.seed, use_sphere=self.use_sphere, character=character.asset)
-            self.status = f"已生成 {len(self.layout['instances'])} 个刚体，随机种子 {self.seed}"
+            self.status = f"Generated {len(self.layout['instances'])} props with seed {self.seed}"
             return True
         except (OSError, ValueError, KeyError) as error:
             self.layout = None
@@ -138,19 +138,19 @@ class SelectionPanel:
 
     def _custom(self, imgui):
         from .cards import card_grid, card, asset_card
-        for group, options in (('容器 × 1', self.choices.containers), ('人形 × 1', self.characters)):
+        for group, options in (('Container × 1', self.choices.containers), ('Humanoid × 1', self.characters)):
             imgui.separator_text(group)
             with card_grid(imgui, group, self.scale) as opened:
                 if not opened:
                     continue
                 for key, option in options.items():
-                    is_character = group == '人形 × 1'
+                    is_character = group == 'Humanoid × 1'
                     ref = option.asset if is_character else option
                     with card(imgui, key, 245, self.scale) as visible:
                         if not visible:
                             continue
                         if ref is None:
-                            imgui.text_wrapped(option.error or '资产不可用')
+                            imgui.text_wrapped(option.error or 'Asset unavailable')
                             continue
                         selected = self.character == key if is_character else self.container == key
                         changed, _ = asset_card(imgui, self.previews, ref, self._color(ref),
@@ -164,7 +164,7 @@ class SelectionPanel:
                                 self.invalidate()
                         if is_character and option.error:
                             imgui.text_wrapped(option.error)
-        imgui.separator_text('自由刚体')
+        imgui.separator_text('Props')
         with card_grid(imgui, 'props', self.scale) as opened:
             if opened:
                 for name, p in self.props.items():
@@ -177,30 +177,30 @@ class SelectionPanel:
                         if changed:
                             self.invalidate()
                         imgui.begin_disabled(not p.enabled)
-                        changed, index = imgui.combo('数量', p.count-1, ['1', '2', '3'])
+                        changed, index = imgui.combo('Quantity', p.count-1, ['1', '2', '3'])
                         if changed:
                             p.count = index+1
                             self.invalidate()
-                        changed, p.version = self._combo(imgui, '版本', p.version, self.choices.props[name])
+                        changed, p.version = self._combo(imgui, 'Version', p.version, self.choices.props[name])
                         if changed:
                             self.invalidate()
                         imgui.end_disabled()
         modes = ["regular", "random"]
-        changed, index = imgui.combo("摆放方式", modes.index(self.placement), ["规则摆放", "随机摆放"])
+        changed, index = imgui.combo("Placement", modes.index(self.placement), ["Regular", "Random"])
         if changed:
             self.placement = modes[index]
             self.invalidate()
         imgui.same_line()
-        if imgui.button("生成布局"):
+        if imgui.button("Generate layout"):
             self.generate()
         imgui.same_line()
-        if imgui.button("重新随机"):
+        if imgui.button("Reshuffle"):
             self.placement = "random"
             self.seed += 1
             self.generate()
         sphere = self.props.get("scene_sphere")
         imgui.begin_disabled(sphere is None or not sphere.enabled)
-        changed, self.use_sphere = imgui.checkbox("策略使用场景观测球", self.use_sphere)
+        changed, self.use_sphere = imgui.checkbox("Use scene sphere for policy observations", self.use_sphere)
         if changed:
             self.invalidate()
         imgui.end_disabled()
@@ -213,16 +213,16 @@ class SelectionPanel:
         imgui.set_next_window_size(viewport.work_size)
         flags = (imgui.WindowFlags_.no_move | imgui.WindowFlags_.no_resize
                  | imgui.WindowFlags_.no_collapse | imgui.WindowFlags_.no_saved_settings)
-        visible, _ = imgui.begin("场景选择", flags=flags)
+        visible, _ = imgui.begin("Scene selection", flags=flags)
         try:
             if not visible:
                 return
-            if imgui.radio_button("使用预设", self.mode == "preset"):
+            if imgui.radio_button("Use preset", self.mode == "preset"):
                 self.mode = "preset"
             imgui.same_line()
-            if imgui.radio_button("自定义装配", self.mode == "custom"):
+            if imgui.radio_button("Custom assembly", self.mode == "custom"):
                 self.mode = "custom"
-            imgui.text_disabled('正交预览为模型默认姿态，并非策略出生姿态；勾选后点击开始仿真。')
+            imgui.text_disabled('Previews show the default model pose, not the policy spawn pose. Select assets, then click Start simulation.')
             available = imgui.get_content_region_avail().y
             imgui.begin_child('selection_content', imgui.ImVec2(0, max(80*self.scale, available-105*self.scale)))
             try:
@@ -233,17 +233,17 @@ class SelectionPanel:
                     self._custom(imgui)
                     summary = self.layout
                 if summary is not None:
-                    imgui.separator_text('实例 / 资产版本 / XYZ（米）')
+                    imgui.separator_text('Instance / Asset version / XYZ (m)')
                     for item in summary['instances']:
                         position = ', '.join(f'{x:.3f}' for x in item['position'])
                         imgui.text(f"{item['name']}   {asset_label(AssetRef(**item['asset']))}   {position}")
             finally:
                 imgui.end_child()
             imgui.separator()
-            if imgui.button("开始仿真"):
+            if imgui.button("Start simulation"):
                 self.request_start()
             imgui.same_line()
-            if imgui.button("退出"):
+            if imgui.button("Exit"):
                 self.cancelled = True
             imgui.text_wrapped(self.status)
         finally:

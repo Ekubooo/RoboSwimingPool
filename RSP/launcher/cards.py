@@ -36,9 +36,9 @@ def picture(imgui, previews, ref, color, width):
     else:
         imgui.dummy(size)
         if imgui.is_item_hovered():
-            imgui.set_tooltip(error or '正在生成预览…')
+            imgui.set_tooltip(error or 'Generating preview...')
     if error:
-        imgui.text_disabled('预览不可用（不影响选择）')
+        imgui.text_disabled('Preview unavailable (still selectable)')
 
 
 def asset_card(imgui, previews, ref, color, label, selected, scale, *, disabled=False):

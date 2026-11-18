@@ -1,7 +1,7 @@
 schema: 1
 presets:
-  当前 demo: data/scenes/pbf_play.yaml
-  无额外刚体: data/scenes/pbf_empty.yaml
-  多实例: data/scenes/pbf_multi.yaml
-  加宽容器: data/scenes/pbf_wide.yaml
+  Current demo: data/scenes/pbf_play.yaml
+  No extra props: data/scenes/pbf_empty.yaml
+  Multiple instances: data/scenes/pbf_multi.yaml
+  Wide container: data/scenes/pbf_wide.yaml
   G1 demo: data/scenes/pbf_g1.yaml
