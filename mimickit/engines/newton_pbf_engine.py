@@ -596,12 +596,14 @@ class SceneBuilder:
     def __init__(self, config, num_envs, device, timestep, substeps):
         self.device = device
         self.play_scene = PBFScene(config.get("pbf_asset_dir"),
-                                   device, timestep, substeps, scene_spec=config.get("scene_spec"))
+                                   device, timestep, substeps, scene_spec=config.get("scene_spec"),
+                                   scene_assets=config.get("scene_assets"))
         self.num_envs = num_envs
         self.builder = self._create_model_builder()
         self._builder_cache = {}
         self.object_types = []
         self._obj_builders = []
+        self._obj_names = []
         self._obj_start_pos = []
         self._obj_start_rot = []
         self.colors = []
@@ -648,6 +650,7 @@ class SceneBuilder:
         assert(env_id < self.num_envs)
 
         self._obj_builders.append([])
+        self._obj_names.append([])
         self.object_types.append([])
         self._obj_start_pos.append([])
         self._obj_start_rot.append([])
@@ -671,6 +674,7 @@ class SceneBuilder:
         obj_id = len(self._obj_builders[env_id])
         self.object_types[env_id].append(obj_type)
         self._obj_builders[env_id].append(obj_builder)
+        self._obj_names[env_id].append(name)
         self._obj_start_pos[env_id].append(start_pos)
         self._obj_start_rot[env_id].append(start_rot)
         self.colors[env_id].append(color)
@@ -705,7 +709,7 @@ class SceneBuilder:
 
             for obj_id in range(objs_per_env):
                 obj_builder = self._obj_builders[env_id][obj_id]
-                self.builder.add_builder(obj_builder)
+                self.builder.add_builder(obj_builder, label_prefix=self._obj_names[env_id][obj_id])
 
                 num_created = env_id * objs_per_env + obj_id + 1
                 Logger.print("Building {:d}/{:d} objs".format(num_created, total_objs), end='\r')
@@ -1150,10 +1154,13 @@ class SimulationRuntime:
 class Presentation:
     """Own display, input callbacks and recording; borrow simulation data."""
 
-    def __init__(self, num_envs, env_spacing, visualize, record_video):
+    def __init__(self, num_envs, env_spacing, visualize, record_video, *, viewer=None):
         self._num_envs = num_envs
         self._env_spacing = env_spacing
-        self._viewer = None
+        self._viewer = viewer
+        self._owns_viewer = viewer is None
+        if viewer is not None and not visualize:
+            raise ValueError("A borrowed viewer requires visualization")
         self._video_recorder = None
         self._record_video = record_video and not visualize
         self._recording = False
@@ -1213,7 +1220,7 @@ class Presentation:
         recorder = getattr(self, "_video_recorder", None)
         resource_util.cleanup(
             recorder.close if recorder is not None else None,
-            lambda: resource_util.close_viewer(viewer),
+            (lambda: resource_util.close_viewer(viewer)) if self._owns_viewer else None,
         )
         self._viewer = None
         self._video_recorder = None
@@ -1352,7 +1359,8 @@ class Presentation:
         return
 
     def _build_viewer(self):
-        self._viewer = resource_util.construct(PBFViewer, headless=False)
+        if self._viewer is None:
+            self._viewer = resource_util.construct(PBFViewer, headless=False)
         self._draw_line_count = 0
 
         def on_keyboard_event(symbol, modifiers):
@@ -1401,7 +1409,8 @@ class NewtonEngine(NewtonEngineAPI):
         self._control_mode = engine.ControlMode[config.get("control_mode", "none")]
         self._scene.build_ground()
         self._presentation = resource_util.construct(
-            Presentation, num_envs, self._runtime.env_spacing, visualize, record_video)
+            Presentation, num_envs, self._runtime.env_spacing, visualize, record_video,
+            viewer=config.get("playback_viewer"))
 
     def get_name(self):
         return "newton_pbf"

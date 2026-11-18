@@ -9,6 +9,12 @@ sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--preset", default="pbf_play")
+    parser.add_argument("--scene", help="Generated launcher scene YAML, instead of a named preset")
+    parser.add_argument("--frames", type=int, default=11)
+    args = parser.parse_args()
     import tempfile
     temporary = ROOT / "output/scene_checks/tmp"
     temporary.mkdir(parents=True, exist_ok=True)
@@ -43,6 +49,7 @@ def main():
             stack.enter_context(patch.object(module, name, side_effect=AssertionError("Runtime attempted preparation")))
         try:
             ec = yaml.safe_load((ROOT / "data/envs/pbf_play_env.yaml").read_text())
+            ec["scene_preset"] = args.scene or str(ROOT / "data/scenes" / (args.preset + ".yaml"))
             bc = yaml.safe_load((ROOT / "data/engines/newton_pbf_engine.yaml").read_text())
             env = resource_util.construct(PBFPlayEnv, ec, bc, 1, "cuda:0", False)
             checkpoint = ROOT / "output/a5000_dodgeball_2048_full_r01"
@@ -53,18 +60,26 @@ def main():
             runner = PlaybackRunner(env, agent)
             runner.reset()
             with patch.object(runner.policy, "act", wraps=runner.policy.act) as act:
-                for _ in range(11):
+                for _ in range(args.frames):
                     assert runner.tick()
-                assert act.call_count == 3
+                assert act.call_count == (args.frames + 4)//5
             assert torch.isfinite(runner.obs).all()
             runner.reset()
             assert torch.all(env._time_buf == 0)
             assert runner._action is None and runner._policy_phase == 0
-            for obj_id, spec in zip(env._scene_obj_ids, pbf_play.RIGIDS):
-                torch.testing.assert_close(env._engine.get_root_pos(obj_id)[0],
-                    torch.tensor(spec.center, device="cuda:0"))
+            for spec in env._scene_spec.instances:
+                obj_id = env._instance_ids[spec.name]
+                for getter, value in ((env._engine.get_root_pos, spec.position),
+                                      (env._engine.get_root_rot, spec.rotation),
+                                      (env._engine.get_root_vel, spec.linear_velocity),
+                                      (env._engine.get_root_ang_vel, spec.angular_velocity)):
+                    torch.testing.assert_close(getter(obj_id)[0], torch.tensor(value, device="cuda:0"))
+            if env._policy_sphere_id is None:
+                env.request_policy_use_scene_sphere(True)
+                env.apply_playback_commands()
+                assert not env.get_policy_use_scene_sphere()
             assert snapshot() == before, "Playback changed published assets"
-            print("PASS: 11 frames, 3 policy updates, reset, finite observations, read-only assets, no preparation")
+            print(f"PASS: {args.preset}, {args.frames} frames, policy cadence, reset states, finite observations, read-only assets, no preparation")
         finally:
             resource_util.cleanup(env.close if env else None, agent.close if agent else None)
 

@@ -36,22 +36,18 @@ def control_solver(device="cpu"):
 
 class ControlChecks(unittest.TestCase):
     def test_initial_layout_allows_water_and_internal_static_overlap_only(self):
-        from engines.newton_pbf_runtime import PBFScene, assets
-        scene = object.__new__(PBFScene)
-        # Deliberately cover the bodies with water and the internal static AABB.
-        scene.config = SimpleNamespace(block_start=(0., 0., 0.), block_end=(3., 2., 5.))
-        scene.bunny = SimpleNamespace(bounds=np.array([[0., 0., 0.], [3., 2., 5.]]))
-        body = SimpleNamespace(name="probe", kind="box", size=.2, center=(1., 1., 1.))
-        with patch.object(assets, "RIGIDS", (body,)):
-            self.assertEqual(scene._validate_initial_layout(), [])
-        other = SimpleNamespace(name="other", kind="box", size=.2, center=(1., 1., 1.))
-        with patch.object(assets, "RIGIDS", (body, other)):
-            with self.assertRaisesRegex(ValueError, "overlaps probe"):
-                scene._validate_initial_layout()
-        body.center = (.01, 1., 1.)
-        with patch.object(assets, "RIGIDS", (body,)):
-            with self.assertRaisesRegex(ValueError, "intersects the container"):
-                scene._validate_initial_layout()
+        from dataclasses import replace
+        from RSP.sim_ready.pipelines.scenes.spec import load_scene
+        from RSP.sim_ready.pipelines.scenes.assembly import resolve_scene
+        spec = load_scene()
+        # Water may cover props; scene preflight only rejects container/prop overlap.
+        body = replace(spec.instances[0], name="probe", position=(1., 1., 1.))
+        scene = replace(spec, instances=(body,), fluid_start=(0., 0., 0.), fluid_end=(3., 2., 5.))
+        self.assertEqual(resolve_scene(scene).clearances, [])
+        with self.assertRaisesRegex(ValueError, "overlaps probe"):
+            resolve_scene(replace(scene, instances=(body, replace(body, name="other"))))
+        with self.assertRaisesRegex(ValueError, "intersects the container"):
+            resolve_scene(replace(scene, instances=(replace(body, position=(.01, 1., 1.)),)))
 
     def test_runner_reset_pauses_before_policy_and_failed_capture_cannot_advance(self):
         from RSP.runtime.playback import PlaybackRunner

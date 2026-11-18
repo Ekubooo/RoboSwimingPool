@@ -70,13 +70,15 @@ class PublishedAsset:
         return path
 
 
-def read_asset(path):
+def read_asset(path, *, verify=True):
     path = Path(path).resolve()
     record = json.loads(path.read_text(encoding="utf-8"))
     if record["schema"] != 1:
         raise ValueError(f"Unsupported asset schema: {path}")
     AssetRef(**record["identity"])
     asset = PublishedAsset(path.parent, record)
+    if not verify:
+        return asset
     for relative, expected in record["files"].items():
         if digest(asset.file(relative)) != expected:
             raise ValueError(f"Published asset checksum mismatch: {relative}")
@@ -90,11 +92,12 @@ def read_asset(path):
 
 
 def scan_published(root=PUBLISHED_ROOT):
+    """Browse manifests only; resolve_asset performs full verification before use."""
     root = Path(root).resolve()
     result = {}
     for category in CATEGORIES:
         for path in sorted((root / category).glob("*/*/asset.json")):
-            asset = read_asset(path)
+            asset = read_asset(path, verify=False)
             ref = AssetRef(**asset.record["identity"])
             if path.parent != root / ref.relative or ref in result:
                 raise ValueError(f"Duplicate or misplaced asset identity: {path}")
@@ -110,3 +113,15 @@ def resolve_asset(ref, root=PUBLISHED_ROOT):
     if AssetRef(**asset.record["identity"]) != ref:
         raise ValueError(f"Asset identity mismatch: {path}")
     return asset
+
+
+class AssetCatalog:
+    """One assembly's verified resources; no process-wide or per-frame cache."""
+    def __init__(self, root=PUBLISHED_ROOT):
+        self.root = Path(root).resolve()
+        self._assets = {}
+
+    def resolve(self, ref):
+        if ref not in self._assets:
+            self._assets[ref] = resolve_asset(ref, self.root)
+        return self._assets[ref]

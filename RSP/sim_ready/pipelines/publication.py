@@ -73,13 +73,23 @@ def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_P
     radius = particles.smoothing_length
 
     def copy_boundary(artifact, stage):
-        # Copy the whole family, preserving ../ references and signed manifests.
+        # Preserve signed manifests and their relative references, copying only dependencies.
         source = artifact.manifest_path
         relative = source.relative_to(store.root)
         family = store.root / relative.parts[0] / relative.parts[1]
-        target = stage / "boundaries" / family.name
-        if not target.exists():
-            shutil.copytree(family, target)
+        def copy_file(path):
+            path = path.resolve()
+            if not path.is_relative_to(family.resolve()):
+                raise ValueError("Boundary dependency escapes its cache family")
+            target = stage / "boundaries" / family.name / path.relative_to(family.resolve())
+            if target.exists():
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+            if path.suffix == ".json":
+                for dependency in json.loads(path.read_text())["files"].values():
+                    copy_file(path.parent / dependency)
+        copy_file(source)
         return (Path("boundaries") / family.name / source.relative_to(family)).as_posix()
 
     result = []
@@ -92,17 +102,19 @@ def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_P
 
         def populate(stage):
             report = ValidationReport()
-            if source["recipe"] == "reference_pool":
-                if ref.category != "containers" or ref.name != "pbf_pool":
+            if source["recipe"] in ("reference_pool", "wide_pool"):
+                if ref.category != "containers" or ref.name not in ("pbf_pool", "pbf_pool_wide"):
                     raise ValueError("reference_pool requires containers/pbf_pool")
                 # The existing recipe owns its original mesh location and geometry.
                 if Path(origin).resolve() != ORIGIN_ROOT.resolve() or source["inputs"] != ["bunny_flat_bottom.obj"]:
                     raise ValueError("Reference pool uses the existing origin/bunny_flat_bottom.obj")
-                artifact, bunny, hulls = recipe.prepare_static(store, device, radius, report=report)
+                from .scenes.container_recipe import prepare_container
+                size = (3., 2., 5.) if source["recipe"] == "reference_pool" else (4., 2., 5.)
+                artifact, bunny, hulls, layout = prepare_container(store, device, radius, size, report)
                 boundary = copy_boundary(artifact, stage)
                 save_mesh_obj(bunny, stage / "bunny.obj", digits=17)
                 save_hulls(hulls, stage / "hulls.npz")
-                return dict(boundary=boundary, bunny="bunny.obj", hulls="hulls.npz")
+                return dict(boundary=boundary, bunny="bunny.obj", hulls="hulls.npz", container=layout)
             if source["recipe"] == "reference_prop":
                 names = [spec.name for spec in recipe.RIGIDS]
                 if ref.category != "props" or ref.name not in names or source["inputs"]:

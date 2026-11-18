@@ -2,17 +2,17 @@ schema: 1
 container:
   category: containers
   name: pbf_pool
-  version: '1'
+  version: '2'
 character:
   category: articulations
   name: humanoid
-  version: '1'
+  version: '2'
 instances:
 - name: light_box
   asset:
     category: props
     name: light_box
-    version: '1'
+    version: '2'
   position:
   - 2.55
   - 0.45
@@ -25,7 +25,7 @@ instances:
   asset:
     category: props
     name: heavy_box
-    version: '1'
+    version: '2'
   position:
   - 2.55
   - 1.55
@@ -38,7 +38,7 @@ instances:
   asset:
     category: props
     name: scene_sphere
-    version: '1'
+    version: '2'
   position:
   - 1.75
   - 1.55
@@ -47,7 +47,17 @@ instances:
   - 0.9
   - 0.25
   - 0.25
+  role: policy_sphere
 spawn_xy:
 - 0.65
 - 1.0
 policy_use_scene_sphere: false
+fluid:
+  start:
+  - 1.56
+  - 0.75
+  - 0.5
+  end:
+  - 2.96
+  - 1.9
+  - 3.1

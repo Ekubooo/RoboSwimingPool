@@ -11,7 +11,9 @@ from RSP.sim_ready.pipelines.scenes import pbf_play as assets
 from pathlib import Path
 from uuid import uuid4
 from RSP.sim_ready.paths import PUBLISHED_ROOT, PROJECT_ROOT
-from RSP.sim_ready.catalog import resolve_asset, physical_signature
+from RSP.sim_ready.catalog import physical_signature
+from RSP.sim_ready.pipelines.scenes.assembly import resolve_scene
+from RSP.sim_ready.pipelines.scenes.container_recipe import add_collisions
 from RSP.sim_ready.pipelines.scenes.spec import load_scene
 from RSP.sim_ready.lib.storage.hull_io import load_hulls
 from RSP.sim_ready.lib.asset_validation import (ValidationReport, diagnostic_scope,
@@ -44,18 +46,26 @@ def runtime_config(control_dt, substeps, settings=None):
 
 
 class PBFScene:
-    def __init__(self, directory, device, control_dt, substeps, *, scene_spec=None):
+    def __init__(self, directory, device, control_dt, substeps, *, scene_spec=None, scene_assets=None):
         self.directory = Path(directory or PUBLISHED_ROOT).resolve()
         spec = load_scene() if scene_spec is None else scene_spec
-        self.static_asset = resolve_asset(spec.container, self.directory)
-        self.dynamic_assets = tuple(resolve_asset(ref, self.directory) for ref in (spec.character, *spec.props))
+        self.spec = spec
+        resolved = resolve_scene(spec, self.directory) if scene_assets is None else scene_assets
+        self.static_asset = resolved.static
+        self.resolved_assets = resolved.dynamic
+        self.layout = resolved.layout
+        self.container_size = np.asarray(self.layout["size"])
+        self.initial_clearances = resolved.clearances
+        self.dynamic_assets = tuple(self.resolved_assets[ref] for ref in (spec.character, *spec.props))
         self.report_directory = PROJECT_ROOT / "output" / "pbf_play" / "runs" / uuid4().hex
         self.device = device
         self.control_dt = control_dt
         self.rigid_dt = control_dt / substeps
         self.fluid_settings = fluid_clock.DEFAULT_SETTINGS
         self.fluid_schedule = self.fluid_settings.schedule(control_dt, substeps)
-        self.config = runtime_config(control_dt, substeps, self.fluid_settings)
+        self.config = replace(runtime_config(control_dt, substeps, self.fluid_settings),
+                              container_size=tuple(self.container_size),
+                              block_start=spec.fluid_start, block_end=spec.fluid_end)
         self.particles = SimpleNamespace(config=self.config)
         pbf_helper.init_scene_parameters(self.particles)
         self.primitive_files = [str(asset.file(asset.record["model"])) for asset in self.dynamic_assets[1:]]
@@ -63,10 +73,17 @@ class PBFScene:
         self.boundaries = None
         self.validation = ValidationReport()
         self._skeletons = {}
+        self._object_assets = {}
         self._excluded_links = {}
         self._validated_model = None
 
+    def register_instance(self, obj_id, asset_ref):
+        if obj_id in self._object_assets:
+            raise ValueError(f"Duplicate runtime object registration: {obj_id}")
+        self._object_assets[obj_id] = self.resolved_assets[asset_ref]
+
     def register_character(self, obj_id, skeleton, excluded_links=()):
+        self.register_instance(obj_id, self.spec.character)
         self._skeletons[obj_id] = skeleton
         self._excluded_links[obj_id] = tuple(excluded_links)
 
@@ -91,31 +108,8 @@ class PBFScene:
         self.static_path = self.static_asset.file(record["boundary"])
         self.bunny = trimesh.load(self.static_asset.file(record["bunny"]), force="mesh", process=False)
         hulls = load_hulls(self.static_asset.file(record["hulls"]))
-        self.initial_clearances = self._validate_initial_layout()
-        assets.add_static_collisions(builder, self.bunny, hulls)
+        add_collisions(builder, self.layout, self.bunny, hulls)
         self.static_hull_count = len(hulls)
-
-    def _validate_initial_layout(self):
-        """Keep rigid bodies inside the pool and separate from each other.
-
-        Initial water and internal static geometry may overlap bodies. Their
-        ordinary collision/boundary solvers handle these starts during playback.
-        """
-        obstacles = []
-        records = []
-        for spec in assets.RIGIDS:
-            radius = spec.size / 2 if spec.kind == "box" else spec.size
-            bounds = np.array([np.array(spec.center) - radius, np.array(spec.center) + radius])
-            if np.any(bounds[0] <= 0) or np.any(bounds[1] >= assets.POOL_SIZE):
-                raise ValueError(f"{spec.name} intersects the container")
-            for name, other in obstacles:
-                separation = max(float(np.max(bounds[0] - other[1])),
-                                 float(np.max(other[0] - bounds[1])))
-                if separation <= 0:
-                    raise ValueError(f"Initial {spec.name} overlaps {name}")
-                records.append(dict(body=spec.name, obstacle=name, aabb_gap=separation))
-            obstacles.append((spec.name, bounds))
-        return records
 
     def add_particles(self, builder):
         n = self.particles.n
@@ -141,7 +135,7 @@ class PBFScene:
         for obj_id, binding in enumerate(self._bindings):
             if not selected.intersection(binding.body_ids):
                 continue
-            asset = self.dynamic_assets[obj_id]
+            asset = self._object_assets[obj_id]
             if physical_signature(binding.asset) != asset.record["physical_signature"]:
                 raise ValueError(f"Published physical model differs from runtime object {obj_id}")
             links = asset.record["links"]
@@ -167,10 +161,7 @@ class PBFScene:
             self.static_path, paths,
             boundary_model.BoundaryLoadOptions(self.particles.smoothing_length, self.device))
         self.boundaries.bind_bodies(model, mapped_ids)
-        probes = {"cavity": [.5, .5, 1.], "bottom": [1., 1., -.05],
-                  "left_wall": [-.05, 1., 1.], "right_wall": [3.05, 1., 1.],
-                  "front_wall": [1., -.05, 1.], "back_wall": [1., 2.05, 1.],
-                  "ceiling": [1., 1., 5.05], "bunny": self.bunny.center_mass.tolist()}
+        probes = self.layout["probes"]
         points = wp.array(list(probes.values()), dtype=wp.vec3, device=self.device)
         distances = wp.empty(len(probes), dtype=float, device=self.device)
         wp.launch(sample_sdf, len(probes), inputs=[self.boundaries.assets[0].sdf.id, points],
@@ -217,17 +208,18 @@ class PBFScene:
         low, high = points.min(axis=0), points.max(axis=0)
         desired = np.array([.8, 1.]) - np.asarray(root_position)[:2]
         minimum = .05 - low[:2]
-        maximum = assets.POOL_SIZE[:2] - .05 - high[:2]
+        maximum = self.container_size[:2] - .05 - high[:2]
         if np.any(minimum > maximum):
             raise ValueError("Sampled humanoid pose cannot fit inside the play pool")
         shift = np.array([*np.clip(desired, minimum, maximum), self.config.block_end[2] + .1 - low[2]])
-        if high[2] + shift[2] > assets.POOL_SIZE[2] - .05:
+        if high[2] + shift[2] > self.container_size[2] - .05:
             raise ValueError("Sampled humanoid pose cannot fit above the initial fluid block")
         return shift.astype(np.float32)
 
     def draw_pool(self, viewer):
         if not hasattr(self, "_line_starts"):
-            corners = np.array([[x, y, z] for x in (0., 3.) for y in (0., 2.) for z in (0., 5.)])
+            corners = np.array([[x, y, z] for x in (0., self.container_size[0])
+                                for y in (0., self.container_size[1]) for z in (0., self.container_size[2])])
             edges = [(a, b) for a in range(8) for b in range(a + 1, 8)
                      if np.count_nonzero(corners[a] != corners[b]) == 1]
             self._line_starts = wp.array([corners[a] for a, _ in edges], dtype=wp.vec3, device=self.device)

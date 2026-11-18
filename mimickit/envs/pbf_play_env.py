@@ -1,4 +1,5 @@
 """Continuous SMP policy playback in the single-world fluid scene."""
+import logging
 import numpy as np
 import torch
 
@@ -6,7 +7,6 @@ from engines.engine import ObjType
 from envs.smp_env import SMPEnv
 from envs.sim_env import SimEnv
 from envs.task_dodgeball_env import compute_dodgeball_observations
-from RSP.sim_ready.pipelines.scenes.pbf_play import RIGIDS
 from RSP.sim_ready.lib.asset_validation import SkeletonDescription
 from RSP.runtime.playback import POLICY_HZ
 from util.camera import Camera, CameraMode
@@ -19,11 +19,13 @@ class PBFPlayEnv(SMPEnv):
         if engine_config["engine_name"] != "newton_pbf" or num_envs != 1:
             raise ValueError("pbf_play requires one newton_pbf environment")
         from RSP.sim_ready.pipelines.scenes.spec import load_scene
-        from RSP.sim_ready.catalog import resolve_asset
+        from RSP.sim_ready.pipelines.scenes.assembly import resolve_scene
         from RSP.sim_ready.paths import PUBLISHED_ROOT, SCENE_ROOT
         scene = load_scene(env_config.get("scene_preset", SCENE_ROOT / "pbf_play.yaml"))
         env_config, engine_config = dict(env_config), dict(engine_config)
-        character = resolve_asset(scene.character, engine_config.get("pbf_asset_dir", PUBLISHED_ROOT))
+        resolved = resolve_scene(scene, engine_config.get("pbf_asset_dir", PUBLISHED_ROOT))
+        character = resolved.dynamic[scene.character]
+        engine_config["scene_assets"] = resolved
         env_config["char_file"] = str(character.file(character.record["model"]))
         env_config["play_spawn_xy"] = scene.spawn_xy
         env_config["policy_use_scene_sphere"] = scene.policy_use_scene_sphere
@@ -32,6 +34,9 @@ class PBFPlayEnv(SMPEnv):
         self._spawn_xy = tuple(env_config.get("play_spawn_xy", (.65, 1.)))
         if len(self._spawn_xy) != 2 or not np.isfinite(self._spawn_xy).all():
             raise ValueError("play_spawn_xy must contain two finite world coordinates")
+        self._scene_spec = scene
+        self._instance_ids = {}
+        self._policy_sphere_id = None
         self._scene_obj_ids = []
         self._pending_reset = False
         self._pending_sphere = None
@@ -49,7 +54,7 @@ class PBFPlayEnv(SMPEnv):
         if self._enable_phase_obs or self._enable_tar_obs:
             raise ValueError("PBF playback observations require phase/target observations disabled")
         engine, kin = self._engine, self._kin_char_model
-        char, sphere = self._get_char_id(), self._scene_obj_ids[-1]
+        char, sphere = self._get_char_id(), self._policy_sphere_id
         state = CharacterStateViews(
             root_pos=engine.get_root_pos(char), root_rot=engine.get_root_rot(char),
             root_vel=engine.get_root_vel(char), root_ang_vel=engine.get_root_ang_vel(char),
@@ -59,8 +64,8 @@ class PBFPlayEnv(SMPEnv):
             state_views=state, joints=[kin.get_joint(j) for j in range(1, kin.get_num_joints())],
             key_body_ids=self._key_body_ids, output=self._obs_buf,
             inactive_sphere_state=(self._inactive_sphere_pos, self._inactive_sphere_vel),
-            scene_sphere_state=(engine.get_root_pos(sphere).unsqueeze(1),
-                                engine.get_root_vel(sphere).unsqueeze(1)),
+            scene_sphere_state=((self._inactive_sphere_pos, self._inactive_sphere_vel) if sphere is None else
+                                (engine.get_root_pos(sphere).unsqueeze(1), engine.get_root_vel(sphere).unsqueeze(1))),
             global_obs=self._global_obs, root_height_obs=self._root_height_obs,
             use_scene_sphere=self.policy_use_scene_sphere)
 
@@ -94,11 +99,15 @@ class PBFPlayEnv(SMPEnv):
 
     def _build_env(self, env_id, env_config):
         super()._build_env(env_id, env_config)
-        for spec, path in zip(RIGIDS, self._engine.get_play_scene().primitive_files):
+        for spec, path in zip(self._scene_spec.instances, self._engine.get_play_scene().primitive_files):
             obj_id = self._engine.create_obj(
-                env_id, ObjType.rigid, path, spec.name, start_pos=np.array(spec.center),
+                env_id, ObjType.rigid, path, spec.name, start_pos=np.array(spec.position), start_rot=np.array(spec.rotation),
                 color=np.array(spec.color))
             self._scene_obj_ids.append(obj_id)
+            self._instance_ids[spec.name] = obj_id
+            self._engine.get_play_scene().register_instance(obj_id, spec.asset)
+            if spec.role == "policy_sphere":
+                self._policy_sphere_id = obj_id
 
     def _get_char_color(self):
         return np.array([1.0, 0.0, 0.0])
@@ -122,6 +131,9 @@ class PBFPlayEnv(SMPEnv):
         return obj_id
 
     def set_policy_use_scene_sphere(self, enabled):
+        if enabled and self._policy_sphere_id is None:
+            logging.warning("No policy_sphere instance; scene sphere observations remain disabled")
+            enabled = False
         self.policy_use_scene_sphere = bool(enabled)
         self._update_observations()
 
@@ -138,7 +150,7 @@ class PBFPlayEnv(SMPEnv):
         root_pos = self._engine.get_root_pos(char_id)
         root_rot = self._engine.get_root_rot(char_id)
         if self.policy_use_scene_sphere:
-            sphere_id = self._scene_obj_ids[-1]
+            sphere_id = self._policy_sphere_id
             pos = self._engine.get_root_pos(sphere_id).unsqueeze(1)
             vel = self._engine.get_root_vel(sphere_id).unsqueeze(1)
         else:
@@ -161,11 +173,12 @@ class PBFPlayEnv(SMPEnv):
         super()._reset_envs(env_ids)
         if len(env_ids) == 0:
             return
-        for obj_id, spec in zip(self._scene_obj_ids, RIGIDS):
-            self._engine.set_root_pos(env_ids, obj_id, torch.tensor(spec.center, device=self._device))
-            self._engine.set_root_rot(env_ids, obj_id, torch.tensor([0., 0., 0., 1.], device=self._device))
-            self._engine.set_root_vel(env_ids, obj_id, 0.)
-            self._engine.set_root_ang_vel(env_ids, obj_id, 0.)
+        for spec in self._scene_spec.instances:
+            obj_id = self._instance_ids[spec.name]
+            self._engine.set_root_pos(env_ids, obj_id, torch.tensor(spec.position, device=self._device))
+            self._engine.set_root_rot(env_ids, obj_id, torch.tensor(spec.rotation, device=self._device))
+            self._engine.set_root_vel(env_ids, obj_id, torch.tensor(spec.linear_velocity, device=self._device))
+            self._engine.set_root_ang_vel(env_ids, obj_id, torch.tensor(spec.angular_velocity, device=self._device))
         # Preserve MimicKit's sampled pose, root height and velocity. Only move
         # its horizontal origin to the left clearing; no lift above the water.
         char_id = self._get_char_id()

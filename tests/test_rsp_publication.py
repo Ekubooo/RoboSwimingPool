@@ -28,7 +28,7 @@ class PublicationChecks(unittest.TestCase):
             for change in (lambda r: r.update(unknown=True),
                            lambda r: r["instances"][1].update(name="light_box"),
                            lambda r: r["instances"][0].update(position=[float("nan"), 0, 0]),
-                           lambda r: r["instances"].pop()):
+                           lambda r: r.update(policy_use_scene_sphere=True, instances=[])):
                 record = json.loads(json.dumps(baseline))
                 change(record)
                 path.write_text(yaml.safe_dump(record))

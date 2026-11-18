@@ -21,6 +21,14 @@ class PlaybackGui:
         self._prepared = False
         self.fluid_controls = None
         self._pressed_keys = set()
+        self.selection_callback = None
+
+    def set_selection_callback(self, callback):
+        """Select the startup panel without registering persistent model callbacks."""
+        self.selection_callback = callback
+        if callback is not None:
+            self.show_ui = True
+        self.clear_pressed_keys()
 
     def __getattr__(self, name):
         # Keep the version-specific ViewerGui interface at this adapter boundary.
@@ -36,6 +44,11 @@ class PlaybackGui:
 
     def handle_key_press(self, symbol, close_fn=None):
         from pyglet.window import key
+
+        if self.selection_callback is not None:
+            if symbol == key.ESCAPE and close_fn is not None:
+                close_fn()
+            return
 
         toggles = (key.ENTER, key.SPACE, key.R, key.G, key.Q, key.E, key.X)
         if symbol in toggles:
@@ -61,6 +74,8 @@ class PlaybackGui:
             self._base.handle_key_press(symbol, close_fn=close_fn)
 
     def update_camera_from_keys(self, dt, is_key_down):
+        if self.selection_callback is not None:
+            return
         from pyglet.window import key
 
         # Newton polls held keys separately from the press/release callbacks.
@@ -83,10 +98,12 @@ class PlaybackGui:
         if not self.is_available:
             return
         loading = self._base._loading_splash_active
-        if not self.show_ui and not loading:
+        if not self.show_ui and not loading and self.selection_callback is None:
             return
         self.ui.begin_frame()
-        if self.show_ui:
+        if self.selection_callback is not None:
+            self.selection_callback(self.ui.imgui)
+        elif self.show_ui and not loading:
             self._render_panel()
             for callback in self._base._ui_callbacks["free"]:
                 callback(self.ui.imgui)

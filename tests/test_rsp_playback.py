@@ -186,6 +186,7 @@ class PlaybackChecks(unittest.TestCase):
         env._engine = Mock()
         env._engine.get_viewer.return_value = viewer
         env.policy_use_scene_sphere = False
+        env._policy_sphere_id = 1
         env._pending_sphere = None
         env._update_observations = Mock()
         env._setup_gui()

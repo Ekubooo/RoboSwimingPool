@@ -2,6 +2,6 @@ schema: 1
 identity:
   category: props
   name: light_box
-  version: '1'
+  version: '2'
 recipe: reference_prop
 inputs: []

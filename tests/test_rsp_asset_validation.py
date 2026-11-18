@@ -189,10 +189,14 @@ class AssetValidation(unittest.TestCase):
         from engines.newton_pbf_engine import SceneBuilder
         from engines.newton_pbf_runtime import PBFScene
         with tempfile.TemporaryDirectory(dir=OUTPUT / "tmp") as directory:
+            from RSP.sim_ready.pipelines.scenes.spec import load_scene
+            from types import SimpleNamespace
+            spec = load_scene()
             published = Mock(record={"model": "model.xml"})
             published.file.return_value = Path(directory) / "model.xml"
-            with patch("engines.newton_pbf_runtime.resolve_asset", return_value=published):
-                scene = PBFScene(directory, "cpu", 1 / 30, 8)
+            resolved = SimpleNamespace(static=published, dynamic={ref: published for ref in (spec.character, *spec.props)},
+                                       layout={"size": [3, 2, 5]}, clearances=[])
+            scene = PBFScene(directory, "cpu", 1 / 30, 8, scene_spec=spec, scene_assets=resolved)
             scene.register_character(0, replace(self.skeleton, body_names=tuple(reversed(self.skeleton.body_names))))
             sentinel = Path(directory) / "scene_manifest.json"
             sentinel.write_text("previous successful run")
