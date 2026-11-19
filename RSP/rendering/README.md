@@ -86,8 +86,8 @@ results remain available for historical comparison.
 See `docs/ssfr_material_presets_results.md` for the measured preset comparison.
 
 Optional implementations live in `fluid/`; edit `fluid/config.py` for their
-startup settings. They share a private CUDA–GL particle buffer, borrowing the
-legacy packing/resource implementation without changing its source. Only the
+startup settings. They compose the shared `ParticleInstances` resource and
+`RegisteredBuffer` lifetime implementation used by billboards. Only the
 selected mode uploads particles and draws. New modes lazily allocate shaders
 and textures, so their first use can pause briefly; resources are reused until
 resize/model replacement/close. Scene reset preserves the selected mode.
@@ -113,11 +113,11 @@ Use `--check-switches` for the short paused-switch/reset check instead of timing
 another batch. Measurements and limitations are in
 `docs/rendering_fluid_modes_results.md` at the repository root.
 
-`BillboardBatch` owns one CUDA/OpenGL instance buffer, a quad and its shaders.
-`NewtonBillboardViewer` adapts that batch to Newton 1.7's existing scene, window,
-camera and UI. MimicKit's `PBFViewer` name remains the application entry point;
-the same viewer is used by the headless video recorder. `RigidBatch` also owns
-one shared CUDA/OpenGL buffer for all rigid instances in a layer.
+`BillboardBatch` owns its shaders and a `ParticleInstances` batch. Optional fluid
+passes use the same quad and instance layout. `RegisteredBuffer` manages mapping,
+unmapping and releasing the CUDA registration for both particle and rigid GL
+buffers. `NewtonBillboardViewer` adapts these batches to Newton 1.7's scene,
+window and camera. MimicKit retains its `PBFViewer` alias for compatibility.
 Right-drag pulls a rigid body using Newton's original picking forces. The
 selection-only model in `picking.py` excludes collision-only geometry so the
 invisible pool walls cannot intercept the ray. Visible static geometry still
@@ -127,14 +127,12 @@ and its helper line retain Newton's interaction-time readbacks.
 Importing the backend does not initialize OpenGL; a context is needed only when
 constructing a viewer, so non-visual simulation retains its display-free path.
 
-`PlaybackGui` composes the existing Newton GUI, sharing its ImGui context,
-input handling and GL backend. The playback panel only builds run/reset,
-camera, geometry/particle visibility and application controls. Model values,
-gravity, selection attributes, plots and diagnostic panels are not read or
-built each frame. Side/free UI callback registration remains available for
-future controls. Picking and explicit frame capture retain their on-demand
-readback; normal idle playback has no simulation-state readback in this UI.
-The scene adapter no longer submits the static pool outline.
+The application installs `NewtonGuiHost` on the viewer for scene selection
+and playback. The host shares Newton's ImGui context and handles frame callbacks
+and input capture. `RSP.app.ui.playback.PlaybackPanel` reads CPU playback settings
+and queues edits for the next frame boundary. The viewer uses Newton's native
+GUI when no application panel is active. Picking and explicit frame capture
+retain their on-demand readback.
 
 ## Data and rendering
 
@@ -167,9 +165,9 @@ There is no particle lighting, shadow pass, edge overlay or transparency sort.
 
 ## Newton boundary
 
-Version-specific integration is confined to `newton_gl.py`: the scene-object
-`render()`/`destroy()` protocol, instance attributes, shape batching, camera
-matrices and layer-qualified names. Particles draw in the opaque scene pass, sharing rigid
+The Newton adapters own the scene-object `render()`/`destroy()` protocol, shape
+batching, layer-qualified names and GUI hooks. The optional fluid passes use
+the renderer's camera matrices and frame targets. Particles draw in the opaque scene pass, sharing rigid
 depth before transparency, MSAA resolve and ImGui. Human geometry, scene lines,
 input callbacks and recording retain their Newton paths. No global monkeypatch
 or modified installed package is needed.
@@ -182,8 +180,8 @@ opaque/transparent passes, call `invalidate_rigid_appearance()` explicitly;
 ordinary frames do not read opacity flags back to the CPU. Optional diagnostic
 overlays and picking retain Newton's paths and may perform their own readbacks.
 
-RSP adapts only its renderer instance to nonblocking event polling. The existing
-application limiter still controls playback pacing; window/UI events continue
+RSP adapts only its renderer instance to nonblocking event polling. The application
+owns simulation and policy cadence; window/UI events continue
 to be dispatched. Hidden COM markers skip Newton's otherwise unconditional
 update/upload. Enabling the COM overlay still uses Newton's original drawing.
 
@@ -200,7 +198,7 @@ Do not run recording tests or generate recording test artifacts.
 
 ```text
 python -m unittest discover -s tests -p test_rsp_rendering.py -v
-python -m unittest discover -s tests -p test_newton_pbf_refactor.py -v
+python tools/check_rsp_architecture.py
 python tools/check_newton_pbf_refactor.py integration --revision after
 python tools/profile_rsp_render.py --label billboard --hidden
 ```

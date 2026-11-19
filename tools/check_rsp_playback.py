@@ -12,9 +12,11 @@ sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 
 
 def main():
+    from contextlib import ExitStack
+    playback_stack = ExitStack()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", default="stage6_checks")
-    parser.add_argument("--frames", type=int, default=1500, help="1500 frames = 10 simulated seconds")
+    parser.add_argument("--frames", type=int, default=1500, help="number of simulation frames")
     parser.add_argument("--check-every", type=int, default=300, help="Diagnostic interval in simulation frames")
     parser.add_argument("--reference", default="output/rsp_render_profile/stage5_A/source/mimickit/envs/pbf_play_env.py")
     args = parser.parse_args()
@@ -28,7 +30,7 @@ def main():
     import warp as wp
     import yaml
     from PIL import Image
-    from engines import newton_pbf_engine
+    from RSP.integrations.mimickit import recorder as newton_pbf_engine
     from engines.newton_pbf_runtime import sample_sdf
     from engines.newton_pbf_viewer import PBFViewer
     from envs.pbf_play_env import PBFPlayEnv
@@ -36,7 +38,8 @@ def main():
     from learning.base_agent import AgentMode
     from util import resource_util, mp_util
     from util.util import set_rand_seed
-    from RSP.runtime.playback import PlaybackRunner
+    from RSP.app.playback import bind_playback
+    from RSP.integrations.mimickit.session import MimicKitSession
     wp.config.kernel_cache_dir = str(cache / "warp_cache")
 
     class CheckViewer(PBFViewer):
@@ -59,17 +62,17 @@ def main():
         agent.load(str(checkpoint / "model.pt"))
         agent.eval()
         agent.set_mode(AgentMode.TEST)
-        runner = PlaybackRunner(env, agent)
+        runner = playback_stack.enter_context(bind_playback(MimicKitSession(env, agent)))
         runner.reset()
         eng, viewer = env._engine, runner.viewer
         clock = eng._runtime._solver.clock
-        assert eng.get_sim_model().particle_count == 300105
+        assert eng.get_sim_model().particle_count == eng.get_play_scene().particles.n
         assert clock.schedule.calls == (0, 1, 0, 1)
-        assert abs(clock.schedule.control_dt - 1/150) < 1e-12
-        assert abs(clock.schedule.fluid_dt - 1/300) < 1e-12
-        assert abs(clock.schedule.fluid_frame_dt - 1/150) < 1e-12
-        assert abs(eng.get_sim_timestep() - 1/600) < 1e-12
-        assert runner.policy_interval == 5
+        assert abs(clock.schedule.control_dt - 1 / bc["control_freq"]) < 1e-12
+        assert abs(clock.schedule.fluid_dt - eng.get_play_scene().fluid_settings.schedule(eng.get_timestep(), clock.schedule.rigid_steps).fluid_dt) < 1e-12
+        assert abs(clock.schedule.fluid_frame_dt - eng.get_timestep() * eng.get_play_scene().fluid_settings.time_scale) < 1e-12
+        assert abs(eng.get_sim_timestep() - 1 / bc["sim_freq"]) < 1e-12
+        assert runner.policy_interval == round(bc["control_freq"] / 30)
         assert eng._runtime._solver.settings.time_scale == 1.
         rigid_steps = clock.schedule.rigid_steps
         assert "disc_obs" not in env._info
@@ -117,17 +120,17 @@ def main():
                     previous_action = None
                     for frame in range(1, 12):
                         runner.tick()
-                        assert clock.rigid_ticks == frame * rigid_steps and clock.fluid_ticks == frame * 2
-                        assert abs(eng.get_sim_time() - frame / 150) < 1e-12
-                        assert abs(clock.time - frame / 150) < 1e-12
-                        assert decisions.call_count == (frame - 1) // 5 + 1
-                        if (frame - 1) % 5:
+                        assert clock.rigid_ticks == frame * rigid_steps and clock.fluid_ticks == frame * clock.schedule.fluid_steps
+                        assert abs(eng.get_sim_time() - frame * eng.get_timestep()) < 1e-12
+                        assert abs(clock.time - frame * clock.schedule.fluid_frame_dt) < 1e-12
+                        assert decisions.call_count == (frame - 1) // runner.policy_interval + 1
+                        if (frame - 1) % runner.policy_interval:
                             assert runner._action is previous_action
                         previous_action = runner._action
                         old = reference._compute_obs()
                         torch.testing.assert_close(env._obs_buf, old, rtol=1e-5, atol=1e-6)
             runtime._graph = graph
-            result["checks"].append("graph/eager: 4 rigid/2 fluid steps, equal clocks, decisions on frames 1/6/11 with held GPU actions")
+            result["checks"].append("graph/eager: configured clocks and policy cadence with held GPU actions")
 
             # Audit ordinary frames, not loading, resetting, picking or screenshots.
             with patch.object(wp.array, "numpy", side_effect=AssertionError("Warp host readback")), \
@@ -231,7 +234,7 @@ def main():
         (output / "report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(f"PLAYBACK CHECK PASS: {output / 'report.json'}", flush=True)
     finally:
-        resource_util.cleanup(env.close if env else None, agent.close if agent else None, mp_util.shutdown)
+        resource_util.cleanup(playback_stack.close, env.close if env else None, agent.close if agent else None, mp_util.shutdown)
 
 
 if __name__ == "__main__":

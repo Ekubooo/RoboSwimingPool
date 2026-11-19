@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "roboswimmingpool-rsp"
 version = "0.1.0"
-description = "RSP simulation asset tools for the RoboSwimingPool source checkout"
-readme = "RSP/sim_ready/README.md"
+description = "RSP assets, Newton simulation, rendering and MimicKit playback for the source checkout"
+readme = "RSP/README.md"
 requires-python = ">=3.11"
 dynamic = ["dependencies"]
 

@@ -73,6 +73,8 @@ class FrameProfiler:
 
 
 def main():
+    from contextlib import ExitStack
+    playback_stack = ExitStack()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", required=True)
     parser.add_argument("--loop", choices=("legacy", "playback"), default="playback")
@@ -94,14 +96,14 @@ def main():
     import yaml
     from PIL import Image
     import newton
-    from engines import newton_pbf_engine
+    from RSP.integrations.mimickit import recorder as newton_pbf_engine
     from engines.newton_pbf_viewer import PBFViewer
     from envs.pbf_play_env import PBFPlayEnv
     from learning.agent_builder import build_agent
     from learning.base_agent import AgentMode
     from util import resource_util, mp_util
     from util.util import set_rand_seed
-    from RSP.runtime import fluid_clock
+    from RSP.physics import fluid_clock
 
     output = ROOT / "output/rsp_render_profile" / args.label
     output.mkdir(parents=True, exist_ok=True)
@@ -128,7 +130,7 @@ def main():
                                "mimickit/learning/smp_agent.py",
                                "mimickit/engines/newton_pbf_engine.py", "mimickit/learning/base_agent.py",
                                "data/engines/newton_pbf_engine.yaml", "tools/profile_rsp_playback.py")]
-    paths += [p for folder in ("RSP/rendering", "RSP/runtime") for p in (ROOT / folder).glob("*.py")]
+    paths += [p for folder in ("RSP/rendering", "RSP/app", "RSP/physics", "RSP/simulation", "RSP/integrations") for p in (ROOT / folder).rglob("*.py")]
     for path in paths:
         relative = str(path.relative_to(ROOT))
         report["sources"][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -176,8 +178,9 @@ def main():
                             recorder.add("policy_ms", (time.perf_counter() - start) * 1000)
                     stack.enter_context(patch.object(agent, "_decide_action", decide))
                 else:
-                    from RSP.runtime.playback import PlaybackRunner
-                    runner = PlaybackRunner(env, agent)
+                    from RSP.app.playback import bind_playback
+                    from RSP.integrations.mimickit.session import MimicKitSession
+                    runner = playback_stack.enter_context(bind_playback(MimicKitSession(env, agent)))
                     report["policy_interval_frames"] = runner.policy_interval
                     report["policy_hz"] = 1.0 / (eng.get_timestep() * runner.policy_interval)
                     original_tick = runner.tick
@@ -254,7 +257,7 @@ def main():
         torch.save(fixtures, output / "policy_fixtures.pt")
         print(f"PLAYBACK PROFILE PASS: {output / 'report.json'}", flush=True)
     finally:
-        resource_util.cleanup(env.close if env else None, agent.close if agent else None, mp_util.shutdown)
+        resource_util.cleanup(playback_stack.close, env.close if env else None, agent.close if agent else None, mp_util.shutdown)
 
 
 if __name__ == "__main__":

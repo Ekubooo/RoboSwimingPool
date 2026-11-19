@@ -273,7 +273,7 @@ def check_fluid_controls(runner, reset, save_image, frames):
     before = solver.clock.time
     press(key.SPACE)
     assert runner.tick() and viewer.is_paused()
-    assert abs(solver.clock.time - before - 1/150) < 1e-12
+    assert abs(solver.clock.time - before - solver.clock.schedule.fluid_frame_dt) < 1e-12
     assert not runner.tick()
     result["pause_step_reset"] = True
     env.set_policy_use_scene_sphere(False)
@@ -300,7 +300,7 @@ def check_fluid_controls(runner, reset, save_image, frames):
             assert solver.rigid._step == previous_rigid + 4
             assert solver.fluid.pre_Pos.ptr == previous_predict  # two fluid calls
             assert schedule.calls == (0, 1, 0, 1)
-            expected_dt = 1/600 if controls.slow_motion else 1/300
+            expected_dt = solver._base_schedule.fluid_dt * (.5 if controls.slow_motion else 1.)
             assert abs(schedule.fluid_dt - expected_dt) < 1e-12
             assert abs(solver.clock.time - previous_time - 2 * expected_dt) < 1e-12
             rows.append(dict(label=label, fluid_time=solver.clock.time,
@@ -316,7 +316,7 @@ def check_fluid_controls(runner, reset, save_image, frames):
             assert solver.feedback_parameter.numpy()[0] == scale
         for name, values in fixed.items():
             np.testing.assert_array_equal(getattr(model, name).numpy(), values)
-        assert runner.policy_interval == 5 and abs(eng.get_sim_timestep() - 1/600) < 1e-12
+        assert runner.policy_interval == round(1 / (30 * eng.get_timestep())) and abs(eng.get_sim_timestep() - solver.clock.schedule.control_dt / solver.clock.schedule.rigid_steps) < 1e-12
         assert solver.fluid.config.pressure_iterations == 3
         result["graph" if captured else "eager"] = rows
         traces[captured] = dict(particles=eng._state.raw_state.particle_q.numpy().copy(),
@@ -432,6 +432,8 @@ def check_eager_graph_step(runner, reset):
 
 
 def main():
+    from contextlib import ExitStack
+    playback_stack = ExitStack()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", default="stage7")
     parser.add_argument("--hidden", action="store_true")
@@ -452,14 +454,15 @@ def main():
     import yaml
     from PIL import Image
     wp.config.kernel_cache_dir = str(cache / "warp_cache")
-    from engines import newton_pbf_engine
+    from RSP.integrations.mimickit import recorder as newton_pbf_engine
     from engines.newton_pbf_viewer import PBFViewer
     from envs.pbf_play_env import PBFPlayEnv
     from learning.agent_builder import build_agent
     from learning.base_agent import AgentMode
     from util import resource_util, mp_util
     from util.util import set_rand_seed
-    from RSP.runtime.playback import PlaybackRunner
+    from RSP.app.playback import bind_playback
+    from RSP.integrations.mimickit.session import MimicKitSession
 
     class Viewer(PBFViewer):
         def __init__(self, **kwargs):
@@ -485,7 +488,7 @@ def main():
         agent.load(str(checkpoint / "model.pt"))
         agent.eval()
         agent.set_mode(AgentMode.TEST)
-        runner = PlaybackRunner(env, agent)
+        runner = playback_stack.enter_context(bind_playback(MimicKitSession(env, agent)))
         eng, viewer = env._engine, runner.viewer
         def reset():
             set_rand_seed(1234)
@@ -498,9 +501,9 @@ def main():
         with torch.no_grad():
             reset()
             schedule = eng._runtime._solver.clock.schedule
-            assert schedule.calls == (0, 1, 0, 1) and runner.policy_interval == 5
-            assert abs(eng.get_sim_timestep() - 1 / 600) < 1e-12
-            assert abs(schedule.fluid_dt - 1 / 300) < 1e-12
+            assert schedule.calls == (0, 1, 0, 1) and runner.policy_interval == round(1 / (30 * eng.get_timestep()))
+            assert abs(eng.get_sim_timestep() - 1 / bc["sim_freq"]) < 1e-12
+            assert abs(schedule.fluid_dt - eng.get_play_scene().fluid_settings.schedule(eng.get_timestep(), schedule.rigid_steps).fluid_dt) < 1e-12
             assert eng.get_sim_model().particle_count == eng.get_play_scene().particles.n
             root_height = eng.get_root_pos(env._get_char_id())[0, 2]
             torch.testing.assert_close(root_height, env._ref_root_pos[0, 2])
@@ -529,7 +532,7 @@ def main():
                 viewer._paused = True
                 assert not runner.tick() and eng.get_sim_time() == 0.
                 viewer._step_requested = True
-                assert runner.tick() and abs(eng.get_sim_time() - 1 / 150) < 1e-12
+                assert runner.tick() and abs(eng.get_sim_time() - eng.get_timestep()) < 1e-12
                 env.request_reset()
                 assert not runner.tick() and eng.get_sim_time() == 0.
                 viewer._paused = False
@@ -552,7 +555,7 @@ def main():
             report["final"] = inspect_state(runner)
     finally:
         (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        resource_util.cleanup(env.close if env else None, agent.close if agent else None, mp_util.shutdown)
+        resource_util.cleanup(playback_stack.close, env.close if env else None, agent.close if agent else None, mp_util.shutdown)
     print(f"SCENE DIAGNOSTIC PASS: {output / 'report.json'}", flush=True)
 
 

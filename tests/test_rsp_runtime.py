@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "mimickit"))
 wp.config.kernel_cache_dir = str(ROOT / "output/newton_pbf_refactor_checks/warp_cache")
 
-from RSP.runtime.fluid_clock import FluidSettings, FluidClock
-from RSP.runtime.coupling import ClockedPBFMuJoCo, ClockedStepGraph
+from RSP.physics.fluid_clock import FluidSettings, FluidClock
+from RSP.physics.clocked_coupling import ClockedPBFMuJoCo, ClockedStepGraph
 
 
 class ClockChecks(unittest.TestCase):

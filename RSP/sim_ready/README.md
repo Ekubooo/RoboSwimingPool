@@ -26,17 +26,16 @@ to the repository, and standalone wheel data lookup is outside its scope.
 ```python
 from RSP.sim_ready.paths import PBF_PLAY_ROOT
 from RSP.sim_ready.lib.storage.store import AssetStore
-from RSP.sim_ready.pipelines.boundary.prepare import prepare_boundary_asset
-from RSP.sim_ready.pipelines.boundary.load import load_boundary_asset
+from RSP.sim_ready.pipelines.boundary import prepare_boundary_asset
+from RSP.sim_ready.boundary.load import load_boundary_asset
 
 store = AssetStore(PBF_PLAY_ROOT)
-# Pass store=store to asset preparation; loading only needs an artifact reference.
+# Pass store=store to preparation, and an artifact plus support radius to loading.
 ```
 
-The existing MimicKit launcher, backend and solver remain in place. Install the
-RSP package before using the Newton-PBF backend or running the tests. The old
-top-level `sim_ready` imports have been replaced; no compatibility package or
-new command-line entry point is provided.
+Install the RSP package before using the Newton-PBF backend or running the
+tests. Use `tools/prepare_rsp_assets.py` to prepare published assets and
+`tools/run_rsp.py` for playback.
 
 ## Source and output layout
 
@@ -46,39 +45,41 @@ data/assets_RSP/
 ├── origin/
 │   ├── .gitignore
 │   ├── bunny_flat_bottom.obj
-│   └── spot_triangulated_good.obj
+│   ├── spot_triangulated_good.obj
+│   └── <category>/<name>/source.yaml
 ├── pbf_play/
 │   ├── boundaries-v3/
 │   ├── collision/
-│   ├── primitives/
-│   └── scene_manifest.json
+│   └── primitives/
+├── published/
+│   └── <category>/<name>/<version>/asset.json
 └── tests/
 ```
 
 The two OBJ files are the RSP source meshes. Both retain their filenames and
 original SHA-256 values after relocation from `mimickit/sim_ready/Assets`.
-The asset-root ignore rule excludes outputs; `origin` whitelists only the two
-OBJs and its ignore rule. Code, hand-authored configs and recipes stay versioned
-in their code/config directories. MimicKit models, motions, policies, paths and
-ignore rules are unchanged. Training outputs, recordings and backend check
-reports still use their existing locations.
+The asset-root ignore rule excludes generated outputs. Source manifests, the
+humanoid model referenced by its manifest, and the two OBJ files are under
+`origin`. The G1 recipe resolves its input model separately from `data/assets/g1`.
 
-The demo defaults to `data/assets_RSP/pbf_play`. Repository-local asset output
+Preparation caches intermediate data in `data/assets_RSP/pbf_play`. Playback
+reads versioned packages in `data/assets_RSP/published`. Repository-local asset output
 roots must be proper subdirectories of `assets_RSP`, excluding `origin` and its
 descendants. The root itself is not an output directory. Explicit external
 output roots are supported. Paths are resolved before checking containment.
-The phase-two asset migration built this root from source and removed only the
-obsolete `output/sim_ready/pbf_play/boundaries` directory after validation.
-The subsequent move of Python code to `RSP.sim_ready` preserves these existing
-assets and cache identities. Other legacy outputs remain outside the default
-demo's asset path.
+Playback diagnostics live under `output/pbf_play/runs`.
 
 ## Code layers
 
 ```text
 RSP/sim_ready/
 ├── config.py                         shared parameter constraints
+├── catalog.py                        asset discovery and package verification
 ├── paths.py                          source locations and output rules
+├── reference.py                      shared reference pool coordinates
+├── boundary/
+│   ├── schema.py                     references, manifests and grid metadata
+│   └── load.py                       read-only validation and GPU loading
 ├── lib/
 │   ├── asset_validation.py           plain-data checks, descriptions, diagnostics
 │   ├── mesh/                         geometry, validation, convex algorithms
@@ -92,52 +93,47 @@ RSP/sim_ready/
     ├── collision.py                  convex recipe, cache reuse and preparation
     ├── rigid.py                      primitive/rigid asset preparation
     ├── container.py                  terrain/container placement and preparation
-    ├── boundary/
-    │   ├── schema.py                 references, manifests and grid metadata
-    │   ├── prepare.py                SDF selection, map construction, publication
-    │   └── load.py                   read-only validation and GPU loading
-    ├── scenes/pbf_play.py            active scene recipe and native geometry
-    └── preset/                       historical internal references only
+    ├── boundary.py                   SDF selection, map construction and cache
+    ├── publication.py                immutable package publication
+    └── recipes/                      reference container, prop and G1 production
 ```
 
 `lib.mesh.convex` provides `decompose_convex`, `validate_hulls` and
 `measure_hull_error`. These operate in memory. `pipelines.collision.prepare_hulls`
 owns the CoACD recipe and cache decisions, using storage's NPZ IO and publication.
-Container-specific stairs, placement and wall recipes live in the container
-pipeline; generic transforms, Boolean operations and geometry validation stay
-in `lib.mesh`.
+Container-specific stairs and asset geometry live in the container pipeline
+and recipes. Generic transforms, Boolean operations and geometry validation
+stay in `lib.mesh`. Placement of instances in a running scene belongs to
+`RSP.simulation.scenes`.
 
 `AssetStore(output_root)` centralizes validated output paths, category directories,
 recipe keys, temporary staging and group publication with rollback. It does not
 decide whether an SDF covers a radius or whether collision data are valid.
-Scene assembly creates a store and explicitly passes it to preparation calls.
+Package preparation creates a store and passes it to the asset recipes.
 Generic `rigid.build` and `container.build` take a relative `stem` and a `store`.
 No compatibility modules are retained at the previous import paths.
 
 ## Active call sequence and interfaces
 
 ```text
-PBFScene creates AssetStore
-  → pipelines.scenes.pbf_play: primitive MJCFs and static geometry
-    → pipelines.boundary.prepare.prepare_boundary_asset(..., store=store)
-    → pipelines.collision.prepare_hulls(mesh, name, store)
-  → Newton model assembly with the existing native collision shapes
-    → adapters.newton: import + default finalize validation/correction + public DFS check
-    → plain physical descriptions + separate runtime body-ID bindings
-    → MimicKit skeleton/DOF compatibility checks before SimState and CUDA Graph creation
-  → pipelines.articulation.prepare_articulated_asset
-    → check every selected link before baking any link in that asset
-    → lib.mesh.shapes → existing solid validation / Boolean union
-    → pipelines.boundary.prepare with the same store and cache recipe
-  → solvers.pbf.boundary_model.load_boundaries
-    → pipelines.boundary.load.load_boundary_asset(artifact, runtime requirements)
-  → body binding, independent instance transforms, pose sync and initialization
+Preparation command
+  → pipelines.publication.prepare_sources(support_radius=...)
+    → reference recipes, Newton physical descriptions and per-link geometry checks
+    → pipelines.boundary.prepare_boundary_asset + cached SDF and volume map
+    → immutable published package
+Playback
+  → simulation.scenes.resolve.resolve_scene(..., support_radius=...)
+    → published package checks and layout validation
+  → Newton scene assembly
+  → physics.pbf.boundary_model.load_boundaries
+    → sim_ready.boundary.load.load_boundary_asset (read-only)
 ```
 
 `lib.volume.pbf_volume_map.precompute_volume_map(sdf, support_radius,
 quadrature_points=16)` returns an independent CUDA volume on the SDF grid.
 Quadrature is keyword-only. The function performs no file IO and leaves the
-input unchanged.
+input unchanged. The preparation pipeline writes the result and the input SDF
+into a dual-grid `boundary.nvdb`.
 
 `prepare_boundary_asset(mesh, checked, *, store, ...)` accepts validated local
 geometry, bake settings, container/solid treatment, support radius, quadrature,
@@ -156,15 +152,16 @@ exception and body/shape context. It checks explicit units/up-axis/scale, names,
 finite values, dimensions, local transforms, coverage and consumer mappings.
 
 `adapters.newton.import_physical_asset` uses the existing MJCF/URDF importer options.
-`finalize_model` calls Newton's default `finalize()` and public
-`validate_joint_ordering()`; it records warnings and inertia changes without
-changing Newton's correction method. Source resource resolution and physical
+`finalize_model` calls Newton's default `finalize()` and records its inertia
+changes. Reference publication and the MimicKit backend pass
+`require_dfs=True` to run the public `validate_joint_ordering()` check.
+Source resource resolution and physical
 structure validation remain with Newton. `describe_articulations(model)` copies
 the actual `COLLIDE_SHAPES` geometry into local descriptions; runtime body IDs
 are returned separately. Visual-only geometry is never substituted.
-The current MimicKit backend requires one articulation per imported object and
-one joint per body in matching order; incompatible valid Newton models are
-reported as unsupported for this consumer before runtime state construction.
+The MimicKit integration checks that each imported object has one articulation
+and one joint per body in matching order. Incompatible models are reported
+before runtime state construction.
 
 `prepare_articulated_asset(asset, *, store, bake_options, support_radius,
 quadrature_points=16, device="cuda:0", excluded_links=())` returns dictionaries of
@@ -194,10 +191,8 @@ motors. Motion data, policies and observations remain MimicKit's responsibility.
 This is basic simulation-asset validation, not a self-intersection proof, automatic
 rigging/physicalization or a guarantee that an existing policy fits a new robot.
 
-The existing G1 MJCF passes structure/skeleton checks. Some G1 collision meshes
-are open, nonmanifold or contain duplicate/collapsed triangles and are deliberately
-rejected with link/shape names; valid limbs can be prepared independently.
-No SimReady Foundation, Isaac Sim or new dependency is needed.
+The G1 reference recipe builds coupling assets from the native collision
+primitives described in the [published package guide](PUBLISHED_ASSETS.md).
 
 ## Cache contracts
 
@@ -221,20 +216,14 @@ to the same artifact are outside the supported workflow.
 
 ## Verification
 
-From the repository root in the WarpSim CUDA environment:
+For changes to publication and scene resolution, run these focused CPU checks
+from the repository root. The scene check uses existing published packages.
 
 ```powershell
-conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_asset_pipeline.py -v
-conda run -n WarpSim python -m unittest discover -s tests -p test_pbf_boundary_assets.py -v
-conda run -n WarpSim python -m unittest discover -s tests -p test_newton_pbf_refactor.py -v
-conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_asset_validation.py -v
-conda run -n WarpSim python -m unittest discover -s tests -p test_articulated_asset_pipeline.py -v
+conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_publication.py -v
+conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_scene_assembly.py -v
 ```
 
-Asset fixtures and their compilation caches live under `data/assets_RSP/tests`.
-`tools/check_newton_pbf_refactor.py snapshot` and `compare` check demo state,
-model mappings and reset without recording video. Backend reports retain their
-existing output location. The optional `integration` command still checks policy
-playback and recording, but is not part of routine asset/package migration checks.
-Historical preset runtime restoration and application launch normalization remain
-separate tasks.
+For a short CUDA playback and reset check using read-only published assets, see
+the [published package guide](PUBLISHED_ASSETS.md). Run checks for SDF, volume map
+or collision generation only when those production paths change.

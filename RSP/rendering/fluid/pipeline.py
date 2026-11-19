@@ -54,8 +54,7 @@ class FluidPipeline:
                 # Validate CUDA registration before committing the switch. It
                 # must fail here, rather than after hiding the previous mode.
                 count = self.viewer.model.particle_count
-                if count and self.batch._capacity != count:
-                    self.batch._resize(count)
+                self.batch.reserve(count)
             self.mode, self.error = mode, None
             self.ssfr_preset = preset
             self.water_color = water_color

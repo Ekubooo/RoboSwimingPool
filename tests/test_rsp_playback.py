@@ -1,26 +1,29 @@
 """Playback contracts that must hold without training or simulator readback."""
+from dataclasses import replace
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 
-from RSP.runtime.playback import PlaybackRunner
+from RSP.app.config import boundary_support_radius, get_fluid_settings
+from RSP.app.playback import PlaybackRunner, bind_playback, play_mimickit
+from RSP.app.ui.interaction import FluidInteraction
+from RSP.integrations.mimickit.session import MimicKitSession
 from RSP.rendering.newton_gl import NewtonBillboardViewer
 from envs.pbf_play_env import PBFPlayEnv
-from RSP.runtime.fluid_clock import DEFAULT_SETTINGS, FluidSettings
-from solvers.pbf.pbf_helper import init_scene_parameters
-from engines.newton_pbf_runtime import runtime_config
+from RSP.physics import fluid_clock
 
 
 class PlaybackChecks(unittest.TestCase):
     def test_pause_step_and_queued_reset_precede_policy(self):
         events = []
         viewer = SimpleNamespace(should_step=Mock(side_effect=[False, True, True]))
-        viewer.bind_playback_controls = Mock()
         viewer.set_paused = lambda paused: NewtonBillboardViewer.set_paused(viewer, paused)
         env = SimpleNamespace(_engine=SimpleNamespace(get_viewer=lambda: viewer, get_timestep=lambda: 1/30),
                               _obs_buf="obs", _info={}, _device="cpu")
@@ -38,9 +41,7 @@ class PlaybackChecks(unittest.TestCase):
             return "action"
         env.get_policy_use_scene_sphere = Mock(return_value=False)
         env.request_policy_use_scene_sphere = Mock()
-        if env._engine.get_viewer() is not None:
-            env._engine.get_viewer().register_ui_callback = Mock()
-        runner = PlaybackRunner(env, None, policy=SimpleNamespace(act=decide))
+        runner = PlaybackRunner(MimicKitSession(env, None, policy=SimpleNamespace(act=decide)))
         self.assertFalse(runner.tick())
         self.assertEqual(events, ["commands", "render"])
         self.assertTrue(runner.tick())
@@ -51,7 +52,6 @@ class PlaybackChecks(unittest.TestCase):
 
     def test_policy_holds_action_for_five_frames_and_resets_while_paused(self):
         viewer = SimpleNamespace(should_step=Mock(return_value=True))
-        viewer.bind_playback_controls = Mock()
         viewer.set_paused = lambda paused: NewtonBillboardViewer.set_paused(viewer, paused)
         env = SimpleNamespace(_engine=SimpleNamespace(get_viewer=lambda: viewer, get_timestep=lambda: 1/150),
                               _obs_buf="initial", _info={}, _device="cpu")
@@ -70,9 +70,7 @@ class PlaybackChecks(unittest.TestCase):
         policy = SimpleNamespace(act=Mock(side_effect=actions))
         env.get_policy_use_scene_sphere = Mock(return_value=False)
         env.request_policy_use_scene_sphere = Mock()
-        if env._engine.get_viewer() is not None:
-            env._engine.get_viewer().register_ui_callback = Mock()
-        runner = PlaybackRunner(env, None, policy=policy)
+        runner = PlaybackRunner(MimicKitSession(env, None, policy=policy))
         self.assertEqual(runner.policy_interval, 5)
         for _ in range(11):
             runner.tick()
@@ -118,13 +116,12 @@ class PlaybackChecks(unittest.TestCase):
         policy = SimpleNamespace(act=Mock(return_value="action"))
         env.get_policy_use_scene_sphere = Mock(return_value=False)
         env.request_policy_use_scene_sphere = Mock()
-        if env._engine.get_viewer() is not None:
-            env._engine.get_viewer().register_ui_callback = Mock()
-        runner = PlaybackRunner(env, None, policy=policy)
+        runner = PlaybackRunner(MimicKitSession(env, None, policy=policy),
+                                fluid_controls=FluidInteraction(settings))
         self.assertEqual(events, [])
         viewer.request_step()
-        viewer._reset_callback()
-        viewer._reset_callback()
+        env.request_reset()
+        env.request_reset()
         self.assertFalse(runner.tick())
         self.assertEqual(events, ["settings", "reset", ("sphere", True)])
         env.reset.assert_called_once_with()
@@ -144,22 +141,24 @@ class PlaybackChecks(unittest.TestCase):
         policy.act.assert_called_once_with("fresh")
 
     def test_component_binding_is_cpu_only_and_optional(self):
-        from RSP.runtime.mimickit_bindings import build_playback_components
         policy, agent = object(), Mock()
         for with_viewer in (False, True):
             with self.subTest(with_viewer=with_viewer):
-                viewer = SimpleNamespace(bind_playback_controls=Mock(), register_ui_callback=Mock()) if with_viewer else None
-                env = SimpleNamespace(_engine=SimpleNamespace(get_viewer=lambda: viewer),
-                                      request_reset=Mock(), reset=Mock(), get_policy_use_scene_sphere=Mock(return_value=False),
-                                      request_policy_use_scene_sphere=Mock())
-                components = build_playback_components(env, agent, policy=policy)
-                self.assertIs(components.policy, policy)
-                self.assertIs(components.viewer, viewer)
-                self.assertIsNone(components.fluid_controls)
-                env.reset.assert_not_called()
-                env.request_reset.assert_not_called()
+                viewer = Mock() if with_viewer else None
+                env = SimpleNamespace(_engine=SimpleNamespace(get_viewer=lambda: viewer, get_timestep=lambda: 1/120),
+                                      _obs_buf="obs", _info={}, _device="cpu", reset=Mock(), request_reset=Mock())
+                with bind_playback(MimicKitSession(env, agent, policy=policy)) as runner:
+                    self.assertIs(runner.policy, policy)
+                    self.assertIs(runner.viewer, viewer)
+                    self.assertIsNone(runner.fluid_controls)
+                    env.reset.assert_not_called()
+                    env.request_reset.assert_not_called()
+                    if viewer is not None:
+                        panel = viewer.install_gui.return_value.set_panel.call_args.args[0]
+                        panel.request_reset()
+                        env.request_reset.assert_called_once_with()
                 if viewer is not None:
-                    viewer.bind_playback_controls.assert_called_once_with(None, env.request_reset)
+                    viewer.install_gui.return_value.set_panel.assert_called_with(None)
         agent.get_playback_policy_components.assert_not_called()
 
     def test_headless_request_resets_then_advances(self):
@@ -172,19 +171,19 @@ class PlaybackChecks(unittest.TestCase):
         policy = SimpleNamespace(act=Mock(return_value="action"))
         env.get_policy_use_scene_sphere = Mock(return_value=False)
         env.request_policy_use_scene_sphere = Mock()
-        if env._engine.get_viewer() is not None:
-            env._engine.get_viewer().register_ui_callback = Mock()
-        runner = PlaybackRunner(env, None, policy=policy)
+        stats_sink = Mock()
+        runner = PlaybackRunner(MimicKitSession(env, None, policy=policy), stats_sink=stats_sink)
         self.assertTrue(runner.tick())
+        self.assertEqual(stats_sink.call_count, 3)
         env.reset.assert_called_once_with()
         policy.act.assert_called_once_with("fresh")
 
     def test_policy_panel_queues_edits_until_frame_boundary(self):
-        from RSP.runtime.mimickit_bindings import build_playback_components
-        viewer = SimpleNamespace(bind_playback_controls=Mock(), register_ui_callback=Mock())
+        viewer = Mock()
         env = PBFPlayEnv.__new__(PBFPlayEnv)
-        env._engine = Mock()
-        env._engine.get_viewer.return_value = viewer
+        env._engine = SimpleNamespace(get_viewer=lambda: viewer, get_timestep=lambda: 1/120,
+                                      register_ui_callback=Mock(), register_keyboard_callback=Mock())
+        env._device, env._obs_buf, env._info = "cpu", None, {}
         env.policy_use_scene_sphere = False
         env._policy_sphere_id = 1
         env._pending_sphere = None
@@ -192,43 +191,66 @@ class PlaybackChecks(unittest.TestCase):
         env._setup_gui()
         env._engine.register_ui_callback.assert_not_called()
         env._engine.register_keyboard_callback.assert_not_called()
-        build_playback_components(env, None, policy=object())
-        viewer.register_ui_callback.assert_called_once()
-        self.assertEqual(viewer.register_ui_callback.call_args.kwargs, {"position": "side"})
-        draw = viewer.register_ui_callback.call_args.args[0]
-        imgui = SimpleNamespace(text=Mock(), checkbox=Mock(return_value=(True, True)))
-        draw(imgui)
-        imgui.checkbox.assert_called_once_with("Policy: scene sphere", False)
-        self.assertFalse(env.policy_use_scene_sphere)
-        self.assertTrue(env._pending_sphere)
-        env._update_observations.assert_not_called()
-        env.apply_playback_commands()
-        self.assertTrue(env.policy_use_scene_sphere)
-        self.assertIsNone(env._pending_sphere)
-        env._update_observations.assert_called_once_with()
-        imgui.checkbox.return_value = (False, True)
-        draw(imgui)
-        self.assertEqual(imgui.checkbox.call_args.args, ("Policy: scene sphere", True))
-        self.assertIsNone(env._pending_sphere)
+        with bind_playback(MimicKitSession(env, None, policy=object())):
+            panel = viewer.install_gui.return_value.set_panel.call_args.args[0]
+            imgui = SimpleNamespace(checkbox=Mock(return_value=(True, True)))
+            panel.draw_policy(imgui)
+            imgui.checkbox.assert_called_once_with("Use scene sphere", False)
+            self.assertFalse(env.policy_use_scene_sphere)
+            self.assertTrue(env._pending_sphere)
+            env._update_observations.assert_not_called()
+            env.apply_playback_commands()
+            self.assertTrue(env.policy_use_scene_sphere)
+            self.assertIsNone(env._pending_sphere)
+            env._update_observations.assert_called_once_with()
+            imgui.checkbox.return_value = (False, True)
+            panel.draw_policy(imgui)
+            self.assertEqual(imgui.checkbox.call_args.args, ("Use scene sphere", True))
+            self.assertIsNone(env._pending_sphere)
 
     def test_new_defaults_preserve_reference_config(self):
-        reference = FluidSettings()
+        reference = fluid_clock.FluidSettings()
         self.assertEqual((reference.pbf.particle_radius, reference.pbf.substeps), (.0125, 3))
-        actual = DEFAULT_SETTINGS.schedule(1/150, 4)
+        settings = get_fluid_settings()
+        self.assertIs(settings, fluid_clock.DEFAULT_SETTINGS)
+        engine = yaml.safe_load((ROOT / "data/engines/newton_pbf_engine.yaml").read_text(encoding="utf-8"))
+        actual = settings.schedule(1 / engine["control_freq"], engine["sim_freq"] // engine["control_freq"])
         self.assertEqual(actual.calls, (0, 1, 0, 1))
-        self.assertAlmostEqual(actual.fluid_frame_dt, 1/150)
-        self.assertAlmostEqual(actual.fluid_dt, 1/300)
-        self.assertAlmostEqual(actual.control_dt / actual.rigid_steps, 1/600)
-        self.assertEqual(DEFAULT_SETTINGS.time_scale, 1.)
-        self.assertEqual(DEFAULT_SETTINGS.pbf.pressure_iterations, 3)
-        config = runtime_config(1/150, 4)
-        particles = SimpleNamespace(config=config)
-        init_scene_parameters(particles)
-        self.assertEqual(particles.n, 299475)
-        for actual, expected in zip(config.block_start, (1.56, .75, .50)):
-            self.assertAlmostEqual(actual, expected)
-        for actual, expected in zip(config.block_end, (2.96, 1.90, 3.55)):
-            self.assertAlmostEqual(actual, expected)
+        self.assertAlmostEqual(actual.fluid_frame_dt, 1 / 120)
+        self.assertAlmostEqual(actual.fluid_dt, 1 / 240)
+        self.assertAlmostEqual(actual.control_dt / actual.rigid_steps, 1 / 480)
+        self.assertEqual(settings.pbf.pressure_iterations, 3)
+        self.assertAlmostEqual(boundary_support_radius(), .04)
+        override = replace(settings, pbf=replace(settings.pbf, particle_radius=.0125))
+        with patch.object(fluid_clock, "DEFAULT_SETTINGS", override):
+            self.assertIs(get_fluid_settings(), override)
+            self.assertAlmostEqual(boundary_support_radius(), .05)
+            self.assertAlmostEqual(boundary_support_radius(settings), .04)
+
+    def test_legacy_play_uses_environment_cadence_and_leaves_viewer_open(self):
+        viewer, agent = Mock(), Mock()
+        agent.get_playback_policy_components.return_value = {}
+        engine = SimpleNamespace(get_viewer=lambda: viewer, get_timestep=lambda: 1 / 120)
+        env = SimpleNamespace(_engine=engine, _device="cpu", _obs_buf="obs", _info={},
+                              get_policy_timestep=Mock(return_value=1 / 40), close=Mock())
+        with patch("RSP.integrations.mimickit.session.PolicyInference"), \
+                patch("RSP.integrations.mimickit.session.configure_test_agent") as configure, \
+                patch.object(PlaybackRunner, "run", autospec=True) as run:
+            play_mimickit(env, agent)
+
+        run.assert_called_once()
+        runner = run.call_args.args[0]
+        self.assertIs(runner.viewer, viewer)
+        self.assertEqual(runner.policy_interval, 3)
+        env.get_policy_timestep.assert_called_once_with()
+        configure.assert_called_once_with(agent)
+        viewer.install_gui.assert_called_once_with()
+        installed, removed = viewer.install_gui.return_value.set_panel.call_args_list
+        self.assertIs(installed.args[0].viewer, viewer)
+        self.assertIsNone(removed.args[0])
+        viewer.close.assert_not_called()
+        env.close.assert_not_called()
+        agent.close.assert_not_called()
 
     def test_gsi_velocities_keep_the_policy_sample_period(self):
         import torch
@@ -239,6 +261,7 @@ class PlaybackChecks(unittest.TestCase):
         kin.load(str(ROOT / "data/assets/humanoid/humanoid.xml"))
         env = object.__new__(PBFPlayEnv)
         env._device, env._kin_char_model = "cpu", kin
+        env._policy_hz = 30
         env._engine = SimpleNamespace(get_timestep=lambda: 1/150)
         frames = torch.zeros(1, 2, 6 + kin.get_dof_size())
         frames[0, 1, 0] = 1/30  # one metre/second in the original 30 Hz samples

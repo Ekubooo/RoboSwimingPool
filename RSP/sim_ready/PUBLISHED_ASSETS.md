@@ -4,7 +4,7 @@
 
 From the activated conda environment, run `python tools/run_rsp.py`.
 The default preset is the existing demo; presets bypass layout generation.
-Custom assembly selects one published container and the current humanoid/policy,
+Custom assembly selects one published container and a humanoid/policy profile,
 with enabled prop types each contributing 1–3 instances (unchecked means zero).
 There is no additional total-count cap. Regular or seeded random layouts use
 simple bounds in the existing water region; they avoid the static bunny and
@@ -13,17 +13,18 @@ its existing GSI initialization. No file import or additional asset root is expo
 
 The selection panel runs inside the Newton window. Start is handled after the
 UI frame finishes: the panel is detached, the scene and policy are loaded, and
-playback continues with the same Viewer, window and OpenGL context. Reset still
-resets the current scene; closing the window exits. Returning to selection and
-3D asset previews are not part of this version. Initialization failures clean up
-and report the exception in the console. There is no Tkinter or child process.
+playback continues with the same Viewer, window and OpenGL context. Asset cards
+use thumbnails generated from published display geometry in that context.
+Reset resets the current scene. Closing the window exits. Initialization
+failures clean up and report the exception in the console.
 
-`args/rsp_pbf_demo_args.txt` remains the single source for runtime configuration;
-`data/playbacks/presets.yaml` only supplies preset labels. Weights remain at their
-current path under `output`; no policy conversion or compatibility analysis is
-introduced. Source assets stay in `origin`, complete versioned assets in
-`published`, and preparation caches in `pbf_play`. Presets are read in place;
-custom scenes are saved to `<demo out_dir>/scenes/<id>/scene.yaml`. No Env or
+`data/playbacks/characters.yaml` selects the arguments for each profile.
+`args/rsp_pbf_demo_args.txt` configures the default humanoid, and
+`data/playbacks/presets.yaml` supplies preset labels. Policy weights are read from
+the paths configured under `output`. Source assets stay in `origin`, complete
+versioned assets in `published`, and preparation caches in `pbf_play`.
+Presets are read in place. Custom scenes are saved to
+`<demo out_dir>/scenes/<id>/scene.yaml`. No Env or
 argument files are copied or rewritten. Old launcher outputs are left untouched.
 The application owns the Viewer; Presentation borrows it. The original demo
 entrypoint still creates and closes its own Viewer, with unchanged configuration.
@@ -40,8 +41,8 @@ python tools/prepare_rsp_assets.py
 python mimickit/run.py --arg_file args/rsp_pbf_demo_args.txt
 ```
 
-Preparation scans `data/assets_RSP/origin/**/source.yaml`. The initial recipes
-cover the existing humanoid, two rectangular pools with the suspended bunny, and three props.
+Preparation scans `data/assets_RSP/origin/**/source.yaml`. The reference recipes
+cover the humanoid, G1, two rectangular pools with the suspended bunny, and three props.
 They reuse the existing geometry, boundary and collision pipelines and the
 `data/assets_RSP/pbf_play` cache. Original MimicKit assets remain untouched.
 
@@ -79,10 +80,12 @@ overlap props, preserving the original demonstration behavior. Models, density,
 geometry and policy compatibility are not overridden by instance configuration.
 The existing agent/checkpoint arguments and physical scalar defaults remain authoritative.
 
-Catalog browsing reads metadata only; selected assets are fully verified and
-reused within one assembly. The existing recipe fingerprint rules are unchanged
-(2F deferred). Current sources reference version 2 packages, plus version 1 of
-the new wide pool; previous published versions remain intact. Old container
+Catalog browsing reads metadata only. Scene assembly verifies each selected
+package once. New publication fingerprints include source input hashes,
+producer code under stable names, dependencies and the explicit support radius.
+The verified older fingerprints for the seven current assets are accepted for
+reuse when the corresponding new recipe is identical. Existing package
+contents and version numbers are preserved. Old container
 packages without assembly metadata must be explicitly replaced by a new version.
 
 Playback resolves published resources, imports the physical models, validates
@@ -90,7 +93,7 @@ the skeleton and local physical descriptions, then binds published boundaries
 to the new runtime body IDs. It never prepares missing assets. Run records go to
 `output/pbf_play/runs/<session>/scene_manifest.json`, outside published packages.
 
-Targeted checks:
+Choose the check that covers the changed scene:
 
 ```powershell
 python -m unittest discover -s tests -p test_rsp_publication.py
@@ -100,9 +103,9 @@ python tools/check_rsp_published_scene.py --preset pbf_multi --frames 2
 python tools/check_rsp_published_scene.py --preset pbf_wide --frames 2
 ```
 
-The second check uses the existing checkpoint, executes 11 headless frames and
-one reset, forbids preparation calls, and verifies published files are unchanged.
-Neither command tests recording.
+The playback checker uses the existing checkpoint, defaults to 11 headless
+frames, checks reset, forbids preparation calls, and verifies published files
+are unchanged.
 
 ## G1 collision-based playback
 
@@ -128,7 +131,8 @@ remain at their original locations. Playback uses the shared SMPG1 agent state,
 G1 LaFAN initialization and native 243-observation/29-action interface. It does
 not run training or the original dodgeball projectile spawner.
 
-The default PBF engine schedule remains 150 frames/s with a 30 Hz policy. G1
+The default engine runs 120 control frames and 480 rigid substeps per simulated
+second. The 30 Hz policy supplies one action every four control frames. G1
 keeps its saved position-target margins and knee limits. `pbf_g1.yaml` uses the
 original pool, water region and prop arrangement. A reset retains GSI behavior;
 it does not promise a fixed pose or standing stability.

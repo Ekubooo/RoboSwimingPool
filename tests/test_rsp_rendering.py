@@ -24,7 +24,8 @@ wp.config.kernel_cache_dir = str(ROOT / "output/newton_pbf_refactor_checks/warp_
 
 import newton
 from pyglet import app, gl
-from RSP.rendering.billboard import BillboardBatch, _gl_integer
+from RSP.rendering.billboard import BillboardBatch
+from RSP.rendering.interop import gl_integer
 from RSP.rendering.newton_gl import NewtonBillboardViewer
 
 
@@ -77,14 +78,14 @@ class BillboardChecks(unittest.TestCase):
         originals = [a.numpy().copy() for a in (self.state.particle_q, self.state.particle_qd, model.particle_radius)]
         self.frame()
         batch = self.viewer.objects["/model/particles"].batch
-        buffer_id = batch._instances.value
-        registration_id = id(batch._registered)
+        buffer_id = batch.instances.buffer.name.value
+        registration_id = id(batch.instances.buffer.registration)
         with patch.object(wp.array, "numpy", side_effect=AssertionError("Unexpected GPU readback")):
             batch.update(self.state.particle_q, self.state.particle_qd, model.particle_radius)
-        self.assertEqual(buffer_id, batch._instances.value)
-        self.assertEqual(registration_id, id(batch._registered))
+        self.assertEqual(buffer_id, batch.instances.buffer.name.value)
+        self.assertEqual(registration_id, id(batch.instances.buffer.registration))
         packed = np.empty((6, 8), dtype=np.float32)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, batch._instances)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, batch.instances.buffer.name)
         gl.glGetBufferSubData(gl.GL_ARRAY_BUFFER, 0, packed.nbytes, packed.ctypes.data)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         np.testing.assert_allclose(packed[:, :3], originals[0])
@@ -184,9 +185,9 @@ class BillboardChecks(unittest.TestCase):
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
         integer_states = (gl.GL_CURRENT_PROGRAM, gl.GL_VERTEX_ARRAY_BINDING, gl.GL_DEPTH_WRITEMASK,
                           gl.GL_DEPTH_FUNC, gl.GL_DRAW_FRAMEBUFFER_BINDING)
-        before = [_gl_integer(state) for state in integer_states]
+        before = [gl_integer(state) for state in integer_states]
         batch.draw(self.viewer.camera.get_view_matrix(), self.viewer.camera.get_projection_matrix())
-        self.assertEqual(before, [_gl_integer(state) for state in integer_states])
+        self.assertEqual(before, [gl_integer(state) for state in integer_states])
         self.assertTrue(gl.glIsEnabled(gl.GL_BLEND))
         self.assertTrue(gl.glIsEnabled(gl.GL_CULL_FACE))
         self.assertFalse(gl.glIsEnabled(gl.GL_DEPTH_TEST))
@@ -231,7 +232,7 @@ class RigidChecks(unittest.TestCase):
     def packed(self):
         batch = self.viewer._rigid_batches[id(self.viewer.layer)][0]
         values = np.empty((batch.count, 24), dtype=np.float32)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, batch.buffer)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, batch.buffer.name)
         gl.glGetBufferSubData(gl.GL_ARRAY_BUFFER, 0, values.nbytes, values.ctypes.data)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         return batch, values
@@ -245,7 +246,7 @@ class RigidChecks(unittest.TestCase):
         capsule = values[ids == 0]
         np.testing.assert_allclose(np.sort(capsule[:, 14]), [2.5, 3., 3.5])
         np.testing.assert_allclose(capsule[:, 12:14], [[1., 2.]] * 3)
-        buffer_id, registration = batch.buffer.value, batch.registered
+        buffer_id, registration = batch.buffer.name.value, batch.buffer.registration
         self.model.shape_color.assign(np.array([[.1, .7, .3], [.8, .4, .2]], dtype=np.float32))
         self.state.body_q.assign(np.array([[4., 2., 3., 0., 0., 0., 1.]], dtype=np.float32))
         with patch.object(wp.array, "numpy", side_effect=AssertionError("Unexpected CPU readback")), \
@@ -253,8 +254,8 @@ class RigidChecks(unittest.TestCase):
                 patch.object(sys.modules["pyglet.gl"], "glBufferSubData", side_effect=AssertionError("Host upload")):
             self.viewer.log_state(self.state)
         batch, moved = self.packed()
-        self.assertEqual(batch.buffer.value, buffer_id)
-        self.assertIs(batch.registered, registration)
+        self.assertEqual(batch.buffer.name.value, buffer_id)
+        self.assertIs(batch.buffer.registration, registration)
         np.testing.assert_allclose(moved[ids == 0, 12], [4.] * 3)
         np.testing.assert_allclose(moved[ids == 0, 16:19], [[.1, .7, .3]] * 3)
         np.testing.assert_allclose(moved[ids == 1, 12:15], [[0., 0., 1.]])
@@ -268,7 +269,7 @@ class RigidChecks(unittest.TestCase):
         self.model.shape_opacity.assign(np.array([.5, 1.], dtype=np.float32))
         self.viewer.invalidate_rigid_appearance()
         self.assertTrue(old.closed)
-        self.assertEqual(old.buffer.value, 0)
+        self.assertEqual(old.buffer.name.value, 0)
         self.viewer.log_state(self.state)
         batch, _ = self.packed()
         self.assertTrue(any(drawable.has_transparency() for drawable in batch.drawables))
@@ -286,8 +287,8 @@ class RigidChecks(unittest.TestCase):
 
         def close_renderer():
             self.assertTrue(batch.closed)
-            self.assertIsNone(batch.registered)
-            self.assertEqual(batch.buffer.value, 0)
+            self.assertIsNone(batch.buffer.registration)
+            self.assertEqual(batch.buffer.name.value, 0)
             normal_close()
 
         with patch.object(self.viewer.renderer, "close", side_effect=close_renderer):
@@ -315,8 +316,12 @@ class ViewerUIChecks(unittest.TestCase):
         viewer = NewtonBillboardViewer(width=640, height=480, headless=False, vsync=False)
         viewer.renderer.window.set_visible(False)
         try:
-            from RSP.runtime.interaction import FluidInteraction
-            viewer.gui.fluid_controls = FluidInteraction(None)
+            from RSP.app.ui.interaction import FluidInteraction
+            from RSP.app.ui.playback import PlaybackPanel
+            resets = []
+            viewer.install_gui().set_panel(PlaybackPanel(
+                viewer, fluid_controls=FluidInteraction(None), request_reset=lambda: resets.append(True)))
+            self.assertIs(viewer.install_gui(), viewer.gui)
             viewer.set_model(particle_model())
             viewer.show_particles = True
             state = viewer.model.state()
@@ -326,8 +331,6 @@ class ViewerUIChecks(unittest.TestCase):
                 viewer.log_state(state)
                 viewer.end_frame()
             from pyglet.window import key
-            resets = []
-            viewer.set_reset_callback(lambda: resets.append(True))
             viewer.renderer._on_key_press(key.SPACE, 0)
             viewer.renderer._on_key_release(key.SPACE, 0)
             self.assertTrue(viewer.is_paused())
@@ -335,10 +338,18 @@ class ViewerUIChecks(unittest.TestCase):
             viewer.renderer._on_key_press(key.ENTER, 0)
             self.assertTrue(viewer.should_step())
             self.assertFalse(viewer.should_step())
+            old_keys, current_keys = [], []
+            previous = viewer.bind_keyboard_callback(lambda *event: old_keys.append(event))
+            current = viewer.bind_keyboard_callback(lambda *event: current_keys.append(event))
+            viewer.unbind_keyboard_callback(previous)
             viewer.renderer._on_key_press(key.R, 0)
             self.assertEqual(resets, [True])
+            self.assertEqual(old_keys, [])
+            self.assertEqual(current_keys, [(key.R, 0)])
+            viewer.unbind_keyboard_callback(current)
             viewer.renderer._on_key_press(key.SPACE, 0)
             self.assertFalse(viewer.is_paused())
+            self.assertEqual(len(current_keys), 1)
         finally:
             viewer.close()
 
@@ -378,7 +389,7 @@ class ViewerUIChecks(unittest.TestCase):
             viewer.renderer.window.dispatch_event("on_close")
             viewer.renderer.window.dispatch_events()
             self.assertTrue(batch._closed)
-            self.assertIsNone(batch._registered)
+            self.assertIsNone(batch.instances.buffer.registration)
             self.assertIsNone(viewer.renderer.window.context)
         finally:
             viewer.close()

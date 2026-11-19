@@ -7,12 +7,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT/'mimickit')]
-from RSP.launcher.profiles import load_profile, load_presets, read_yaml
-from RSP.launcher.assembly import SceneChoices
-from RSP.launcher.application import scene_path
+from RSP.integrations.mimickit.profiles import load_profile, load_presets, read_yaml
+from RSP.app.ui.scene_choices import SceneChoices
+from RSP.app.application import scene_path
 from dataclasses import replace
 from RSP.sim_ready.catalog import AssetRef
-from RSP.sim_ready.pipelines.scenes.spec import load_scene, parse_scene
+from RSP.simulation.scenes.spec import load_scene, parse_scene
 
 
 class LauncherChecks(unittest.TestCase):

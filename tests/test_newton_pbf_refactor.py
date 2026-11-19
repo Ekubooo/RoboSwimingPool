@@ -22,7 +22,8 @@ import newton
 from engines import engine
 from engines import newton_pbf_engine as current
 from engines import newton_pbf_engine_before_refactor as original
-from solvers.pbf import coupling
+from RSP.integrations.mimickit import engine as adapter
+from RSP.physics.pbf import coupling
 from util import resource_util
 
 
@@ -159,8 +160,8 @@ class BackendContracts(unittest.TestCase):
     def test_base_initialization(self):
         # Exercise the real constructor without allocating a scene or a viewer.
         runtime = SimpleNamespace(timestep=1. / 30., _sim_steps=8, env_spacing=5.)
-        with patch.object(current, "SimulationRuntime", return_value=runtime), \
-                patch.object(current, "SceneBuilder"), \
+        with patch.object(adapter, "SimulationRuntime", return_value=runtime), \
+                patch.object(adapter, "SceneBuilder"), \
                 patch.object(resource_util, "construct"):
             eng = current.NewtonEngine({}, 1, "cuda:0", visualize=True)
         self.assertIsInstance(eng, engine.Engine)
@@ -168,22 +169,15 @@ class BackendContracts(unittest.TestCase):
         self.assertEqual(eng._prev_frame_time, 0.)
         eng.close()
 
-    def test_render_preserves_base_timing(self):
+    def test_render_uses_the_current_newton_state(self):
         eng = current.NewtonEngine.__new__(current.NewtonEngine)
         engine.Engine.__init__(eng, visualize=True)
         eng._runtime = SimpleNamespace(timestep=.1, get_sim_time=Mock(return_value=.5))
         eng._state = SimpleNamespace(raw_state=object())
-        eng._scene = SimpleNamespace(play_scene=SimpleNamespace(draw_pool=Mock()))
         eng._presentation = Mock(spec=current.Presentation)
-        eng._prev_frame_time = 10.
-        with patch.object(engine.time, "time", return_value=10.05), \
-                patch.object(engine.time, "sleep") as sleep:
-            eng.render()
+        eng.render()
         eng._presentation.render.assert_called_once_with(
             .5, eng._state.raw_state)
-        sleep.assert_called_once()
-        self.assertAlmostEqual(sleep.call_args.args[0], .05)
-        self.assertEqual(eng._prev_frame_time, 10.05)
 
     def test_state_and_control_modes(self):
         for with_ball in (False, True):

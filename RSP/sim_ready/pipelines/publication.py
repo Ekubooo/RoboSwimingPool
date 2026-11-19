@@ -7,9 +7,34 @@ import shutil
 import tempfile
 import yaml
 
-from ..catalog import AssetRef, contained, digest, read_asset, physical_signature
+from ..catalog import AssetRef, contained, digest, read_asset, resolve_asset, physical_signature
+from ..config import BakeOptions, check_volume_options
 from ..paths import ORIGIN_ROOT, PUBLISHED_ROOT, PBF_PLAY_ROOT
 from ..lib.storage.store import AssetStore
+from ._legacy_publications import LEGACY_RECIPE_DIGESTS
+
+
+def _producer_identity():
+    """Hash producer sources under stable role names with normalized newlines."""
+    root = Path(__file__).resolve().parents[1]
+    files = {
+        "publish": "pipelines/publication.py",
+        "reference": "reference.py",
+        "container_recipe": "pipelines/recipes/container.py",
+        "prop_recipe": "pipelines/recipes/pbf_play.py",
+        "g1_recipe": "pipelines/recipes/g1.py",
+        "params": "config.py",
+        "import_model": "adapters/newton.py",
+        "articulation": "pipelines/articulation.py",
+        "collision": "pipelines/collision.py",
+        "boundary": "pipelines/boundary.py",
+        "sdf": "lib/volume/sdf.py",
+        "volume_map": "lib/volume/pbf_volume_map.py",
+    }
+    return {
+        role: hashlib.sha256((root / path).read_text(encoding="utf-8").encode()).hexdigest()
+        for role, path in files.items()
+    }
 
 
 def scan_sources(root=ORIGIN_ROOT):
@@ -33,8 +58,10 @@ def publish_package(ref, record, populate, *, root=PUBLISHED_ROOT):
     """Stage a new version completely; existing versions are never overwritten."""
     destination = contained(root, ref.relative)
     if destination.exists():
-        previous = read_asset(destination / "asset.json")
-        if previous.record["recipe_digest"] != record["recipe_digest"]:
+        previous = resolve_asset(ref, root)
+        requested = record["recipe_digest"]
+        existing = previous.record["recipe_digest"]
+        if existing != requested and LEGACY_RECIPE_DIGESTS.get(requested) != existing:
             raise ValueError(f"Asset version changed: {ref.relative}; publish a new version")
         return previous
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -51,27 +78,21 @@ def publish_package(ref, record, populate, *, root=PUBLISHED_ROOT):
     return read_asset(destination / "asset.json")
 
 
-def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_PLAY_ROOT,
+def prepare_sources(*, support_radius, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_PLAY_ROOT,
                     device="cuda:0", only=None):
     """Prepare only the explicitly supported reference recipes, using existing algorithms."""
+    check_volume_options(support_radius, 16)
+    radius = float(support_radius)
     import newton
     from importlib.metadata import version
     from ..adapters.newton import import_physical_asset, finalize_model, describe_articulations
     from ..lib.asset_validation import ValidationReport
     from ..lib.storage.mesh_io import save_mesh_obj
     from ..lib.storage.hull_io import save_hulls
-    from ..config import BakeOptions
     from .articulation import prepare_articulated_asset
-    from .scenes import pbf_play as recipe
-    from .boundary import prepare as boundary_prepare
-    from RSP.runtime.fluid_clock import DEFAULT_SETTINGS
-    from solvers.pbf.pbf_helper import init_scene_parameters
-    from types import SimpleNamespace
+    from .recipes import pbf_play as recipe
 
     store = AssetStore(cache)
-    particles = SimpleNamespace(config=DEFAULT_SETTINGS.pbf)
-    init_scene_parameters(particles)
-    radius = particles.smoothing_length
 
     def copy_boundary(artifact, stage):
         # Preserve signed manifests and their relative references, copying only dependencies.
@@ -99,14 +120,14 @@ def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_P
             raise ValueError(f"Unknown source asset: {only}")
         sources = {only: sources[only]}
     result = []
+    code = _producer_identity()
     for ref, source in sources.items():
         inputs = {name: digest(contained(origin, name)) for name in source["inputs"]}
-        code = {str(p): digest(p) for p in (Path(recipe.__file__), Path(boundary_prepare.__file__), Path(__file__))}
         identity = dict(source=source, inputs=inputs, code=code, support_radius=radius,
                         dependencies={name: version(name) for name in ("newton", "warp-lang", "trimesh")})
         is_g1 = source["recipe"] == "mimickit_g1"
         if is_g1:
-            from . import g1_recipe
+            from .recipes import g1 as g1_recipe
             if ref.category != "articulations" or ref.name != "g1" or source["inputs"]:
                 raise ValueError("mimickit_g1 requires articulations/g1 and repository-owned inputs")
             identity["g1"] = g1_recipe.source_identity()
@@ -120,7 +141,7 @@ def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_P
                 # The existing recipe owns its original mesh location and geometry.
                 if Path(origin).resolve() != ORIGIN_ROOT.resolve() or source["inputs"] != ["bunny_flat_bottom.obj"]:
                     raise ValueError("Reference pool uses the existing origin/bunny_flat_bottom.obj")
-                from .scenes.container_recipe import prepare_container
+                from .recipes.container import prepare_container
                 size = (3., 2., 5.) if source["recipe"] == "reference_pool" else (4., 2., 5.)
                 artifact, bunny, hulls, layout = prepare_container(store, device, radius, size, report)
                 boundary = copy_boundary(artifact, stage)
@@ -148,7 +169,7 @@ def prepare_sources(*, origin=ORIGIN_ROOT, published=PUBLISHED_ROOT, cache=PBF_P
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
             builder.default_shape_cfg.mu = 1.0
             import_physical_asset(builder, model_path, fix_root=False, enable_self_collisions=True, report=report)
-            model = finalize_model(builder, device=device, report=report)
+            model = finalize_model(builder, device=device, report=report, require_dfs=True)
             binding, = describe_articulations(model)
             excluded = g1_recipe.EXCLUDED_LINKS if is_g1 else ()
             if is_g1:

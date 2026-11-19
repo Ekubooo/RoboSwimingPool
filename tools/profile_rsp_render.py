@@ -32,6 +32,10 @@ def statistics(values):
 
 
 def run(args):
+    from contextlib import ExitStack
+    playback_stack = ExitStack()
+    from RSP.app.playback import bind_playback
+    from RSP.integrations.mimickit.session import MimicKitSession
     output = ROOT / "output/rsp_render_profile" / args.label
     output.mkdir(parents=True, exist_ok=True)
     cache = ROOT / "output/newton_pbf_refactor_checks"
@@ -46,7 +50,8 @@ def run(args):
 
     wp.config.kernel_cache_dir = str(cache / "warp_cache")
     import newton
-    from engines import engine, newton_pbf_engine
+    from engines import engine
+    from RSP.integrations.mimickit import recorder as newton_pbf_engine
     from engines.newton_pbf_viewer import PBFViewer
     from envs.base_env import EnvMode
     from envs.pbf_play_env import PBFPlayEnv
@@ -54,7 +59,7 @@ def run(args):
     from learning.base_agent import AgentMode
     from util import mp_util, resource_util
     from util.util import set_rand_seed
-    from RSP.runtime import fluid_clock
+    from RSP.physics import fluid_clock
 
     if args.fluid_profile == "legacy":
         base = fluid_clock.DEFAULT_SETTINGS
@@ -98,8 +103,8 @@ def run(args):
     with (ROOT / "data/envs/pbf_play_env.yaml").open() as f:
         env_config = yaml.safe_load(f)
     checkpoint = ROOT / "output/a5000_dodgeball_2048_full_r01"
-    # Archive the small entry point so the baseline's source is unambiguous.
-    source = (ROOT / "mimickit/engines/newton_pbf_viewer.py").read_bytes()
+    # Archive the actual Viewer implementation for baseline comparisons.
+    source = (ROOT / "RSP/rendering/newton_gl.py").read_bytes()
     (output / "viewer_source.py").write_bytes(source)
     set_rand_seed(args.seed)
     mp_util.init(0, 1, "cuda:0", None)
@@ -112,6 +117,7 @@ def run(args):
         agent.load(str(checkpoint / "model.pt"))
         agent.eval()
         agent.set_mode(AgentMode.TEST)
+        playback_stack.enter_context(bind_playback(MimicKitSession(env, agent)))
         eng = env._engine
         viewer = eng.get_viewer()
         assert viewer.ui is not None and viewer.ui.is_available, "Profile must include the actual UI"
@@ -137,8 +143,8 @@ def run(args):
         }
         report["source_hashes"] = {
             str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
-            for directory in (ROOT / "RSP/rendering", ROOT / "RSP/runtime")
-            for path in directory.glob("*.py")}
+            for directory in ("app", "integrations", "physics", "rendering", "simulation")
+            for path in sorted((ROOT / "RSP" / directory).rglob("*.py"))}
         counters = {}
         normal_limit = engine.Engine.render
         normal_render = eng._presentation.render
@@ -243,7 +249,7 @@ def run(args):
                 (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"PROFILE PASS: {output / 'report.json'}", flush=True)
     finally:
-        resource_util.cleanup(env.close if env is not None else None,
+        resource_util.cleanup(playback_stack.close, env.close if env is not None else None,
                               agent.close if agent is not None else None, mp_util.shutdown)
 
 

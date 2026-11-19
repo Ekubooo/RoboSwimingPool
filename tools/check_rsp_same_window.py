@@ -22,14 +22,13 @@ def main():
     import warp as wp
     wp.config.kernel_cache_dir = str(ROOT / "output/scene_checks/warp_cache")
     import torch
-    from PIL import Image
     from util import mp_util, resource_util
-    from RSP.launcher.application import simulation, select_scene
-    from RSP.launcher.window import SelectionPanel
-    from RSP.launcher.assembly import SceneChoices
-    from RSP.launcher.profiles import load_profile, load_presets, read_yaml
+    from RSP.app.application import open_playback, select_scene
+    from RSP.app.ui.selection import SelectionPanel
+    from RSP.app.ui.scene_choices import SceneChoices
+    from RSP.integrations.mimickit.profiles import load_profile, load_presets, read_yaml
     from RSP.rendering.newton_gl import NewtonBillboardViewer
-    from RSP.runtime.playback import PlaybackRunner
+    from RSP.app.playback import bind_playback
 
     profile = load_profile()
     panel = SelectionPanel(SceneChoices(read_yaml(profile.scene_preset)), load_presets(), profile.scene_preset)
@@ -55,29 +54,23 @@ def main():
                 if frames == 3:
                     panel.request_start()
             panel.draw = select
-            end_frame = viewer.end_frame
-            def finish_frame():
-                end_frame()
-                if frames == 2:
-                    # Capture while the selection callback and its font are still attached.
-                    Image.fromarray(viewer.get_frame(render_ui=True).numpy()).save(
-                        output / ("custom.png" if args.custom else "preset.png"))
-            with patch.object(viewer, "end_frame", side_effect=finish_frame):
-                selection = select_scene(viewer, panel)
+            request = select_scene(viewer, panel)
             assert frames == 3 and viewer.gui.selection_callback is None
             if args.ui_only:
                 print("PASS: real ImGui draw, font, selection and callback removal")
                 return
-            with simulation(profile, selection, viewer) as (env, agent):
+            assert request.profile_id == profile.profile_id
+            with open_playback(profile, request.scene, viewer) as session, bind_playback(session) as runner:
+                env, agent = session.env, session.agent
                 assert env._engine.get_viewer() is viewer
                 assert viewer.renderer.window is window and window.context is context
-                runner = PlaybackRunner(env, agent)
                 runner.reset()
+                assert runner.policy_interval == round(read_yaml(profile.engine_config)["control_freq"] / session.policy_hz)
                 count = 2 if args.custom else 11
                 with patch.object(runner.policy, "act", wraps=runner.policy.act) as act:
                     for _ in range(count):
                         assert runner.tick()
-                    assert act.call_count == (count+4)//5
+                    assert act.call_count == (count + runner.policy_interval - 1) // runner.policy_interval
                 assert torch.isfinite(runner.obs).all()
                 runner.reset()
                 assert torch.all(env._time_buf == 0)

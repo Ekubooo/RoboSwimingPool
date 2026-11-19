@@ -36,10 +36,10 @@ def main():
     import warp as wp
     import newton
     from util import resource_util, mp_util, util
-    from RSP.launcher.application import simulation
-    from RSP.launcher.profiles import load_profile
+    from RSP.app.application import open_playback
+    from RSP.integrations.mimickit.profiles import load_profile
     from RSP.rendering.newton_gl import NewtonBillboardViewer
-    from RSP.runtime.playback import PlaybackRunner
+    from RSP.app.playback import bind_playback
     from profile_rsp_render import statistics
 
     profile = load_profile(args.profile)
@@ -53,8 +53,8 @@ def main():
         with wp.ScopedDevice(profile.device), torch.no_grad():
             viewer = resource_util.construct(NewtonBillboardViewer, width=args.width, height=args.height, vsync=False)
             viewer.renderer.window.set_visible(False)
-            with simulation(profile, profile.scene_preset, viewer) as (env, agent):
-                runner = PlaybackRunner(env, agent)
+            with open_playback(profile, profile.scene_preset, viewer) as session, bind_playback(session) as runner:
+                env, agent = session.env, session.agent
                 engine = env._engine
                 model = engine.get_sim_model()
                 pipeline = viewer.fluid_pipeline

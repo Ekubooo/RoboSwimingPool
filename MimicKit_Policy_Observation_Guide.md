@@ -4,7 +4,7 @@
 
 本文要回答三个问题：机器人把什么交给策略？原训练框架为什么有那么多处理？如果只加载一个已经训练好的策略，应该保留什么、精简什么？
 
-文中“原设计”指本仓库沿用的 MimicKit 通用环境与 Agent 设计；“当前精简实现”指 `RSP/runtime` 和 `PBFPlayEnv` 的演示路径；“独立播放器”是进一步拆分的设计方向，**目前尚未完全实现**。不将本项目的特定配置泛化为所有 MimicKit 任务。
+文中“原设计”指本仓库沿用的 MimicKit 通用环境与 Agent 设计。“当前精简实现”指 `RSP/app` 和 `RSP/integrations/mimickit` 的演示路径。“独立播放器”是进一步拆分的设计方向，目前仍使用 MimicKit 加载现有策略。
 
 ## 1. 先理解机器人运行的闭环
 
@@ -186,11 +186,11 @@ Actor 输出的归一化动作
 
 | 文件 | 职责 |
 |---|---|
-| [playback.py](RSP/runtime/playback.py) | 播放循环、暂停/单步、策略周期与动作保持 |
-| [inference.py](RSP/runtime/inference.py) | 借用已加载的 Actor 和归一化器执行确定性推理 |
-| [observations.py](RSP/runtime/observations.py) | 缓存状态与拓扑，捕获和重放观测图 |
-| [observation_math.py](RSP/runtime/observation_math.py) | 保留原定义的观测数学运算 |
-| [pbf_play_env.py](mimickit/envs/pbf_play_env.py) | 接入场景、初始化、动作接口及精简后处理 |
+| [playback.py](RSP/app/playback.py) | 播放循环、暂停/单步、策略周期与动作保持 |
+| [inference.py](RSP/integrations/mimickit/inference.py) | 借用已加载的 Actor 和归一化器执行确定性推理 |
+| [observations.py](RSP/integrations/mimickit/observations.py) | 缓存状态与拓扑，捕获和重放观测图 |
+| [observation_math.py](RSP/integrations/mimickit/observation_math.py) | 保留原定义的观测数学运算 |
+| [environment.py](RSP/integrations/mimickit/environment.py) | 接入场景、初始化、动作接口及精简后处理 |
 
 **当前独立的是部分代码模块与热路径，不是整个加载器。** `PolicyInference` 接收原 Agent，`ObservationBuilder` 接收原 Env；网络加载、骨架解析和 GSI 初始化仍由 MimicKit 提供。启动阶段仍可能创建通用框架的数据与对象。
 
@@ -198,15 +198,15 @@ Actor 输出的归一化动作
 
 | 时钟 | 当前配置 | 作用 |
 |---|---|---|
-| 仿真帧 | 每帧推进 1/150 秒 | 推进环境时间、更新观测、显示 |
-| 刚体子步 | 每帧 4 步，每步 1/600 秒 | 更细地执行动力学与控制 |
-| 策略决策 | 每 5 帧一次，即模拟时间中的 30 Hz | 更新一次关节目标 |
+| 仿真帧 | 每帧推进 1/120 秒 | 推进环境时间、更新观测、显示 |
+| 刚体子步 | 每帧 4 步，每步 1/480 秒 | 更细地执行动力学与控制 |
+| 策略决策 | 每 4 帧一次，即模拟时间中的 30 Hz | 更新一次关节目标 |
 
 当前观测每个仿真帧更新；策略读取最近一次完成的观测做决策，其余四帧保持同一份 GPU 动作。保持动作不等于停止控制器，PD 仍在各刚体子步工作。
 
 显示 FPS 表示现实时间中一秒画多少帧；上述 30 Hz 表示模拟时间中的决策频率。现在没有墙钟补步，FPS 变化会改变实际播放快慢。
 
-GSI 从动作序列重建速度时，也要使用动作数据原本的采样间隔。原序列是 30 Hz，就不能因为当前仿真帧变成 150 Hz 而把速度计算里的间隔改小五倍。
+GSI 从动作序列重建速度时使用动作数据原本的采样间隔。当前策略动作按 30 Hz 采样，速度重建使用 1/30 秒。
 
 ## 8. 如果要做完全独立的最小播放器
 
@@ -292,7 +292,7 @@ with inference_mode():
 | 归一化与加载的约定 | [base_agent.py](mimickit/learning/base_agent.py)、[normalizer.py](mimickit/learning/normalizer.py) |
 | 历史特征与 GSI 的用途 | [amp_env.py](mimickit/envs/amp_env.py)、[smp_env.py](mimickit/envs/smp_env.py)、[smp_agent.py](mimickit/learning/smp_agent.py) |
 | 当前实际采用哪些观测开关 | [演示环境配置](data/envs/pbf_play_env.yaml) |
-| 当前精简实现和时间设置 | [RSP/runtime 说明](RSP/runtime/README.md) |
+| 当前精简实现和时间设置 | [RSP 仿真说明](RSP/simulation/README.md) |
 | 已有一致性与性能验证 | [阶段 5](docs/rendering_stage5_results.md)、[阶段 6](docs/rendering_stage6_results.md)、[阶段 7](docs/rendering_stage7_results.md) |
 
 本文基于 2026-11-15 的仓库代码与已有验证结果编写，没有为文档重新运行仿真或录像测试。

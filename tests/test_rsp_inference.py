@@ -22,8 +22,8 @@ from learning.ppo_agent import PPOAgent
 from learning.smp_agent import SMPAgent
 from learning.normalizer import Normalizer
 from learning.distribution_gaussian_diag import DistributionGaussianDiagBuilder, StdType
-from RSP.runtime.inference import PolicyInference
-from RSP.runtime.observations import CharacterStateViews, ObservationBuilder
+from RSP.integrations.mimickit.inference import PolicyInference
+from RSP.integrations.mimickit.observations import CharacterStateViews, ObservationBuilder
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA observation path")

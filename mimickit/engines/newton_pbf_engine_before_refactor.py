@@ -14,7 +14,7 @@ import util.resource_util as resource_util
 from engines.newton_pbf_runtime import PBFScene
 from RSP.sim_ready.paths import PBF_PLAY_ROOT
 from engines.newton_pbf_viewer import PBFViewer, PBFVideoRecorder
-from solvers.pbf.coupling import SolverPBFMuJoCo
+from RSP.physics.pbf.coupling import SolverPBFMuJoCo
 from util.logger import Logger
 
 def str_to_key_code(key_str):
@@ -1138,8 +1138,8 @@ class SimulationRuntime:
             return
 
         fluid = self._solver.fluid
-        for module in ("solvers.pbf.pbf_helper", "solvers.pbf.PBF",
-                       "solvers.pbf.boundary_model", "solvers.pbf.coupling"):
+        for module in ("RSP.physics.pbf.pbf_helper", "RSP.physics.pbf.PBF",
+                       "RSP.physics.pbf.boundary_model", "RSP.physics.pbf.coupling"):
             wp.load_module(module=module, device=self._sim_model.device)
         fluid.grid.reserve(self._sim_model.particle_count)
         prediction = (fluid.pre_Pos, fluid.temp_pPos)

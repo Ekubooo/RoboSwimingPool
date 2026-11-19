@@ -92,9 +92,9 @@ class AssetPipeline(unittest.TestCase):
     def test_read_only_loader_does_not_import_build_algorithms(self):
         code = """
 import sys
-from RSP.sim_ready.pipelines.boundary.load import load_boundary_asset
+from RSP.sim_ready.boundary.load import load_boundary_asset
 for name in ('RSP.sim_ready.lib.volume.sdf', 'RSP.sim_ready.lib.volume.pbf_volume_map',
-             'RSP.sim_ready.lib.mesh.convex', 'RSP.sim_ready.pipelines.boundary.prepare', 'coacd'):
+             'RSP.sim_ready.lib.mesh.convex', 'RSP.sim_ready.pipelines.boundary', 'coacd'):
     assert name not in sys.modules, name
 """
         result = subprocess.run([sys.executable, "-I", "-c", code], cwd=ROOT.parent,

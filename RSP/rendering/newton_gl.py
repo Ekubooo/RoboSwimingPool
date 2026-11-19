@@ -6,7 +6,28 @@ Version-specific access stays in the rendering adapters, without changing
 Presentation's frame order or the installed Newton package.
 """
 
+from contextlib import contextmanager
+import logging
+import sys
+
 import newton
+
+
+@contextmanager
+def open_viewer(**options):
+    """Own a viewer and close it even if application startup fails."""
+    viewer = NewtonBillboardViewer.__new__(NewtonBillboardViewer)
+    try:
+        viewer.__init__(**options)
+        yield viewer
+    finally:
+        active_error = sys.exc_info()[1]
+        try:
+            viewer.close()
+        except Exception:
+            if active_error is None:
+                raise
+            logging.exception("Viewer cleanup failed")
 
 
 class _BillboardObject:
@@ -38,15 +59,11 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
     def __init__(self, *args, speed_color_mid=2.0, speed_color_max=6.5, **kwargs):
         self._rigid_batches = {}
         self._billboard_closed = False
+        self._keyboard_binding = None
         self._billboard_settings = {"speed_color_mid": speed_color_mid, "speed_color_max": speed_color_max}
         super().__init__(*args, **kwargs)
         from .fluid.pipeline import FluidPipeline
         self.fluid_pipeline = FluidPipeline(self)
-        if self.gui is not None:
-            from .playback_ui import PlaybackGui
-            self.gui = PlaybackGui(self.gui)
-            self.renderer.register_key_release(self.gui.handle_key_release)
-            self.renderer.window.push_handlers(on_deactivate=self.gui.clear_pressed_keys)
         # RSP's application already owns pacing. Newton's requested 1 ms wait
         # can become a Windows timer tick, masking faster GPU uploads. Adapt
         # this renderer instance only; retain all event and camera processing.
@@ -65,11 +82,40 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         self._paused = True
         self._step_requested = True
 
-    def bind_playback_controls(self, fluid_controls, reset_callback):
-        """Connect CPU controls without requiring an available GUI."""
+    def install_gui(self):
+        """Expose app panel hooks when the caller requests them."""
+        from .newton_gui import NewtonGuiHost
+
+        if self.gui is not None and not isinstance(self.gui, NewtonGuiHost):
+            self.gui = NewtonGuiHost(self.gui, self.close)
+            self.renderer.window.push_handlers(on_deactivate=self.gui.clear_pressed_keys)
+        return self.gui
+
+    def on_key_press(self, symbol, modifiers):
         if self.gui is not None:
-            self.gui.fluid_controls = fluid_controls
-        self.set_reset_callback(reset_callback)
+            self.gui.handle_key_press(symbol, close_fn=self.close)
+        binding = self._keyboard_binding
+        if binding is not None:
+            _, callback = binding
+            callback(symbol, modifiers)
+
+    def bind_keyboard_callback(self, callback):
+        """Route Newton's existing key handler to the current session."""
+        token = object()
+        self._keyboard_binding = (token, callback)
+        return token
+
+    def unbind_keyboard_callback(self, token):
+        """Release the callback only if the caller still owns the binding."""
+        binding = self._keyboard_binding
+        if binding is not None and binding[0] is token:
+            self._keyboard_binding = None
+
+    def on_key_release(self, symbol, modifiers):
+        from .newton_gui import NewtonGuiHost
+
+        if isinstance(self.gui, NewtonGuiHost):
+            self.gui.handle_key_release(symbol)
 
     def _poll_events(self):
         import ctypes
@@ -102,6 +148,7 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
     def _build_packed_vbo_arrays(self):
         """Replace Newton's pinned-host upload route with one shared GPU buffer."""
         import numpy as np
+        from newton._src.viewer.gl.opengl import RendererGL
         from .rigid import RigidBatch
 
         self.renderer._make_current()
@@ -142,6 +189,7 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         try:
             for name, shapes, mesh, offset, count in groups:
                 self.objects[name] = batch.add_drawable(self.objects[mesh], offset, count,
+                    fallback_texture=RendererGL.get_fallback_texture,
                     transparent=shapes.transparent, draw_edge=shapes.geo_type != newton.GeoType.PLANE)
             self._rigid_batches[id(self.layer)] = (batch, [(name, shapes) for name, shapes, *_ in groups])
         except BaseException:
@@ -238,14 +286,22 @@ pass classification is refreshed only on this explicit edit notification.
         if getattr(self, "_billboard_closed", False):
             return
         self._billboard_closed = True
+        self._keyboard_binding = None
         renderer = getattr(self, "renderer", None)
         window = getattr(renderer, "window", None)
         if window is not None and window.context is not None:
             renderer._make_current()
-            self.fluid_pipeline.close()
-            for batch, _groups in self._rigid_batches.values():
-                batch.close()
-            self._rigid_batches.clear()
-            # ViewerGL destroys geometry (and our CUDA registration) first,
-            # then closes its window. No parallel renderer/window is created.
-            super().close()
+            try:
+                pipeline = getattr(self, "fluid_pipeline", None)
+                if pipeline is not None:
+                    pipeline.close()
+                for batch, _groups in self._rigid_batches.values():
+                    batch.close()
+                self._rigid_batches.clear()
+            finally:
+                # ViewerGL destroys remaining geometry before closing the window.
+                try:
+                    super().close()
+                finally:
+                    if window.context is not None:
+                        renderer.close()

@@ -8,9 +8,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT/'mimickit')]
 from RSP.sim_ready.catalog import scan_published, AssetRef
-from RSP.launcher.preview_assets import load_geometry, project_geometry
-from RSP.rendering.asset_preview import AssetPreviews
-from RSP.rendering.playback_ui import PlaybackGui
+from RSP.rendering.preview.geometry import load_geometry, project_geometry
+from RSP.rendering.preview.textures import AssetPreviews
+from RSP.rendering.newton_gui import NewtonGuiHost
 
 
 class PreviewChecks(unittest.TestCase):
@@ -43,7 +43,7 @@ class PreviewChecks(unittest.TestCase):
 
     def test_escape_requests_cancel_without_destroying_context(self):
         from pyglet.window import key
-        gui, cancel, close = PlaybackGui(Mock()), Mock(), Mock()
+        gui, cancel, close = NewtonGuiHost(Mock(), Mock()), Mock(), Mock()
         gui.set_selection_callback(Mock(), cancel_callback=cancel)
         gui.handle_key_press(key.ESCAPE, close_fn=close)
         cancel.assert_called_once()
@@ -52,7 +52,7 @@ class PreviewChecks(unittest.TestCase):
         self.assertIsNone(gui.selection_cancel)
 
     def test_system_close_is_deferred_and_handlers_removed(self):
-        from RSP.launcher.application import select_scene
+        from RSP.app.application import select_scene
         viewer = Mock()
         viewer.is_running.return_value = True
         panel = Mock(result=None, cancelled=False)
@@ -67,7 +67,7 @@ class PreviewChecks(unittest.TestCase):
         viewer.renderer.window.remove_handlers.assert_called_once_with(**handlers)
 
     def test_attach_failure_still_detaches(self):
-        from RSP.launcher.application import select_scene
+        from RSP.app.application import select_scene
         viewer, panel = Mock(), Mock()
         panel.attach.side_effect = RuntimeError('font/setup failure')
         with self.assertRaisesRegex(RuntimeError, 'font/setup'):
@@ -79,17 +79,18 @@ class PreviewChecks(unittest.TestCase):
         import ctypes
         from pyglet import gl
         from RSP.rendering.newton_gl import NewtonBillboardViewer
-        from RSP.launcher.window import SelectionPanel
-        from RSP.launcher.assembly import SceneChoices
-        from RSP.launcher.profiles import load_profile, load_presets, read_yaml
+        from RSP.app.ui.selection import SelectionPanel
+        from RSP.app.ui.scene_choices import SceneChoices
+        from RSP.integrations.mimickit.profiles import load_profile, load_presets, read_yaml
         viewer = NewtonBillboardViewer(width=1000, height=800, vsync=False)
         viewer.renderer.window.set_visible(False)
         profile = load_profile()
         panel = SelectionPanel(SceneChoices(read_yaml(profile.scene_preset)), load_presets(), profile.scene_preset)
         textures = []
+        gui = viewer.install_gui()
         try:
             panel.attach(viewer)
-            viewer.gui.set_selection_callback(panel.draw, cancel_callback=panel.cancel)
+            gui.set_selection_callback(panel.draw, cancel_callback=panel.cancel)
             for mode in ('preset', 'custom'):
                 panel.mode = mode
                 for _ in range(16):
@@ -120,7 +121,7 @@ class PreviewChecks(unittest.TestCase):
             self.assertEqual(len(deleted), 1)
             self.assertFalse(gl.glIsTexture(deleted[0]))
         finally:
-            viewer.gui.set_selection_callback(None)
+            gui.set_selection_callback(None)
             panel.detach()
             for texture in textures:
                 self.assertFalse(gl.glIsTexture(texture))

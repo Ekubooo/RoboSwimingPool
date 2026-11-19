@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT / "mimickit"))
 from RSP.sim_ready.lib.asset_validation import (AssetValidationError, BodyDescription,
     PhysicalAsset, ShapeDescription, SkeletonDescription, ValidationReport, check_source,
     diagnostic_scope, validate_physical_asset, validate_coverage, validate_skeleton)
-from RSP.sim_ready.adapters.newton import finalize_model, describe_articulations, validate_model_for_mimickit
+from RSP.sim_ready.adapters.newton import finalize_model, describe_articulations
+from RSP.integrations.mimickit.validation import validate_model_for_mimickit
 
 
 def import_model(relative):
@@ -189,7 +190,7 @@ class AssetValidation(unittest.TestCase):
         from engines.newton_pbf_engine import SceneBuilder
         from engines.newton_pbf_runtime import PBFScene
         with tempfile.TemporaryDirectory(dir=OUTPUT / "tmp") as directory:
-            from RSP.sim_ready.pipelines.scenes.spec import load_scene
+            from RSP.simulation.scenes.spec import load_scene
             from types import SimpleNamespace
             spec = load_scene()
             published = Mock(record={"model": "model.xml"})

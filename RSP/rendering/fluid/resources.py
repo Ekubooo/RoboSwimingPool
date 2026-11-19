@@ -1,45 +1,33 @@
-"""Private resources for optional modes; the legacy batch stays unchanged."""
+"""Resources for the optional fluid passes."""
 import ctypes
 import numpy as np
-import warp as wp
 from pyglet import gl
 from pyglet.graphics.shader import Shader, ShaderProgram
-from ..billboard import BillboardBatch, _pack_instances, LOW_SPEED_COLOR, MID_SPEED_COLOR, HIGH_SPEED_COLOR
+from ..particles import ParticleInstances
 
 
-@wp.kernel
-def opacity(velocity: wp.array(dtype=wp.vec3), packed: wp.array(dtype=wp.vec4),
-            low: float, high: float, a: float, b: float):
-    i = wp.tid()
-    t = wp.clamp((wp.length(velocity[i])-low)/(high-low), 0., 1.)
-    c = packed[2*i+1]
-    packed[2*i+1] = wp.vec4(c[0], c[1], c[2], a+(b-a)*t*t*(3.-2.*t))
+class ParticleBuffer:
+    def __init__(self, device, **settings):
+        self.instances = ParticleInstances(device, **settings)
 
+    @property
+    def count(self):
+        return self.instances.count
 
-class ParticleBuffer(BillboardBatch):
+    def reserve(self, count):
+        self.instances.reserve(count)
+
     def update(self, positions, velocities, radii, config, *, transparent=False):
         alpha_low = config.transparent_alpha_low if transparent else config.alpha_low
         alpha_high = config.transparent_alpha_high if transparent else config.alpha_high
-        count = len(positions)
-        if count != self._capacity:
-            self._resize(count)
-        self.count = 0
-        if not count:
-            return
-        data = self._registered.map(dtype=wp.vec4, shape=(2*count,))
-        try:
-            wp.launch(_pack_instances, count, inputs=[positions, velocities, radii,
-                self.speed_color_mid, self.speed_color_max, wp.vec3(*LOW_SPEED_COLOR),
-                wp.vec3(*MID_SPEED_COLOR), wp.vec3(*HIGH_SPEED_COLOR)], outputs=[data], device=self.device)
-            wp.launch(opacity, count, inputs=[velocities, data, config.speed_low, config.speed_high,
-                      alpha_low, alpha_high], device=self.device)
-        finally:
-            self._registered.unmap()
-        self.count = count
+        self.instances.upload(positions, velocities, radii,
+                              opacity_settings=(config.speed_low, config.speed_high, alpha_low, alpha_high))
 
     def draw_instances(self):
-        gl.glBindVertexArray(self._vao)
-        gl.glDrawElementsInstanced(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, None, self.count)
+        self.instances.draw()
+
+    def close(self):
+        self.instances.close()
 
 
 def program(vertex, fragment):

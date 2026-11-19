@@ -5,16 +5,19 @@ import unittest
 from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import Mock, patch
+import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT/'mimickit')]
-from RSP.launcher.profiles import load_profile, load_presets, read_yaml, load_characters, LaunchRequest
-from RSP.launcher.assembly import SceneChoices
-from RSP.launcher.window import SelectionPanel
-from RSP.launcher.application import select_scene
-from RSP.launcher import application
-from RSP.rendering.playback_ui import PlaybackGui
-from engines.newton_pbf_engine import Presentation
+from RSP.integrations.mimickit.profiles import load_profile, load_presets, read_yaml, load_characters, LaunchRequest
+from RSP.app.ui.scene_choices import SceneChoices
+from RSP.app.ui.selection import SelectionPanel
+from RSP.app.application import select_scene
+from RSP.app import application
+from RSP.rendering.newton_gl import NewtonBillboardViewer
+from RSP.rendering.newton_gui import NewtonGuiHost
+from RSP.rendering.presentation import Presentation
+from RSP.integrations.mimickit.recorder import EnginePresentation
 
 
 class SelectionChecks(unittest.TestCase):
@@ -61,13 +64,13 @@ class SelectionChecks(unittest.TestCase):
             result = select_scene(viewer, panel)
             self.assertEqual(result, 'selected' if start else None)
             viewer.end_frame.assert_called_once()
-            viewer.gui.set_selection_callback.assert_called_with(None)
+            viewer.install_gui.return_value.set_selection_callback.assert_called_with(None)
             panel.detach.assert_called_once()
 
     def test_selection_has_no_playback_keys(self):
         from pyglet.window import key
         base = Mock()
-        gui = PlaybackGui(base)
+        gui = NewtonGuiHost(base, Mock())
         gui.set_selection_callback(Mock())
         for symbol in (key.SPACE, key.ENTER, key.R):
             gui.handle_key_press(symbol)
@@ -77,19 +80,52 @@ class SelectionChecks(unittest.TestCase):
 
     def test_borrowed_and_owned_viewer_close(self):
         viewer = Mock()
-        with patch('engines.newton_pbf_engine.resource_util.construct', return_value=viewer) as factory, \
-             patch('engines.newton_pbf_engine.resource_util.close_viewer') as close:
-            presentation = Presentation(1, 1., True, False, viewer=viewer)
+        with patch('RSP.integrations.mimickit.recorder.resource_util.construct', return_value=viewer) as factory:
+            presentation = EnginePresentation(1, 1., True, False, viewer=viewer)
             factory.assert_not_called()
             self.assertIs(presentation.get_viewer(), viewer)
             presentation.close()
             presentation.close()
-            close.assert_not_called()
-            owned = Presentation(1, 1., True, False)
+            viewer.close.assert_not_called()
+            owned = EnginePresentation(1, 1., True, False)
             factory.assert_called_once()
             owned.close()
             owned.close()
-            close.assert_called_once_with(viewer)
+            viewer.close.assert_called_once_with()
+
+    def test_borrowed_viewer_routes_keys_only_to_the_current_presentation(self):
+        viewer = NewtonBillboardViewer.__new__(NewtonBillboardViewer)
+        viewer._keyboard_binding = None
+        viewer.renderer = Mock()
+        viewer.gui = Mock()
+        old_key, new_key = Mock(), Mock()
+
+        with patch("RSP.rendering.presentation.str_to_key_code", return_value=42), \
+             patch.object(viewer, "close") as close:
+            old = Presentation(1, 1., True, viewer=viewer)
+            old.register_keyboard_callback("r", old_key)
+            viewer.on_key_press(42, 0)
+            old_key.assert_called_once_with()
+
+            current = Presentation(1, 1., True, viewer=viewer)
+            current.register_keyboard_callback("r", new_key)
+            old_ref = weakref.ref(old)
+            old.close()
+            del old
+            self.assertIsNone(old_ref())
+            viewer.on_key_press(42, 0)
+            old_key.assert_called_once_with()
+            new_key.assert_called_once_with()
+
+            current_ref = weakref.ref(current)
+            current.close()
+            del current
+            self.assertIsNone(current_ref())
+            viewer.on_key_press(42, 0)
+            new_key.assert_called_once_with()
+            self.assertEqual(viewer.gui.handle_key_press.call_count, 3)
+            viewer.renderer.register_key_press.assert_not_called()
+            close.assert_not_called()
 
     def test_application_closes_on_cancel_or_load_failure(self):
         profile = replace(load_profile(), device='cpu')
@@ -102,19 +138,24 @@ class SelectionChecks(unittest.TestCase):
             def fail(*args):
                 raise ValueError('load failed')
                 yield
+            @contextmanager
+            def create(**options):
+                try:
+                    yield viewer
+                finally:
+                    viewer.close()
             with patch.object(application, 'load_characters', return_value=characters), \
                  patch.object(application, 'select_scene', return_value=selection), \
-                 patch.object(application, 'simulation', fail), \
-                 patch('util.resource_util.construct', return_value=viewer) as create, \
-                 patch('util.resource_util.close_viewer') as close, \
+                 patch.object(application, 'open_playback', fail), \
+                 patch('RSP.rendering.newton_gl.open_viewer', side_effect=create) as open_window, \
                  patch('util.mp_util.init'), patch('util.mp_util.shutdown') as shutdown:
                 if selection is None:
                     application.run()
                 else:
                     with self.assertRaisesRegex(ValueError, 'load failed'):
                         application.run()
-                create.assert_called_once()
-                close.assert_called_once_with(viewer)
+                open_window.assert_called_once()
+                viewer.close.assert_called_once_with()
                 shutdown.assert_called_once()
 
 

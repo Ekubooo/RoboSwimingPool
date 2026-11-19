@@ -2,6 +2,7 @@
 from pathlib import Path
 import argparse
 import sys
+import tempfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,13 +10,17 @@ sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 
 
 def main():
+    output = ROOT / "output/scene_checks/tmp"
+    output.mkdir(parents=True, exist_ok=True)
+    tempfile.tempdir = str(output)
     import torch
     import warp as wp
+    wp.config.kernel_cache_dir = str(ROOT / "output/scene_checks/warp_cache")
     from util import mp_util
-    from RSP.launcher.profiles import load_profile, read_yaml
-    from RSP.launcher.application import simulation
-    from RSP.launcher.assembly import SceneChoices
-    from RSP.runtime.playback import PlaybackRunner
+    from RSP.integrations.mimickit.profiles import load_profile, read_yaml
+    from RSP.app.application import open_playback
+    from RSP.app.ui.scene_choices import SceneChoices
+    from RSP.app.playback import bind_playback
     from RSP.sim_ready.catalog import AssetRef, resolve_asset, digest
 
     parser = argparse.ArgumentParser()
@@ -37,8 +42,8 @@ def main():
         with wp.ScopedDevice(profile.device), torch.no_grad(), \
                 patch('RSP.sim_ready.pipelines.articulation.prepare_articulated_asset', side_effect=AssertionError('Runtime baking')), \
                 patch('RSP.sim_ready.pipelines.publication.prepare_sources', side_effect=AssertionError('Runtime publication')):
-            with simulation(profile, selection, None, visualize=False) as (env, agent):
-                runner = PlaybackRunner(env, agent)
+            with open_playback(profile, selection, None, visualize=False) as session, bind_playback(session) as runner:
+                env, agent = session.env, session.agent
                 runner.reset()
                 torch.testing.assert_close(env._obs_buf, env._compute_obs(), rtol=1e-5, atol=1e-6)
                 action, _ = agent._decide_action(runner.obs, runner.info)
@@ -47,11 +52,12 @@ def main():
                     assert runner.obs.shape == (1, 243) and action.shape == (1, 29)
                     scene = env._engine.get_play_scene()
                     assert len(scene.body_meshes) == 21 + len(env._scene_obj_ids)
+                assert runner.policy_interval == round(read_yaml(profile.engine_config)["control_freq"] / session.policy_hz)
                 frames = 2 if args.custom else 11
                 with patch.object(runner.policy, 'act', wraps=runner.policy.act) as act:
                     for _ in range(frames):
                         assert runner.tick()
-                    assert act.call_count == (frames + 4) // 5
+                    assert act.call_count == (frames + runner.policy_interval - 1) // runner.policy_interval
                 assert torch.isfinite(runner.obs).all()
                 state = env._play_observations._state
                 assert all(torch.isfinite(getattr(state, name)).all() for name in state.__dataclass_fields__)

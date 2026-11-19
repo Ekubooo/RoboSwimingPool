@@ -9,8 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import check_newton_pbf_refactor as checks
-from RSP.runtime import fluid_clock
-from RSP.runtime.coupling import ClockedPBFMuJoCo, ClockedStepGraph
+from RSP.physics import fluid_clock
+from RSP.physics.clocked_coupling import ClockedPBFMuJoCo, ClockedStepGraph
 
 
 def main():

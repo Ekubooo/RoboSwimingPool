@@ -23,13 +23,13 @@ from RSP.sim_ready.lib.storage import fingerprints as asset_io, nvdb_io
 from RSP.sim_ready.lib.storage.store import AssetStore
 from RSP.sim_ready.lib.volume import sdf
 from RSP.sim_ready.lib.mesh import validation
-from RSP.sim_ready.pipelines.boundary import prepare as assets
-from RSP.sim_ready.pipelines.boundary.load import load_boundary_asset
-from RSP.sim_ready.pipelines.boundary.schema import check_volume_map_layout
+from RSP.sim_ready.pipelines import boundary as assets
+from RSP.sim_ready.boundary.load import load_boundary_asset
+from RSP.sim_ready.boundary.schema import check_volume_map_layout
 from RSP.sim_ready.pipelines import rigid
 from RSP.sim_ready.config import BakeOptions
 from RSP.sim_ready.lib.volume.pbf_volume_map import precompute_volume_map
-from solvers.pbf import boundary_model
+from RSP.physics.pbf import boundary_model
 
 
 class BoundaryAssets(unittest.TestCase):
@@ -193,7 +193,7 @@ class BoundaryAssets(unittest.TestCase):
                                                  [0., 2., 0., 0., 0., 0., 1.]],
                                                 dtype=wp.transform, device=system.device))
         system.bind_bodies(model, [1, 0])
-        wp.load_module(module="solvers.pbf.boundary_model", device=system.device)
+        wp.load_module(module="RSP.physics.pbf.boundary_model", device=system.device)
         with wp.ScopedCapture(device=system.device) as capture:
             system.sync_body_poses(state)
         wp.capture_launch(capture.graph)

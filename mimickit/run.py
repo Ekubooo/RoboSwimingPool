@@ -129,8 +129,8 @@ def run(rank, num_procs, device, master_port, args):
 
         elif (mode == "test"):
             if getattr(env, "continuous_playback", False):
-                from RSP.runtime.playback import play
-                play(env, agent)
+                from RSP.app.playback import play_mimickit
+                play_mimickit(env, agent)
             else:
                 test_episodes = args.parse_int("test_episodes", np.iinfo(np.int64).max)
                 test(agent=agent, test_episodes=test_episodes)

@@ -9,7 +9,7 @@ import ctypes
 import warp as wp
 from pyglet import gl
 
-from .billboard import _gl_integer
+from .interop import RegisteredBuffer, gl_integer
 
 
 @wp.kernel
@@ -54,16 +54,17 @@ def _pack_rigids(
 
 class RigidDrawable:
     """A mesh draw range in the shared buffer; follows Newton's scene protocol."""
-    def __init__(self, batch, mesh, offset, count, *, transparent=False, draw_edge=True):
+    def __init__(self, batch, mesh, offset, count, *, fallback_texture, transparent=False, draw_edge=True):
         self.mesh = mesh
         self.hidden = False
         self.cast_shadow = True
         self.draw_edge = draw_edge
+        self._fallback_texture = fallback_texture
         self.active_instances = count
         self.transparent = transparent
         self.vao = gl.GLuint()
-        previous_vao = _gl_integer(gl.GL_VERTEX_ARRAY_BINDING)
-        previous_buffer = _gl_integer(gl.GL_ARRAY_BUFFER_BINDING)
+        previous_vao = gl_integer(gl.GL_VERTEX_ARRAY_BINDING)
+        previous_buffer = gl_integer(gl.GL_ARRAY_BUFFER_BINDING)
         try:
             gl.glGenVertexArrays(1, ctypes.byref(self.vao))
             gl.glBindVertexArray(self.vao)
@@ -73,7 +74,7 @@ class RigidDrawable:
                 gl.glVertexAttribPointer(attribute, size, gl.GL_FLOAT, gl.GL_FALSE,
                                          mesh.vertex_byte_size, ctypes.c_void_p(start))
                 gl.glEnableVertexAttribArray(attribute)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, batch.buffer)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, batch.buffer.name)
             fields = [(3 + i, 4, i * 16) for i in range(4)] + [(7, 3, 64), (8, 4, 80), (9, 1, 76)]
             for attribute, size, start in fields:
                 gl.glVertexAttribPointer(attribute, size, gl.GL_FLOAT, gl.GL_FALSE,
@@ -93,12 +94,10 @@ class RigidDrawable:
     def render(self):
         if self.hidden or not self.vao.value or not self.active_instances:
             return
-        from newton._src.viewer.gl.opengl import RendererGL
-
         (gl.glEnable if self.mesh.backface_culling else gl.glDisable)(gl.GL_CULL_FACE)
         gl.glActiveTexture(gl.GL_TEXTURE1)
         texture = self.mesh.texture_id
-        gl.glBindTexture(gl.GL_TEXTURE_2D, texture if texture is not None else RendererGL.get_fallback_texture())
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture if texture is not None else self._fallback_texture())
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT,
                                    None, self.active_instances)
@@ -116,8 +115,7 @@ class RigidBatch:
         self.model = model
         self.device = model.device
         self.count = len(shape_ids)
-        self.buffer = gl.GLuint()
-        self.registered = None
+        self.buffer = None
         self.drawables = []
         self.closed = False
         self.valid = False
@@ -128,19 +126,13 @@ class RigidBatch:
         self.scales = wp.array(scales, dtype=wp.vec3, device=self.device)
         self.materials = wp.array(materials, dtype=wp.vec4, device=self.device)
         self.empty_offsets = wp.empty(0, dtype=wp.vec3, device=self.device)
-        previous = _gl_integer(gl.GL_ARRAY_BUFFER_BINDING)
         try:
             if self.count:
-                gl.glGenBuffers(1, ctypes.byref(self.buffer))
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.buffer)
-                gl.glBufferData(gl.GL_ARRAY_BUFFER, self.count * 96, None, gl.GL_DYNAMIC_DRAW)
-                self.registered = wp.RegisteredGLBuffer(self.buffer.value, device=self.device,
-                    flags=wp.RegisteredGLBuffer.WRITE_DISCARD, fallback_to_copy=False)
+                self.buffer = RegisteredBuffer(self.device)
+                self.buffer.resize(self.count * 96)
         except BaseException:
             self.close()
             raise
-        finally:
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, previous)
 
     def add_drawable(self, mesh, offset, count, **options):
         drawable = RigidDrawable(self, mesh, offset, count, **options)
@@ -153,8 +145,7 @@ class RigidBatch:
         self.valid = False
         if not self.count:
             return
-        packed = self.registered.map(dtype=wp.vec4, shape=(self.count * 6,))
-        try:
+        with self.buffer.mapped(dtype=wp.vec4, shape=(self.count * 6,)) as packed:
             model = self.model
             wp.launch(_pack_rigids, self.count,
                       inputs=[self.shape_ids, self.extras, self.scales, self.materials,
@@ -162,8 +153,6 @@ class RigidBatch:
                               model.shape_color, model.shape_opacity, state.body_q,
                               world_offsets if world_offsets is not None else self.empty_offsets, layer],
                       outputs=[packed], device=self.device, record_tape=False)
-        finally:
-            self.registered.unmap()
         self.valid = True
 
     def close(self):
@@ -173,7 +162,5 @@ class RigidBatch:
         self.valid = False
         for drawable in self.drawables:
             drawable.destroy()
-        self.registered = None
-        if self.buffer.value:
-            gl.glDeleteBuffers(1, ctypes.byref(self.buffer))
-            self.buffer.value = 0
+        if self.buffer is not None:
+            self.buffer.close()

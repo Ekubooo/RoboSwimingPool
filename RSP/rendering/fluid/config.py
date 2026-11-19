@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from ..billboard import LOW_SPEED_COLOR
+from ..particles import LOW_SPEED_COLOR
 
 MODES = ("Original", "Transparent", "SSFR")
 SSFR_PRESETS = ("Water", "Velocity")

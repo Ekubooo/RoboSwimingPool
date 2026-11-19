@@ -11,12 +11,14 @@ sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 import numpy as np
 import warp as wp
 
-from RSP.rendering.playback_ui import PlaybackGui
+from RSP.rendering.newton_gui import NewtonGuiHost
 from RSP.rendering.newton_gl import NewtonBillboardViewer
 from envs.pbf_play_env import PBFPlayEnv
-from RSP.runtime.coupling import ClockedPBFMuJoCo, ClockedStepGraph, _apply_feedback
-from RSP.runtime.fluid_clock import DEFAULT_SETTINGS, FluidClock
-from RSP.runtime.interaction import FluidInteraction
+from RSP.physics.clocked_coupling import ClockedPBFMuJoCo, ClockedStepGraph, _apply_feedback
+from RSP.physics.fluid_clock import DEFAULT_SETTINGS, FluidClock
+from RSP.app.ui.interaction import FluidInteraction
+from RSP.app.ui.playback import PlaybackPanel
+from RSP.integrations.mimickit.session import MimicKitSession
 
 
 def control_solver(device="cpu"):
@@ -37,25 +39,26 @@ def control_solver(device="cpu"):
 class ControlChecks(unittest.TestCase):
     def test_initial_layout_allows_water_and_internal_static_overlap_only(self):
         from dataclasses import replace
-        from RSP.sim_ready.pipelines.scenes.spec import load_scene
-        from RSP.sim_ready.pipelines.scenes.assembly import resolve_scene
+        from RSP.app.config import boundary_support_radius
+        from RSP.simulation.scenes.spec import load_scene
+        from RSP.simulation.scenes.resolve import resolve_scene
+
+        radius = boundary_support_radius()
         spec = load_scene()
         # Water may cover props; scene preflight only rejects container/prop overlap.
         body = replace(spec.instances[0], name="probe", position=(1., 1., 1.))
         scene = replace(spec, instances=(body,), fluid_start=(0., 0., 0.), fluid_end=(3., 2., 5.))
-        self.assertEqual(resolve_scene(scene).clearances, [])
+        self.assertEqual(resolve_scene(scene, support_radius=radius).clearances, [])
         with self.assertRaisesRegex(ValueError, "overlaps probe"):
-            resolve_scene(replace(scene, instances=(body, replace(body, name="other"))))
+            resolve_scene(replace(scene, instances=(body, replace(body, name="other"))), support_radius=radius)
         with self.assertRaisesRegex(ValueError, "intersects the container"):
-            resolve_scene(replace(scene, instances=(replace(body, position=(.01, 1., 1.)),)))
+            resolve_scene(replace(scene, instances=(replace(body, position=(.01, 1., 1.)),)), support_radius=radius)
 
     def test_runner_reset_pauses_before_policy_and_failed_capture_cannot_advance(self):
-        from RSP.runtime.playback import PlaybackRunner
+        from RSP.app.playback import PlaybackRunner
         prepare_step = Mock()
         viewer = SimpleNamespace(gui=SimpleNamespace(), _paused=False, _step_requested=True)
         viewer.set_paused = lambda paused: NewtonBillboardViewer.set_paused(viewer, paused)
-        viewer.set_reset_callback = lambda callback: setattr(viewer, "reset_callback", callback)
-        viewer.bind_playback_controls = lambda controls, reset: NewtonBillboardViewer.bind_playback_controls(viewer, controls, reset)
         viewer.should_step = lambda: not viewer._paused
         env = SimpleNamespace(_engine=SimpleNamespace(set_fluid_controls=Mock(), prepare_playback_step=prepare_step,
                               get_viewer=lambda: viewer,
@@ -69,11 +72,10 @@ class ControlChecks(unittest.TestCase):
         policy = SimpleNamespace(act=Mock())
         env.get_policy_use_scene_sphere = Mock(return_value=False)
         env.request_policy_use_scene_sphere = Mock()
-        if env._engine.get_viewer() is not None:
-            env._engine.get_viewer().register_ui_callback = Mock()
-        runner = PlaybackRunner(env, None, policy=policy)
+        session = MimicKitSession(env, None, policy=policy)
+        runner = PlaybackRunner(session, fluid_controls=FluidInteraction(session.set_fluid_controls))
         runner.fluid_controls.set_slow_motion(True)
-        viewer.reset_callback()
+        env.request_reset()
         self.assertFalse(runner.tick())
         env.request_reset.assert_called_once()
         env.reset.assert_called_once_with()
@@ -106,8 +108,9 @@ class ControlChecks(unittest.TestCase):
         viewer.request_step = lambda: NewtonBillboardViewer.request_step(viewer)
         base = SimpleNamespace(_viewer=viewer, is_keyboard_capturing=Mock(return_value=False),
                                handle_key_press=Mock())
-        gui = PlaybackGui(base)
-        gui.fluid_controls = controls
+        gui = NewtonGuiHost(base, Mock())
+        panel = PlaybackPanel(viewer, fluid_controls=controls, request_reset=viewer._reset_callback)
+        gui.set_panel(panel)
         def press(symbol):
             gui.handle_key_press(symbol)
             gui.handle_key_release(symbol)
@@ -144,7 +147,7 @@ class ControlChecks(unittest.TestCase):
         viewer._reset_callback.assert_called_once_with()
         # UI only requests reset; the runner restores settings at a frame boundary.
         self.assertEqual(controls.gravity_strength, 15.)
-        gui.request_reset()
+        panel.request_reset()
         self.assertEqual(viewer._reset_callback.call_count, 2)
 
     def test_gravity_commit_and_batched_upload(self):

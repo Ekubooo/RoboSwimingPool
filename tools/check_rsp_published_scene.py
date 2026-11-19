@@ -9,6 +9,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 
 
 def main():
+    from contextlib import ExitStack
+    playback_stack = ExitStack()
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preset", default="pbf_play")
@@ -27,12 +29,13 @@ def main():
     from learning.agent_builder import build_agent
     from learning.base_agent import AgentMode
     from util import mp_util, resource_util
-    from RSP.runtime.playback import PlaybackRunner
+    from RSP.app.playback import bind_playback
+    from RSP.integrations.mimickit.session import MimicKitSession
     from RSP.sim_ready.paths import PUBLISHED_ROOT
     from RSP.sim_ready.catalog import digest
     from RSP.sim_ready.pipelines import articulation, collision, rigid
-    from RSP.sim_ready.pipelines.boundary import prepare
-    from RSP.sim_ready.pipelines.scenes import pbf_play
+    from RSP.sim_ready.pipelines import boundary as prepare
+    from RSP.sim_ready.pipelines.recipes import pbf_play
 
     def snapshot():
         return {str(p): (digest(p), p.stat().st_mtime_ns) for p in PUBLISHED_ROOT.rglob("*") if p.is_file()}
@@ -57,12 +60,12 @@ def main():
             agent.load(str(checkpoint / "model.pt"))
             agent.eval()
             agent.set_mode(AgentMode.TEST)
-            runner = PlaybackRunner(env, agent)
+            runner = playback_stack.enter_context(bind_playback(MimicKitSession(env, agent)))
             runner.reset()
             with patch.object(runner.policy, "act", wraps=runner.policy.act) as act:
                 for _ in range(args.frames):
                     assert runner.tick()
-                assert act.call_count == (args.frames + 4)//5
+                assert act.call_count == (args.frames + runner.policy_interval - 1) // runner.policy_interval
             assert torch.isfinite(runner.obs).all()
             runner.reset()
             assert torch.all(env._time_buf == 0)
@@ -81,7 +84,7 @@ def main():
             assert snapshot() == before, "Playback changed published assets"
             print(f"PASS: {args.preset}, {args.frames} frames, policy cadence, reset states, finite observations, read-only assets, no preparation")
         finally:
-            resource_util.cleanup(env.close if env else None, agent.close if agent else None)
+            resource_util.cleanup(playback_stack.close, env.close if env else None, agent.close if agent else None)
 
 
 if __name__ == "__main__":

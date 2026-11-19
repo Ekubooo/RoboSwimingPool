@@ -20,7 +20,7 @@ from RSP.sim_ready.lib.storage.fingerprints import file_digest, mesh_digest
 from RSP.sim_ready.lib.storage.store import AssetStore
 from RSP.sim_ready.config import BakeOptions
 from RSP.sim_ready.pipelines.articulation import prepare_articulated_asset
-from RSP.sim_ready.pipelines.boundary.load import load_boundary_asset
+from RSP.sim_ready.boundary.load import load_boundary_asset
 
 
 def file_snapshot(root):

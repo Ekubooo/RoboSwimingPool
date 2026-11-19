@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 from RSP.sim_ready.catalog import AssetRef, scan_published, resolve_asset, contained
 from RSP.sim_ready.pipelines.publication import publish_package, scan_sources
-from RSP.sim_ready.pipelines.scenes.spec import load_scene
+from RSP.simulation.scenes.spec import load_scene
 
 
 CHECK_ROOT = ROOT / "output" / "scene_checks"

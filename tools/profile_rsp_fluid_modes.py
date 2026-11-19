@@ -15,6 +15,8 @@ from profile_rsp_render import statistics
 
 
 def main():
+    from contextlib import ExitStack
+    playback_stack = ExitStack()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('Original','Transparent','SSFR'))
     parser.add_argument('--ssfr-preset', choices=('Water', 'Velocity'))
@@ -38,14 +40,15 @@ def main():
     import yaml
     from PIL import Image
     wp.config.kernel_cache_dir = str(ROOT/'output/newton_pbf_refactor_checks/warp_cache')
-    from engines import newton_pbf_engine
+    from RSP.integrations.mimickit import recorder as newton_pbf_engine
     from engines.newton_pbf_viewer import PBFViewer
     from envs.pbf_play_env import PBFPlayEnv
     from learning.agent_builder import build_agent
     from learning.base_agent import AgentMode
     from util import resource_util, mp_util
     from util.util import set_rand_seed
-    from RSP.runtime.playback import PlaybackRunner
+    from RSP.app.playback import bind_playback
+    from RSP.integrations.mimickit.session import MimicKitSession
     class Viewer(PBFViewer):
         def __init__(self, **kw):
             kw.update(width=1280,height=720,vsync=False)
@@ -63,7 +66,7 @@ def main():
         agent = build_agent(str(checkpoint/'agent_config.yaml'),env,'cuda:0')
         agent.load(str(checkpoint/'model.pt'))
         agent.eval(); agent.set_mode(AgentMode.TEST)
-        runner = PlaybackRunner(env,agent)
+        runner = playback_stack.enter_context(bind_playback(MimicKitSession(env, agent)))
         viewer, eng = runner.viewer, env._engine
         renderer, pipeline = viewer.renderer, viewer.fluid_pipeline
         gl = renderer.gl
@@ -201,7 +204,7 @@ def main():
             (output/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
             print('RESULT',args.mode,json.dumps(report['summary']),flush=True)
     finally:
-        resource_util.cleanup(env.close if env else None,agent.close if agent else None,mp_util.shutdown)
+        resource_util.cleanup(playback_stack.close, env.close if env else None,agent.close if agent else None,mp_util.shutdown)
 
 
 if __name__ == '__main__': main()

@@ -104,14 +104,14 @@ class FluidModeChecks(BillboardChecks):
         current = self.frame()
         self.assertEqual(pipeline.water_color, 'Current')
         targets = dict(pipeline.targets)
-        registration = pipeline.batch._registered
+        registration = pipeline.batch.instances.buffer.registration
         positions = self.state.particle_q.numpy().copy()
         self.viewer._paused = True
         pipeline.request_water_color('Billboard blue')
         blue = self.frame()
         self.assertGreater(int(blue[96,96,2]), int(current[96,96,2]))
         self.assertEqual(pipeline.targets, targets)
-        self.assertIs(pipeline.batch._registered, registration)
+        self.assertIs(pipeline.batch.instances.buffer.registration, registration)
         self.assertTrue(self.viewer._paused)
         np.testing.assert_array_equal(positions, self.state.particle_q.numpy())
         with patch.object(wp.array, 'numpy', side_effect=AssertionError('readback')):
@@ -233,7 +233,7 @@ class FluidModeChecks(BillboardChecks):
         self.assertEqual(gl.glGetError(), gl.GL_NO_ERROR)
 
     def test_gpu_opacity_thresholds(self):
-        from RSP.rendering.fluid.resources import opacity
+        from RSP.rendering.particles import opacity
         velocity = wp.array([(v,0.,0.) for v in (0.,2.,4.25,6.5,20.)],dtype=wp.vec3,device='cuda:0')
         packed = wp.zeros(10,dtype=wp.vec4,device='cuda:0')
         wp.launch(opacity,5,inputs=[velocity,packed,2.,6.5,.15,.9],device='cuda:0')
@@ -282,8 +282,8 @@ class FluidModeChecks(BillboardChecks):
             self.assertIn('allocation failed',pipeline.error)
         previous = pipeline.batch
         self.setup_model(particle_model())
-        self.assertTrue(previous._closed)
-        self.assertIsNone(previous._registered)
+        self.assertTrue(previous.instances._closed)
+        self.assertIsNone(previous.instances.buffer.registration)
         self.frame()
         self.assertEqual(pipeline.mode, 'SSFR')
         self.assertIsNone(pipeline.error)

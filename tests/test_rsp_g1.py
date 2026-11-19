@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "mimickit")]
 
 from RSP.sim_ready.catalog import AssetRef, digest, resolve_asset
-from RSP.sim_ready.pipelines import g1_recipe
+from RSP.sim_ready.pipelines.recipes import g1 as g1_recipe
 from RSP.sim_ready.pipelines.publication import prepare_sources
 
 
@@ -45,7 +45,7 @@ class G1PublicationChecks(unittest.TestCase):
         before = digest(asset.root / "asset.json")
         with patch('RSP.sim_ready.pipelines.articulation.prepare_articulated_asset',
                    side_effect=AssertionError("Must reuse publication")):
-            repeated, = prepare_sources(only=ref)
+            repeated, = prepare_sources(support_radius=.04, only=ref)
         self.assertEqual(repeated.root, asset.root)
         self.assertEqual(before, digest(asset.root / "asset.json"))
         for path in asset.record["links"].values():
@@ -54,7 +54,7 @@ class G1PublicationChecks(unittest.TestCase):
 
 class G1BindingChecks(unittest.TestCase):
     def test_coverage_and_exclusions(self):
-        from engines.newton_pbf_runtime import PBFScene
+        from RSP.simulation.scenes.build import PBFScene
         from RSP.sim_ready.lib.asset_validation import AssetValidationError
         physical = SimpleNamespace(name="test", bodies=[
             SimpleNamespace(name="solid", shapes=(object(),)), SimpleNamespace(name="empty", shapes=())])
@@ -68,8 +68,8 @@ class G1BindingChecks(unittest.TestCase):
         PBFScene.validate_published_links(physical, dict(links={"solid": "a", "empty": "b"}))
 
     def test_registration_uses_package_exclusions(self):
-        from engines.newton_pbf_runtime import PBFScene
-        scene = PBFScene.__new__(PBFScene)
+        from RSP.integrations.mimickit.scene import MimicKitScene
+        scene = MimicKitScene.__new__(MimicKitScene)
         ref = AssetRef("articulations", "g1", "1")
         scene.spec = SimpleNamespace(character=ref)
         scene.resolved_assets = {ref: SimpleNamespace(record={"excluded_links": ["empty"]})}
@@ -82,9 +82,9 @@ class G1BindingChecks(unittest.TestCase):
 
 class G1ProfileChecks(unittest.TestCase):
     def test_selector_switch_keeps_props_and_invalidates_layout(self):
-        from RSP.launcher.profiles import load_profile, load_presets, read_yaml, load_characters
-        from RSP.launcher.assembly import SceneChoices
-        from RSP.launcher.window import SelectionPanel
+        from RSP.integrations.mimickit.profiles import load_profile, load_presets, read_yaml, load_characters
+        from RSP.app.ui.scene_choices import SceneChoices
+        from RSP.app.ui.selection import SelectionPanel
         from dataclasses import replace
         profile = load_profile()
         panel = SelectionPanel(SceneChoices(read_yaml(profile.scene_preset)), load_presets(), profile.scene_preset)
@@ -110,7 +110,7 @@ class G1ProfileChecks(unittest.TestCase):
         self.assertEqual(panel.result.profile_id, 'humanoid')
 
     def test_missing_g1_does_not_disable_default(self):
-        from RSP.launcher import profiles
+        from RSP.integrations.mimickit import profiles
         actual = profiles.project_file
         def missing(value):
             if 'g1_lafan_full' in str(value) and str(value).endswith('model.pt'):
@@ -122,7 +122,7 @@ class G1ProfileChecks(unittest.TestCase):
         self.assertEqual(choices['g1'].error, 'missing G1 checkpoint')
 
     def test_profiles_keep_original_files(self):
-        from RSP.launcher.profiles import load_profile, read_yaml
+        from RSP.integrations.mimickit.profiles import load_profile, read_yaml
         default, g1 = load_profile(), load_profile('g1')
         self.assertEqual(default.profile_id, 'humanoid')
         self.assertEqual(g1.model_file, ROOT / 'output/g1_lafan_full_20261107_r01/model.pt')

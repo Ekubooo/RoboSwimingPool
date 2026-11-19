@@ -7,8 +7,8 @@ from ..lib.asset_validation import (AssetValidationError, ValidationReport, diag
                                   validate_physical_asset, validate_coverage)
 from ..lib.mesh.shapes import body_mesh
 from ..lib.storage.store import AssetStore
-from .boundary.schema import BoundaryArtifact
-from .boundary.prepare import prepare_boundary_asset
+from ..boundary.schema import BoundaryArtifact
+from .boundary import prepare_boundary_asset
 
 
 @dataclass
