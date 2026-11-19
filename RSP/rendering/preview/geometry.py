@@ -1,4 +1,4 @@
-"""Read display geometry from published assets, without building a simulation."""
+"""Read display geometry from asset sources without building a simulation."""
 from dataclasses import dataclass
 from itertools import product
 
@@ -24,25 +24,36 @@ def _triangles(mesh, color):
 
 
 def load_geometry(asset, color=None):
-    """Only visible shapes; Newton resolves MJCF defaults and body transforms."""
-    import newton
-    import warp as wp
-
-    record = asset.record
+    """Use authored geometry and primitives without preparing boundary data."""
     lines = np.empty((0, 6), dtype=np.float32)
-    if 'container' in record:
-        size = np.asarray(record['container']['size'])
+    if asset.container_size is not None:
+        size = np.asarray(asset.container_size)
         corners = np.array(list(product((0., 1.), repeat=3))) * size
         edges = [corners[[a, b]] for a in range(8) for b in range(a+1, 8)
                  if np.count_nonzero(corners[a] != corners[b]) == 1]
         points = np.concatenate(edges)
         lines = np.column_stack((points, np.tile([.55, .72, .85], (len(points), 1)))).astype(np.float32)
-        bunny = trimesh.load(asset.file(record['bunny']), force='mesh', process=False)
+        bunny = asset.bunny_mesh()
         return PreviewGeometry(_triangles(bunny, [.72, .72, .72]), lines)
 
+    if asset.prop_kind is not None:
+        if asset.prop_kind == "box":
+            mesh = trimesh.creation.box(extents=(asset.prop_size,) * 3)
+        elif asset.prop_kind == "sphere":
+            mesh = trimesh.creation.icosphere(subdivisions=3, radius=asset.prop_size)
+        else:
+            raise ValueError(f"Unsupported preview geometry: {asset.prop_kind}")
+        return PreviewGeometry(_triangles(mesh, [.7, .7, .7] if color is None else color), lines)
+
+    import newton
+    import warp as wp
+
+    model_path = asset.model_path
+    if model_path is None:
+        raise ValueError(f"Asset has no preview source: {asset.ref.relative}")
     with wp.ScopedDevice('cpu'):
         builder = newton.ModelBuilder()
-        builder.add_mjcf(str(asset.file(record['model'])), parse_sites=False,
+        builder.add_mjcf(str(model_path), parse_sites=False,
                          parse_mujoco_options=False, enable_self_collisions=False,
                          convert_3d_hinge_to_ball_joints=True)
     meshes = []

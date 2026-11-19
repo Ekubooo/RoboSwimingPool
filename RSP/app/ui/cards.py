@@ -46,5 +46,4 @@ def asset_card(imgui, previews, ref, color, label, selected, scale, *, disabled=
     imgui.begin_disabled(disabled)
     changed, value = imgui.checkbox(label, selected)
     imgui.end_disabled()
-    imgui.text_disabled(f'v{ref.version}')
     return changed, value

@@ -92,7 +92,8 @@ def playback_process(device):
 
 
 @contextmanager
-def open_session(profile, scene_path, viewer, *, visualize=True, fluid_settings=None, policy_hz=30):
+def open_session(profile, scene_path, viewer, *, visualize=True, fluid_settings=None, policy_hz=30,
+                 asset_progress=None):
     """Build and release the environment and agent while borrowing a window."""
     from envs.env_builder import load_configs
     from learning.agent_builder import build_agent
@@ -112,7 +113,10 @@ def open_session(profile, scene_path, viewer, *, visualize=True, fluid_settings=
 
             env_type, agent_factory = G1PBFPlayEnv, build_g1_agent
             env_config = dict(env_config, env_name="pbf_play", enable_early_termination=False)
-        env = resource_util.construct(env_type, env_config, engine_config, 1, profile.device, visualize, False)
+        env = resource_util.construct(
+            env_type, env_config, engine_config, 1, profile.device, visualize, False,
+            asset_progress=asset_progress,
+        )
         agent = agent_factory(str(profile.agent_config), env, profile.device)
         agent.load(str(profile.model_file))
         configure_test_agent(agent)

@@ -1,10 +1,12 @@
 """Read the existing demo arguments, without a second runtime configuration."""
 from dataclasses import dataclass
 from pathlib import Path
+from xml.etree.ElementTree import ParseError
+
 import yaml
 
 from RSP.sim_ready.paths import PROJECT_ROOT
-from RSP.sim_ready.catalog import AssetRef, scan_published
+from RSP.sim_ready.catalog import AssetRef, scan_sources
 
 CONFIG_ROOT = PROJECT_ROOT / "data/playbacks"
 
@@ -84,7 +86,7 @@ class CharacterChoice:
 
     @property
     def asset(self):
-        return AssetRef(**self.template["character"]) if self.template is not None else None
+        return AssetRef.from_mapping(self.template["character"]) if self.template is not None else None
 
     def require_available(self):
         if self.error or self.profile is None:
@@ -98,21 +100,23 @@ class LaunchRequest:
     scene: Path | dict
 
 
-def load_characters():
-    """Check availability on CPU; leave package checksums and models to startup."""
-    published = scan_published()
+def load_characters(*, sources=None):
+    """Check authored assets and policy inputs without preparing physics data."""
+    sources = scan_sources() if sources is None else sources
     choices = {}
     for profile_id, entry in character_entries().items():
         template = profile = None
         error = None
         try:
-            template = read_yaml(profile_scene(profile_arguments(profile_id)))
+            record = read_yaml(profile_scene(profile_arguments(profile_id)))
+            if not isinstance(record, dict):
+                raise ValueError("Expected a scene mapping for the playback profile")
+            ref = AssetRef.from_mapping(record["character"])
+            template = record
             profile = load_profile(profile_id)
-            ref = AssetRef(**template["character"])
-            if ref not in published:
-                raise ValueError(f"Humanoid asset has not been published: {ref.relative}")
-            for relative in published[ref].record["files"]:
-                published[ref].file(relative)
+            source = sources.get(ref)
+            if source is None or source.model_path is None:
+                raise ValueError(f"Missing humanoid model source: {ref.relative}")
             env, agent = read_yaml(profile.env_config), read_yaml(profile.agent_config)
             motions = read_yaml(project_file(env["motion_file"]))
             for motion in motions["motions"]:
@@ -120,14 +124,14 @@ def load_characters():
             prior = read_yaml(project_file(agent["smp_prior_cfg"]))
             project_file(agent["smp_prior_model"])
             project_file(prior["env_config"])
-        except (OSError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError, ParseError, yaml.YAMLError) as exc:
             error = str(exc)
         choices[profile_id] = CharacterChoice(profile_id, entry["name"], template, profile, error)
     return choices
 
 
 def character_for_scene(scene, characters):
-    ref = AssetRef(**scene["character"])
+    ref = AssetRef.from_mapping(scene["character"])
     matches = [choice for choice in characters.values() if choice.asset == ref]
     if len(matches) != 1:
         raise ValueError(f"Scene humanoid must have exactly one playback profile: {ref.relative}")

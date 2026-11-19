@@ -14,7 +14,7 @@ discovery are outside this application's scope.
 | `integrations.mimickit` | Environment/agent loading, GSI, policy observations/actions and Engine compatibility |
 | `physics` | Existing PBF, runtime boundary queries, coupling and fluid clock |
 | `rendering` | CUDA/OpenGL resources, render passes, Newton viewer/GUI adapters and asset previews |
-| `sim_ready` | Geometry/volume algorithms, asset preparation/publication and read-only loading |
+| `sim_ready` | Geometry/volume algorithms, automatic asset preparation and read-only loading |
 
 The application composes these packages. Asset processing does not import the
 application, solver or MimicKit. Rendering and simulation do not import
@@ -36,20 +36,29 @@ lattice (351,624 particles). Their Z-up fluid bounds are (1.56, 0.75, 0.50) to
 (2.96, 1.90, 2.34). Each main frame advances both systems by 1/150 s: four rigid
 substeps at 1/600 s and two fluid substeps at 1/300 s, with three pressure
 iterations per fluid substep. The policy stays at 30 Hz (every five frames).
-These settings require volume maps baked with support radius 0.04 m; the
-bundled source manifests and scene references select the existing matching
-immutable versions. Run `python tools/prepare_rsp_assets.py` explicitly to
-prepare assets before playback. The command reads the current radius and
-reuses matching packages/caches; changed recipes under an existing publication
-version raise a conflict and require a new version. Playback itself only
-validates and loads assets; it does not automatically rebake them.
+These settings require volume maps baked with support radius 0.04 m. Before
+creating an environment, playback prepares the selected scene's assets using
+the same fluid settings as the simulation. Matching inputs, recipes and files
+are reused. Missing, damaged or outdated outputs are regenerated; changing the
+particle radius automatically updates the volume map. Scene browsing and
+previews use original sources and do not require generated runtime assets.
 
 Volume-map precomputation belongs to `sim_ready`: its numerical function works
 in memory, the preparation pipeline writes SDF plus volume-map NVDB resources,
 and the boundary loader validates and reads them. Runtime body transforms,
-queries and fluid/rigid forces belong to physics. Published assets remain
-immutable under `data/assets_RSP/published`; source meshes and preparation
-caches retain their existing locations. Loading a scene never bakes assets.
+queries and fluid/rigid forces belong to physics. Each asset has one current
+directory, `data/assets_RSP/runtime/<category>/<name>`, with internal build
+metadata and checksums. Each boundary stores its SDF and volume map as two grids
+in one NVDB file. An adequate existing SDF can be reused when only the volume
+map needs updating. No asset version selection or publication step is required.
+
+Original inputs stay outside the generated tree. Runtime directories can be
+removed while the application is closed and rebuilt from source declarations
+under `data/assets_RSP/origin` and their referenced original files. Preparation
+validates a temporary replacement before installing it and holds a directory
+lease through environment use. Scene assembly and simulation remain read-only.
+Legacy scene references with a version field select the current asset without
+rewriting custom scene files.
 
 Automatic placement avoids the internal bunny and uses its existing clearance.
 Authored scene validation retains its separate exterior/prop-overlap rules.
@@ -81,8 +90,10 @@ From the repository root, using the existing WarpSim environment:
 ```powershell
 python -m pip install -e . --no-deps --no-build-isolation
 python tools/run_rsp.py
+python tools/run_rsp.py --profile humanoid --direct
 python tools/run_rsp.py --profile g1 --direct
-python tools/prepare_rsp_assets.py
+# Optional: prepare one asset without starting playback.
+python tools/prepare_rsp_assets.py --asset props/scene_sphere
 ```
 
 The distribution includes RSP code, not MimicKit or asset data. Asset dependency
@@ -98,7 +109,7 @@ by Git; a fresh checkout does not include them. Existing local copies may be
 restored from a workspace backup, or regenerated for the change under review.
 Commands in module guides that reference these scripts require those local copies.
 
-The local contracts cover immutable publication, playback cadence/reset, Viewer
+The local contracts cover automatic preparation and replacement, playback cadence/reset, Viewer
 ownership, fluid-clock/Graph bookkeeping, and stable state storage. One-off probes,
 traces and timing reports belong under ignored `output/`. Shared evaluation
 libraries stay versioned: prior scoring lives in `tools/getup/prior_scoring.py`,

@@ -1,19 +1,20 @@
 # Newton simulation and policy timing
 
-Scene files define the published asset references, placement and initial fluid
-region. The simulation resolves these references before it builds the Newton
-model. It keeps a permanent primary state and a second state for substeps.
+Scene files reference source assets by category and name. They also define
+placement and the initial fluid region. Startup prepares the required runtime
+assets before the simulation builds the Newton model. The simulation keeps a
+permanent primary state and a second state for substeps.
 With an odd substep count, the final state is copied back to the primary arrays
 on the GPU so borrowed state views keep their addresses.
 
 `RSP.physics.fluid_clock.DEFAULT_SETTINGS` holds the fluid defaults. The
 application passes those settings to the simulation and asset preparation.
-The reference engine configuration uses 120 simulation frames per simulated
-second and four 1/480-second rigid steps per frame. The fluid clock normally
-runs two 1/240-second substeps, before rigid steps two and four. The reference
-scene defines a particle lattice of 498,456 particles.
+The reference engine configuration uses 150 simulation frames per simulated
+second and four 1/600-second rigid steps per frame. The fluid clock normally
+runs two 1/300-second substeps, before rigid steps two and four. The reference
+scene defines a particle lattice of 351,624 particles.
 
-The 30 Hz policy decides every four simulation frames and holds its GPU action
+The 30 Hz policy decides every five simulation frames and holds its GPU action
 between decisions. The MimicKit environment retains action clipping, actor and
 normalizer loading, observation order, and GSI. GSI uses the policy sampling
 interval when it reconstructs velocities and samples motion history. Advance

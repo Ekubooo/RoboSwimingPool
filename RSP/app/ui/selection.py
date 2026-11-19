@@ -5,6 +5,7 @@ from pathlib import Path
 
 from RSP.sim_ready.catalog import AssetRef
 from RSP.integrations.mimickit.profiles import LaunchRequest, character_for_scene, load_characters, read_yaml
+from RSP.simulation.scenes.spec import parse_scene
 
 from .scene_choices import asset_label
 
@@ -13,7 +14,6 @@ from .scene_choices import asset_label
 class PropChoice:
     enabled: bool
     count: int
-    version: str
 
 
 class SelectionPanel:
@@ -22,18 +22,18 @@ class SelectionPanel:
         self.preset_scenes = {name: read_yaml(path) for name, path in presets.items()}
         self.mode = "preset"
         self.preset = next(name for name, path in presets.items() if path == default_preset)
-        self.characters = load_characters() if characters is None else characters
+        self.characters = load_characters(sources=choices.assets) if characters is None else characters
         self.character = character_for_scene(choices.template, self.characters).profile_id
-        self.container = asset_label(AssetRef(**choices.template["container"]))
-        defaults = {x["asset"]["name"]: asset_label(AssetRef(**x["asset"])) for x in choices.template["instances"]}
-        self.props = {name: PropChoice(name in defaults, 1, defaults.get(name, next(iter(versions))))
-                      for name, versions in choices.props.items()}
+        self.container = asset_label(choices.template_spec.container)
+        defaults = {instance.asset for instance in choices.template_spec.instances}
+        self.props = {name: PropChoice(ref in defaults, 1) for name, ref in choices.props.items()}
         self.placement, self.seed = "regular", 1234
         self.use_sphere = False
         self.layout = self.result = None
         self.cancelled = False
         self.status = "Select a preset or customize assets, then click Start simulation."
         self.font = None
+        self._font_viewer = None
         self.scale = 1.
         self.previews = None
 
@@ -43,19 +43,24 @@ class SelectionPanel:
         from RSP.rendering.preview.textures import AssetPreviews
         self.previews = AssetPreviews(self.choices.assets)
         self.scale = viewer.ui.dpi_scale
-        font_path = Path("C:/Windows/Fonts/msyh.ttc")
-        if not font_path.is_file():
-            raise RuntimeError("UI font not found: C:/Windows/Fonts/msyh.ttc")
-        self.font = viewer.ui.io.fonts.add_font_from_file_ttf(str(font_path), 18. * self.scale)
+        if self._font_viewer is not viewer:
+            font_path = Path("C:/Windows/Fonts/msyh.ttc")
+            if not font_path.is_file():
+                raise RuntimeError("UI font not found: C:/Windows/Fonts/msyh.ttc")
+            self.font = viewer.ui.io.fonts.add_font_from_file_ttf(str(font_path), 18. * self.scale)
+            self._font_viewer = viewer  # The Viewer owns the atlas and this font.
 
     def detach(self):
         if self.previews is not None:
             self.previews.close()
             self.previews = None
-        self.font = None  # The Viewer owns its font atlas.
 
     def cancel(self):
         self.cancelled = True
+
+    def resume_after_failure(self, error):
+        self.result = None
+        self.status = f"Asset preparation failed: {error}"
 
     def prepare_previews(self):
         self.previews.process_one()
@@ -75,8 +80,9 @@ class SelectionPanel:
             if not opened:
                 return
             for name, scene in self.preset_scenes.items():
-                counts = Counter(AssetRef(**x['asset']) for x in scene['instances'])
-                entries = [(AssetRef(**scene['container']), 1), (AssetRef(**scene['character']), 1), *counts.items()]
+                counts = Counter(AssetRef.from_mapping(x['asset']) for x in scene['instances'])
+                entries = [(AssetRef.from_mapping(scene['container']), 1),
+                           (AssetRef.from_mapping(scene['character']), 1), *counts.items()]
                 with card(imgui, name, 430, self.scale) as visible:
                     if not visible:
                         continue
@@ -105,7 +111,7 @@ class SelectionPanel:
         try:
             character = self.characters[self.character]
             character.require_available()
-            counts = {self.choices.props[name][p.version]: p.count if p.enabled else 0
+            counts = {self.choices.props[name]: p.count if p.enabled else 0
                       for name, p in self.props.items()}
             self.layout = self.choices.build(self.choices.containers[self.container], counts,
                 mode=self.placement, seed=self.seed, use_sphere=self.use_sphere, character=character.asset)
@@ -119,7 +125,12 @@ class SelectionPanel:
     def request_start(self):
         try:
             if self.mode == "preset":
-                choice = character_for_scene(self.preset_scenes[self.preset], self.characters)
+                record = self.preset_scenes[self.preset]
+                choice = character_for_scene(record, self.characters)
+                scene = parse_scene(record)
+                for ref in (scene.container, scene.character, *scene.props):
+                    if ref not in self.choices.assets:
+                        raise ValueError(f"Missing scene asset source: {ref.relative}")
                 self.result = LaunchRequest(choice.profile_id, self.presets[self.preset])
             elif self.layout is not None or self.generate():
                 self.characters[self.character].require_available()
@@ -130,12 +141,6 @@ class SelectionPanel:
     def select_character(self, profile_id):
         self.character = profile_id
         self.invalidate()
-
-    @staticmethod
-    def _combo(imgui, label, selected, options):
-        names = list(options)
-        changed, index = imgui.combo(label, names.index(selected), names)
-        return changed, names[index]
 
     def _custom(self, imgui):
         from .cards import card_grid, card, asset_card
@@ -169,10 +174,10 @@ class SelectionPanel:
         with card_grid(imgui, 'props', self.scale) as opened:
             if opened:
                 for name, p in self.props.items():
-                    with card(imgui, name, 300, self.scale) as visible:
+                    with card(imgui, name, 270, self.scale) as visible:
                         if not visible:
                             continue
-                        ref = self.choices.props[name][p.version]
+                        ref = self.choices.props[name]
                         changed, p.enabled = asset_card(imgui, self.previews, ref, self._color(ref),
                                                        name, p.enabled, self.scale)
                         if changed:
@@ -181,9 +186,6 @@ class SelectionPanel:
                         changed, index = imgui.combo('Quantity', p.count-1, ['1', '2', '3'])
                         if changed:
                             p.count = index+1
-                            self.invalidate()
-                        changed, p.version = self._combo(imgui, 'Version', p.version, self.choices.props[name])
-                        if changed:
                             self.invalidate()
                         imgui.end_disabled()
         modes = ["regular", "random"]
@@ -234,10 +236,10 @@ class SelectionPanel:
                     self._custom(imgui)
                     summary = self.layout
                 if summary is not None:
-                    imgui.separator_text('Instance / Asset version / XYZ (m)')
+                    imgui.separator_text('Instance / Asset / XYZ (m)')
                     for item in summary['instances']:
                         position = ', '.join(f'{x:.3f}' for x in item['position'])
-                        imgui.text(f"{item['name']}   {asset_label(AssetRef(**item['asset']))}   {position}")
+                        imgui.text(f"{item['name']}   {asset_label(AssetRef.from_mapping(item['asset']))}   {position}")
             finally:
                 imgui.end_child()
             imgui.separator()

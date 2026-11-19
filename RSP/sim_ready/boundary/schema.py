@@ -15,7 +15,6 @@ from ..lib.storage.fingerprints import recipe_digest
 
 SCHEMA_VERSION = 3
 SDF_ALGORITHM_VERSION = 1
-CACHE_DIRECTORY = "boundaries-v3"
 
 
 @dataclass(frozen=True)

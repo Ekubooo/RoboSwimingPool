@@ -1,11 +1,10 @@
 """Repository G1 recipe: authored visuals, native collision-only boundaries."""
-import shutil
 import xml.etree.ElementTree as ET
 
-from ...catalog import contained, digest
-from ...paths import PROJECT_ROOT
+from ...catalog import contained
+from ...paths import G1_SOURCE_ROOT
 
-SOURCE_ROOT = PROJECT_ROOT / "data/assets/g1"
+SOURCE_ROOT = G1_SOURCE_ROOT
 EXCLUDED_LINKS = tuple(f"{side}_{part}_link" for side in ("left", "right")
                        for part in ("hip_pitch", "ankle_pitch", "shoulder_pitch", "wrist_roll")) + (
     "waist_yaw_link", "waist_roll_link")
@@ -21,19 +20,6 @@ def source_files():
         if not path.is_file():
             raise ValueError(f"Missing G1 source dependency: {path}")
     return files
-
-
-def source_identity():
-    return dict(files={name: digest(path) for name, path in source_files().items()},
-                excluded_links=EXCLUDED_LINKS)
-
-
-def copy_model(stage):
-    for name, source in source_files().items():
-        target = stage / ("model.xml" if name == "g1.xml" else name)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-    return stage / "model.xml"
 
 
 def check_collision_scope(asset):

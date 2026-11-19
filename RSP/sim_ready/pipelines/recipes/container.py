@@ -3,6 +3,9 @@ import numpy as np
 import trimesh
 
 from . import pbf_play as reference
+from .. import collision
+from ...boundary.schema import BoundaryArtifact
+from ...lib.asset_validation import check_source
 from ...lib.mesh import validation
 
 
@@ -24,12 +27,11 @@ def description(size, bunny):
                 boxes=[dict(center=c, half=h) for c, h in boxes], probes=probes)
 
 
-def prepare_container(store, device, support_radius, size, report):
+def prepare_container(store, device, support_radius, size, report, *, bunny_source, previous=None):
     """Keep the reference recipe exact; only widen the second cavity."""
-    if tuple(size) == (3., 2., 5.):
-        artifact, bunny, hulls = reference.prepare_static(store, device, support_radius, report=report)
-    elif tuple(size) == (4., 2., 5.):
-        _, _, bunny, provenance = reference.static_geometry()
+    check_source(bunny_source, {".obj"}, report)
+    mesh, checked, bunny, provenance = reference.static_geometry(bunny_source)
+    if tuple(size) == (4., 2., 5.):
         size = np.asarray(size, dtype=float)
         outer = trimesh.creation.box(extents=size + 2*reference.WALL_THICKNESS)
         outer.apply_translation(size/2)
@@ -44,11 +46,15 @@ def prepare_container(store, device, support_radius, size, report):
         mesh = trimesh.Trimesh(vertices, faces, process=False)
         checked = validation.ValidatedMesh(vertices, faces, checked_container.bounds, checked_container.cavity_bounds)
         provenance = dict(provenance, pool_size=size.tolist(), recipe="wide_pool")
-        artifact = reference.prepare_boundary(mesh, checked, store, device, support_radius=support_radius,
-                                               container=True, provenance=provenance)
-        hulls = reference.collision.prepare_hulls(bunny, "suspended_bunny", store)
-    else:
+    elif tuple(size) != (3., 2., 5.):
         raise ValueError("Supported container sizes are 3x2x5 and 4x2x5")
-    return artifact, bunny, hulls, description(size, bunny)
+    report.add("pass", "static.conventions", "pool and bunny", provenance)
+    old = BoundaryArtifact(previous.file(previous.record["boundary"])) if previous is not None else None
+    artifact = reference.prepare_boundary(
+        mesh, checked, store, device, support_radius=support_radius, container=True,
+        provenance=provenance, previous=old,
+    )
+    collision.prepare_hulls(bunny, "suspended_bunny", store, destination="collision", previous=previous)
+    return artifact, bunny, description(size, bunny)
 
 

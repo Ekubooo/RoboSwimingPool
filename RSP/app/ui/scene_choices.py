@@ -1,69 +1,70 @@
-"""Published-asset choices and bounded, approximate placement; no baking or GPU work."""
+"""Browse source assets and generate layouts without preparing runtime data."""
 from copy import deepcopy
 from dataclasses import asdict
+
 import numpy as np
 
-from RSP.sim_ready.catalog import scan_published
-from RSP.simulation.scenes.layout import asset_bounds, container_obstacle_bounds, place_props
+from RSP.sim_ready.catalog import scan_sources
+from RSP.simulation.scenes.layout import place_props
 from RSP.simulation.scenes.spec import parse_scene
 
 GAP = .02
 
 
 def asset_label(ref):
-    return f"{ref.name}  /  v{ref.version}"
+    return ref.name
 
 
 class SceneChoices:
-    def __init__(self, template):
+    def __init__(self, template, *, sources=None):
         self.template = deepcopy(template)
-        self.assets = scan_published()
+        self.template_spec = parse_scene(template)
+        self.assets = scan_sources() if sources is None else sources
         self.containers = {asset_label(ref): ref for ref, asset in self.assets.items()
-                           if ref.category == "containers" and "container" in asset.record}
-        self.props = {}
-        for ref, asset in self.assets.items():
-            if ref.category == "props" and len(asset.record.get("links", {})) == 1:
-                self.props.setdefault(ref.name, {})[asset_label(ref)] = ref
+                           if ref.category == "containers" and asset.container_size is not None}
+        self.props = {ref.name: ref for ref, asset in self.assets.items()
+                      if ref.category == "props" and asset.prop_kind is not None}
         self._bounds = {}
         self._obstacles = {}
 
     def bounds(self, ref):
         if ref not in self._bounds:
-            self._bounds[ref] = asset_bounds(self.assets[ref])
+            center, half = self.assets[ref].prop_bounds
+            self._bounds[ref] = (np.asarray(center, dtype=float), np.asarray(half, dtype=float))
         return self._bounds[ref]
 
     def obstacles(self, container):
         if container not in self._obstacles:
-            self._obstacles[container] = container_obstacle_bounds(self.assets[container])
+            self._obstacles[container] = np.asarray(self.assets[container].bunny_mesh().bounds)
         return self._obstacles[container]
 
     def build(self, container, counts, *, mode="regular", seed=1234, use_sphere=False, character=None):
         """Generate an entire layout or fail without dropping requested instances."""
         if container not in self.containers.values() or mode not in ("regular", "random"):
             raise ValueError("Select an available container and placement mode")
-        names = set()
         expanded = []
         for ref, count in counts.items():
-            if ref.name in names or ref not in self.props.get(ref.name, {}).values():
-                raise ValueError("Select only one published version of each prop")
+            if self.props.get(ref.name) != ref:
+                raise ValueError(f"Unknown prop source: {ref.relative}")
             if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= 3:
                 raise ValueError("Enabled props require a quantity of 1–3; disabled props use 0")
-            names.add(ref.name)
             expanded.extend((ref, index + 1) for index in range(count))
         record = deepcopy(self.template)
         if character is not None:
             if character.category != "articulations" or character not in self.assets:
-                raise ValueError("Select a published humanoid asset")
+                raise ValueError("Select an available humanoid source")
             record["character"] = asdict(character)
+        else:
+            record["character"] = asdict(self.template_spec.character)
         record["container"] = asdict(container)
         record["instances"] = []
         record["policy_use_scene_sphere"] = use_sphere
         if not expanded:
             parse_scene(record)
             return record
-        size = np.array(self.assets[container].record["container"]["size"])
-        lower = np.maximum(record["fluid"]["start"], np.zeros(3)) + GAP
-        upper = np.minimum(record["fluid"]["end"], size) - GAP
+        size = np.asarray(self.assets[container].container_size)
+        lower = np.maximum(self.template_spec.fluid_start, np.zeros(3)) + GAP
+        upper = np.minimum(self.template_spec.fluid_end, size) - GAP
         positions = place_props(
             [self.bounds(ref) for ref, _ in expanded], lower=lower, upper=upper,
             obstacles=[self.obstacles(container)], mode=mode, seed=seed, gap=GAP,

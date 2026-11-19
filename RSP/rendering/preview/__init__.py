@@ -1,1 +1,1 @@
-"""Geometry and GL thumbnails for published assets."""
+"""Geometry and GL thumbnails for scene asset sources."""

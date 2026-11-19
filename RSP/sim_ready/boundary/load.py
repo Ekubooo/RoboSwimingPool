@@ -31,32 +31,15 @@ def _read_grids(path, count, device):
 def _verify_file(manifest, record):
     path = _file(manifest, record["files"]["nvdb"])
     if fingerprints.file_digest(path) != record["nvdb_sha256"]:
-        raise ValueError("Boundary NVDB contents do not match the published manifest")
+        raise ValueError("Boundary NVDB contents do not match its manifest")
     return path
-
-
-def _load_sdf(manifest, geometry, device):
-    record = _read_record(manifest, "sdf")
-    if record["geometry"] != geometry:
-        raise ValueError("Cached SDF geometry recipe differs from the request")
-    mesh_path = _file(manifest, record["files"]["mesh"])
-    if fingerprints.file_digest(mesh_path) != record["mesh_file_sha256"]:
-        raise ValueError("Cached visual geometry differs from the published mesh")
-    distance, = _read_grids(_verify_file(manifest, record), 1, device)
-    maximum = record["bake_options"]["max_support_radius"]
-    if _check_support(distance, maximum) != maximum:
-        raise ValueError("SDF support range differs from its manifest")
-    if fingerprints.sdf_digest(distance) != record["sdf_sha256"] or _grid_layout(distance) != record["grid"]:
-        raise ValueError("Cached SDF values or layout differ from the manifest")
-    _validate_bounds(record["bounds"])
-    return record, distance
 
 
 def load_boundary_asset(artifact, *, support_radius, quadrature_points=16, device=None):
     """Read a complete artifact without creating, rebuilding or modifying files.
 
     The visual OBJ reference is returned even if the OBJ is absent. Physics uses
-    published local bounds and never needs to open that visual resource.
+    generated local bounds and never needs to open that visual resource.
     """
     check_volume_options(support_radius, quadrature_points)
     artifact = artifact if isinstance(artifact, BoundaryArtifact) else BoundaryArtifact(artifact)

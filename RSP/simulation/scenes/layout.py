@@ -1,4 +1,4 @@
-"""CPU layout helpers for published scenes."""
+"""CPU layout helpers for prepared scenes."""
 
 from itertools import product
 import json

@@ -40,6 +40,11 @@ class SceneSpec:
     def props(self):
         return tuple(instance.asset for instance in self.instances)
 
+    @property
+    def asset_refs(self):
+        """The distinct source assets needed to start this scene."""
+        return tuple(dict.fromkeys((self.container, self.character, *self.props)))
+
 
 def load_scene(path=SCENE_ROOT / "pbf_play.yaml"):
     path = Path(path)
@@ -62,7 +67,7 @@ def parse_scene(record):
         if not isinstance(name, str) or not name or name in names or any(c in name for c in "/\\:"):
             raise ValueError("Duplicate, reserved or invalid instance name")
         names.add(name)
-        ref = AssetRef(**entry["asset"])
+        ref = AssetRef.from_mapping(entry["asset"])
         if ref.category != "props":
             raise ValueError("Scene instances must reference props")
         rotation = vector(entry.get("rotation", [0, 0, 0, 1]), 4, "rotation")
@@ -79,7 +84,8 @@ def parse_scene(record):
         instances.append(InstanceSpec(name, ref, vector(entry["position"], 3, "position"), color, rotation,
             vector(entry.get("linear_velocity", [0, 0, 0]), 3, "linear_velocity"),
             vector(entry.get("angular_velocity", [0, 0, 0]), 3, "angular_velocity"), role))
-    container, character = AssetRef(**record["container"]), AssetRef(**record["character"])
+    container = AssetRef.from_mapping(record["container"])
+    character = AssetRef.from_mapping(record["character"])
     if container.category != "containers" or character.category != "articulations":
         raise ValueError("Expected a container and an articulated character")
     enabled = record["policy_use_scene_sphere"]

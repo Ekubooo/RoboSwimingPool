@@ -6,30 +6,39 @@ the session interface; `ui/` owns panels, shortcuts and queued CPU commands.
 The same playback binding serves the legacy MimicKit entry point. Unbinding
 removes its callbacks without closing the borrowed environment or window.
 
-## Asset selection previews
+## Scene selection and startup
 
-`python tools/run_rsp.py` opens the existing Newton window. Cards edit the
-selection only; **Start simulation** submits it. Presets reuse the asset images
-as a composition, while custom mode retains version, quantity and layout rules.
+`python tools/run_rsp.py` opens the Newton window and reads scene choices from
+the source catalog in `data/assets_RSP/origin`. The selector works with an
+empty runtime directory. Presets show a composition of the source assets, and
+custom mode controls prop quantities and placement. Asset references identify
+an asset by category and name.
 
-- `RSP/rendering/preview/geometry.py`: reads published display geometry with Newton's MJCF
-  importer on CPU; no finalized simulation model, strategy or asset baking.
-- `ui/cards.py`: draws cards and requests images; no geometry loading in UI callbacks.
-- `RSP/rendering/preview/textures.py`: renders fixed orthographic thumbnails into GL
-  textures owned by this selection session. No PNG or preview package is written.
-- `application.select_scene`: processes one visible-card request per frame and
-  owns cleanup. Window close and Escape are deferred until the frame ends.
+- `RSP/rendering/preview/geometry.py` reads authored robot geometry on the CPU
+  through Newton's MJCF importer, uses the source primitive dimensions for
+  props, and draws the container and its positioned bunny mesh.
+- `ui/cards.py` draws cards and queues preview requests. `application.select_scene`
+  processes one visible-card request per frame outside the draw callback.
+- `RSP/rendering/preview/textures.py` renders orthographic thumbnails into GL
+  textures owned by the selection panel.
 
 The camera looks from +X/-Y/+Z (right-front azimuth 45 degrees, elevation 45
 degrees). Thumbnails show the model's authored default pose, not a sampled GSI
 spawn. G1 retains authored display colors; humanoid and props use demo colors.
-Containers display their frame and the published bunny mesh.
 
 Temporary geometry, buffers, shader and FBO objects are released after each
-render. Cached textures live only until selection ends. Start, Cancel, Escape,
-window close and setup failure all remove callbacks and release preview resources
-before simulation construction or context destruction. A failed thumbnail shows
-a placeholder without altering runtime asset checks.
+render. Start, Cancel, Escape, window close and setup failure remove callbacks
+and release preview textures before simulation construction or context
+destruction. A failed thumbnail displays a placeholder.
+
+**Start simulation** submits the selection. The startup adapter checks the
+selected assets against the support radius derived from the active fluid
+settings. The [asset pipeline](../sim_ready/README.md#active-call-sequence-and-interfaces)
+generates the missing or stale runtime assets before the simulation is
+constructed. The same Newton window shows progress and then hosts playback.
+A preparation error returns to the same selection panel with the error shown.
+Closing the window during preparation stops startup at the next progress
+boundary.
 
 Focused checks (active conda environment, project root):
 

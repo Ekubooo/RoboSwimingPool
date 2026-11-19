@@ -1,4 +1,4 @@
-"""Build and bind a Newton scene using prepublished geometry and boundaries."""
+"""Build and bind a Newton scene using prepared geometry and boundaries."""
 
 from dataclasses import replace
 import json
@@ -19,9 +19,10 @@ from RSP.sim_ready.lib.asset_validation import (
     ValidationReport, diagnostic_scope, validate_coverage, validate_physical_asset,
 )
 from RSP.sim_ready.lib.storage.hull_io import load_hulls
-from RSP.sim_ready.paths import PROJECT_ROOT, PUBLISHED_ROOT
+from RSP.sim_ready.paths import PROJECT_ROOT, RUNTIME_ROOT
 from RSP.sim_ready.reference import POOL_SIZE, SCENE_TRANSFORM
 
+from .fluid import boundary_support_radius
 from .resolve import resolve_scene
 from .spec import load_scene
 
@@ -49,7 +50,7 @@ def runtime_config(control_dt, substeps, settings=None):
 
 
 def add_collisions(builder, layout, bunny, hulls):
-    """Assemble published shapes using Newton's public builder interface."""
+    """Assemble prepared shapes using Newton's public builder interface."""
     import newton
     import warp as wp
     cfg = builder.ShapeConfig(density=0., mu=1.)
@@ -71,11 +72,11 @@ def add_collisions(builder, layout, bunny, hulls):
 
 class PBFScene:
     def __init__(self, directory, device, control_dt, substeps, *, scene_spec=None, scene_assets=None, settings=None):
-        self.directory = Path(directory or PUBLISHED_ROOT).resolve()
+        self.directory = Path(directory or RUNTIME_ROOT).resolve()
         spec = load_scene() if scene_spec is None else scene_spec
         self.spec = spec
         self.fluid_settings = fluid_clock.DEFAULT_SETTINGS if settings is None else settings
-        resolved = (resolve_scene(spec, self.directory, support_radius=4.0 * self.fluid_settings.pbf.particle_radius)
+        resolved = (resolve_scene(spec, self.directory, support_radius=boundary_support_radius(self.fluid_settings))
                     if scene_assets is None else scene_assets)
         self.static_asset = resolved.static
         self.resolved_assets = resolved.dynamic
@@ -93,7 +94,7 @@ class PBFScene:
                               block_start=spec.fluid_start, block_end=spec.fluid_end)
         self.particles = SimpleNamespace(config=self.config)
         pbf_helper.init_scene_parameters(self.particles)
-        self.primitive_files = [str(asset.file(asset.record["model"])) for asset in self.dynamic_assets[1:]]
+        self.primitive_files = [str(asset.model_path) for asset in self.dynamic_assets[1:]]
         self.body_meshes = {}
         self.boundaries = None
         self.validation = ValidationReport()
@@ -108,23 +109,23 @@ class PBFScene:
 
     def register_character(self, obj_id, excluded_links=()):
         self.register_instance(obj_id, self.spec.character)
-        published = tuple(self._object_assets[obj_id].record.get("excluded_links", ()))
-        if excluded_links and set(excluded_links) != set(published):
-            raise ValueError("Environment exclusions differ from the published character")
-        self._excluded_links[obj_id] = published
+        prepared = tuple(self._object_assets[obj_id].record.get("excluded_links", ()))
+        if excluded_links and set(excluded_links) != set(prepared):
+            raise ValueError("Environment exclusions differ from the prepared character")
+        self._excluded_links[obj_id] = prepared
 
     @staticmethod
-    def validate_published_links(physical, record):
-        """A published boundary or an explicit collision-free exclusion owns every body."""
+    def validate_asset_links(physical, record):
+        """Each body needs a prepared boundary or an explicit collision-free exclusion."""
         excluded = tuple(record.get("excluded_links", ()))
         links = record["links"]
         names = {body.name for body in physical.bodies}
         if set(links) - names or set(links).intersection(excluded):
-            raise ValueError("Unknown or excluded body in published boundaries")
+            raise ValueError("Unknown or excluded body in prepared boundaries")
         prepared = [i for i, body in enumerate(physical.bodies) if body.name in links]
         validate_coverage(physical, prepared, excluded).require_valid()
         if any(body.shapes for body in physical.bodies if body.name in excluded):
-            raise ValueError("Only collision-free bodies may be excluded from published coupling")
+            raise ValueError("Only collision-free bodies may be excluded from coupling")
 
     def validate_model(self, model):
         if self._validated_model is model:
@@ -133,7 +134,7 @@ class PBFScene:
             bindings = describe_articulations(model)
         self.validate_consumer_layout(model, bindings)
         for obj_id, binding in enumerate(bindings):
-            self.validate_published_links(binding.asset, self._object_assets[obj_id].record)
+            self.validate_asset_links(binding.asset, self._object_assets[obj_id].record)
             self.validation.extend(validate_physical_asset(binding.asset, self._excluded_links.get(obj_id, ())))
             self.validate_consumer_object(obj_id, binding)
         self.validate_consumer_objects(bindings)
@@ -188,7 +189,7 @@ class PBFScene:
                 continue
             asset = self._object_assets[obj_id]
             if physical_signature(binding.asset) != asset.record["physical_signature"]:
-                raise ValueError(f"Published physical model differs from runtime object {obj_id}")
+                raise ValueError(f"Prepared physical model differs from runtime object {obj_id}")
             links = asset.record["links"]
             for local_id, body in enumerate(binding.asset.bodies):
                 if body.name in self._excluded_links.get(obj_id, ()):

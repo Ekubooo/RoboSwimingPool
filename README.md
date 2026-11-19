@@ -65,9 +65,14 @@ conda run -n WarpSim python -m pip install -e . --no-deps --no-build-isolation
 ```
 
 This registers the RSP package without changing the environment's dependencies.
-The Newton-PBF backend, solver and MimicKit launcher remain in `mimickit`;
-assets remain in `data/assets_RSP`. See the [RSP asset pipeline guide](RSP/sim_ready/README.md)
-for Python imports, cache contracts and checks without recording video.
+RSP owns the Newton-PBF simulation, solver, rendering and application; MimicKit
+integration lives in `RSP/integrations/mimickit`. Run `python tools/run_rsp.py`
+to select a scene, or add `--profile humanoid --direct` / `--profile g1 --direct`.
+Startup automatically prepares the selected scene's runtime assets from original
+inputs. Each asset keeps one current generated directory under
+`data/assets_RSP/runtime`; changing the code-owned particle radius automatically
+updates its volume map. See the [RSP architecture](RSP/README.md) and
+[asset pipeline guide](RSP/sim_ready/README.md) for ownership and regeneration.
 
 
 ---

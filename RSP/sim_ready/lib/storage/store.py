@@ -1,4 +1,4 @@
-"""A small output store: paths, recipe names, staging and group publication.
+"""Checked output paths, staging and rollback for generated file groups.
 
 Asset-specific validity, support selection and cache-hit decisions belong to
 pipelines. This class does not import geometry, baking or runtime modules.
@@ -9,7 +9,6 @@ from pathlib import Path
 import tempfile
 
 from ...paths import output_root as resolve_output_root
-from .fingerprints import recipe_digest
 from .publish import publish_files
 
 
@@ -37,19 +36,6 @@ class AssetStore:
         path = self.path(*parts)
         path.mkdir(parents=True, exist_ok=True)
         return path
-
-    @staticmethod
-    def recipe_key(description, *, allow_nan=False):
-        # Preserve the previous 20-character key and JSON encoding.
-        return recipe_digest(description, allow_nan=allow_nan)[:20]
-
-    def recipe_directory(self, category, description, *, name=None, allow_nan=False):
-        key = self.recipe_key(description, allow_nan=allow_nan)
-        if name is not None:
-            if not name or any(c in name for c in '/\\:') or name in ('.', '..'):
-                raise ValueError("An asset recipe name must be one filename component")
-            key = f"{name}-{key}"
-        return self.directory(category, key)
 
     @contextmanager
     def staging(self, destination, *, prefix=".asset-"):

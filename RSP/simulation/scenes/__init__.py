@@ -1,1 +1,1 @@
-"""Scene descriptions, layout and assembly for published assets."""
+"""Scene descriptions, layout and assembly for prepared assets."""

@@ -8,8 +8,9 @@ ASSET_ROOT = PROJECT_ROOT / "data" / "assets_RSP"
 ORIGIN_ROOT = ASSET_ROOT / "origin"
 PBF_PLAY_ROOT = ASSET_ROOT / "pbf_play"
 TEST_ROOT = ASSET_ROOT / "tests"
-PUBLISHED_ROOT = ASSET_ROOT / "published"
+RUNTIME_ROOT = ASSET_ROOT / "runtime"
 SCENE_ROOT = PROJECT_ROOT / "data" / "scenes"
+G1_SOURCE_ROOT = PROJECT_ROOT / "data" / "assets" / "g1"
 
 
 def output_root(path):
@@ -23,4 +24,13 @@ def output_root(path):
         if (root == ASSET_ROOT or not root.is_relative_to(ASSET_ROOT)
                 or root.is_relative_to(ORIGIN_ROOT)):
             raise ValueError("Repository asset outputs must be in a data/assets_RSP subdirectory outside origin")
+    return root
+
+
+def runtime_root(path, *, origin=ORIGIN_ROOT):
+    root = output_root(path)
+    for protected in (ORIGIN_ROOT, Path(origin), G1_SOURCE_ROOT, PBF_PLAY_ROOT, ASSET_ROOT / "published"):
+        protected = protected.resolve()
+        if root.is_relative_to(protected) or protected.is_relative_to(root):
+            raise ValueError(f"Runtime output {root} overlaps a protected directory: {protected}")
     return root

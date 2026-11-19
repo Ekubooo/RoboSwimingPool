@@ -1,6 +1,9 @@
 """Continuous SMP policy playback in the single-world fluid scene."""
+from contextlib import ExitStack
 import logging
 import math
+from os.path import abspath
+from pathlib import Path
 import numpy as np
 import torch
 
@@ -16,47 +19,74 @@ from util.camera import Camera, CameraMode
 class PBFPlayEnv(SMPEnv):
     continuous_playback = True
 
-    def __init__(self, env_config, engine_config, num_envs, device, visualize, record_video=False):
+    def __init__(self, env_config, engine_config, num_envs, device, visualize, record_video=False, *,
+                 asset_progress=None):
         if engine_config["engine_name"] != "newton_pbf" or num_envs != 1:
             raise ValueError("pbf_play requires one newton_pbf environment")
+        from RSP.sim_ready.lib.storage.runtime_slot import runtime_asset_lease
+        from RSP.sim_ready.paths import ASSET_ROOT, PROJECT_ROOT, RUNTIME_ROOT, SCENE_ROOT
+        from RSP.sim_ready.pipelines.runtime import AssetPreparationError, ensure_runtime_assets
+        from RSP.simulation.scenes.fluid import boundary_support_radius
         from RSP.simulation.scenes.spec import load_scene
         from RSP.simulation.scenes.resolve import resolve_scene
-        from RSP.sim_ready.paths import PUBLISHED_ROOT, SCENE_ROOT
+
         scene = load_scene(env_config.get("scene_preset", SCENE_ROOT / "pbf_play.yaml"))
         env_config, engine_config = dict(env_config), dict(engine_config)
         settings = engine_config.get("fluid_settings")
         if settings is None:
             settings = fluid_clock.DEFAULT_SETTINGS
         engine_config["fluid_settings"] = settings
-        resolved = resolve_scene(
-            scene, engine_config.get("pbf_asset_dir", PUBLISHED_ROOT),
-            support_radius=4.0 * settings.pbf.particle_radius,
-        )
         self._policy_hz = float(env_config.get("playback_policy_hz", 30))
         if not math.isfinite(self._policy_hz) or self._policy_hz <= 0:
             raise ValueError("Playback policy frequency must be finite and positive")
-        character = resolved.dynamic[scene.character]
-        engine_config["scene_assets"] = resolved
-        env_config["char_file"] = str(character.file(character.record["model"]))
-        env_config["play_spawn_xy"] = scene.spawn_xy
-        env_config["policy_use_scene_sphere"] = scene.policy_use_scene_sphere
-        engine_config["scene_spec"] = scene
-        self.policy_use_scene_sphere = bool(env_config.get("policy_use_scene_sphere", False))
-        self._spawn_xy = tuple(env_config.get("play_spawn_xy", (.65, 1.)))
-        if len(self._spawn_xy) != 2 or not np.isfinite(self._spawn_xy).all():
-            raise ValueError("play_spawn_xy must contain two finite world coordinates")
-        self._scene_spec = scene
-        self._instance_ids = {}
-        self._policy_sphere_id = None
-        self._scene_obj_ids = []
-        self._pending_reset = False
-        self._pending_sphere = None
-        self._play_observations = None
-        # Needed even during base construction, when observation size is queried.
-        self._inactive_sphere_pos = torch.tensor([[[10., 10., .1]]], device=device)
-        self._inactive_sphere_vel = torch.zeros_like(self._inactive_sphere_pos)
-        super().__init__(env_config, engine_config, num_envs, device, visualize, record_video)
-        self._play_observations = self._create_playback_observations()
+
+        requested = Path(engine_config.get("pbf_asset_dir") or RUNTIME_ROOT).expanduser()
+        asset_root = Path(abspath(PROJECT_ROOT / requested))
+        if asset_root == ASSET_ROOT / "published":
+            asset_root = RUNTIME_ROOT
+        support_radius = boundary_support_radius(settings)
+        self._startup_resources = None
+        with ExitStack() as startup:
+            try:
+                asset_root = startup.enter_context(runtime_asset_lease(asset_root))
+            except (OSError, ValueError) as error:
+                raise AssetPreparationError(f"Cannot access runtime assets at {asset_root}: {error}") from error
+
+            assets = ensure_runtime_assets(
+                scene.asset_refs, support_radius=support_radius, device=device,
+                root=asset_root, progress=asset_progress,
+            )
+            resolved = resolve_scene(scene, asset_root, support_radius=support_radius, assets=assets)
+            if asset_progress is not None:
+                asset_progress("Scene assets are ready. Loading the simulation...")
+
+            engine_config.update(pbf_asset_dir=asset_root, scene_assets=resolved, scene_spec=scene)
+            env_config.update(char_file=str(resolved.dynamic[scene.character].model_path),
+                              play_spawn_xy=scene.spawn_xy, policy_use_scene_sphere=scene.policy_use_scene_sphere)
+            self.policy_use_scene_sphere = bool(env_config["policy_use_scene_sphere"])
+            self._spawn_xy = scene.spawn_xy
+            self._scene_spec = scene
+            self._instance_ids = {}
+            self._policy_sphere_id = None
+            self._scene_obj_ids = []
+            self._pending_reset = False
+            self._pending_sphere = None
+            self._play_observations = None
+            # Needed even during base construction, when observation size is queried.
+            self._inactive_sphere_pos = torch.tensor([[[10., 10., .1]]], device=device)
+            self._inactive_sphere_vel = torch.zeros_like(self._inactive_sphere_pos)
+            # Register cleanup before construction so the engine closes before
+            # releasing the asset lease on both partial and successful startup.
+            startup.callback(super().close)
+            super().__init__(env_config, engine_config, num_envs, device, visualize, record_video)
+            self._play_observations = self._create_playback_observations()
+            self._startup_resources = startup.pop_all()
+
+    def close(self):
+        resources = getattr(self, "_startup_resources", None)
+        if resources is not None:
+            self._startup_resources = None
+            resources.close()
 
     def _create_playback_observations(self):
         """Bind playback inputs after the environment owns all persistent buffers."""
