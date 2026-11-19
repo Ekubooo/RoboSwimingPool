@@ -2,11 +2,11 @@ schema: 1
 container:
   category: containers
   name: pbf_pool
-  version: '3'
+  version: '2'
 character:
   category: articulations
   name: humanoid
-  version: '3'
+  version: '2'
 instances: []
 spawn_xy:
 - 0.65
@@ -20,4 +20,4 @@ fluid:
   end:
   - 2.96
   - 1.9
-  - 4.05
+  - 2.34

@@ -87,10 +87,10 @@ class FluidClock:
 # vorticity, pressure regularization, initial velocity and block bounds. Supply
 # overrides here, e.g. pbf=PBFConfig(substeps=2, viscosity=0.25).
 DEFAULT_SETTINGS = FluidSettings(
-    pbf=PBFConfig(particle_radius=0.0125, substeps=2, pressure_iterations=3,
-                  # Z-up runtime lattice: 55 * 45 * 141 = 348,975 particles.
+    pbf=PBFConfig(particle_radius=0.01, substeps=2, pressure_iterations=3,
+                  # Z-up runtime lattice: 69 * 56 * 91 = 351,624 particles.
                   # The regular lattice deliberately includes the static bunny.
-                  block_start=(1.56, .50, .10), block_end=(2.96, 4.05, 1.25)),
+                  block_start=(1.56, .50, .10), block_end=(2.96, 2.34, 1.25)),
     time_scale=1.0,
     max_dt=1.0 / 300.0,
 )

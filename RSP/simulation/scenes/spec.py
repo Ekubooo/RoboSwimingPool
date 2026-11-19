@@ -34,7 +34,7 @@ class SceneSpec:
     spawn_xy: tuple
     policy_use_scene_sphere: bool
     fluid_start: tuple = (1.56, .75, .5)
-    fluid_end: tuple = (2.96, 1.9, 4.05)
+    fluid_end: tuple = (2.96, 1.9, 2.34)
 
     @property
     def props(self):
@@ -85,7 +85,7 @@ def parse_scene(record):
     enabled = record["policy_use_scene_sphere"]
     if not isinstance(enabled, bool) or (enabled and "policy_sphere" not in roles):
         raise ValueError("Scene sphere observations require a policy_sphere instance")
-    fluid = record.get("fluid", {"start": [1.56, .75, .5], "end": [2.96, 1.9, 4.05]})
+    fluid = record.get("fluid", {"start": [1.56, .75, .5], "end": [2.96, 1.9, 2.34]})
     if set(fluid) != {"start", "end"}:
         raise ValueError("fluid requires start and end")
     start, end = vector(fluid["start"], 3, "fluid.start"), vector(fluid["end"], 3, "fluid.end")

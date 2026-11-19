@@ -2,7 +2,7 @@ schema: 1
 identity:
   category: containers
   name: pbf_pool
-  version: '3'
+  version: '2'
 recipe: reference_pool
 inputs:
 - bunny_flat_bottom.obj
