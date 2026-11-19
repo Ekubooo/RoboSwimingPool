@@ -29,10 +29,11 @@ argument files are copied or rewritten. Old launcher outputs are left untouched.
 The application owns the Viewer; Presentation borrows it. The original demo
 entrypoint still creates and closes its own Viewer, with unchanged configuration.
 
-Targeted launcher checks: `python -m unittest discover -s tests -p test_rsp_launcher.py`.
-The integration checker also accepts `--scene <generated-scene.yaml>`.
-Same-window GL checks: `python tools/check_rsp_same_window.py` and
-`python tools/check_rsp_same_window.py --custom` (11 and 2 frames respectively).
+Targeted launcher contracts:
+`python -B -m unittest discover -s tests -p test_rsp_launcher_ui.py`.
+Use `python tools/run_rsp.py` for interactive same-window checks. The one-off
+acceptance scripts were retired; maintained checks are listed in
+[local-check policy](../README.md#running-and-checking).
 
 Run from the repository root in the existing WarpSim environment:
 
@@ -93,19 +94,16 @@ the skeleton and local physical descriptions, then binds published boundaries
 to the new runtime body IDs. It never prepares missing assets. Run records go to
 `output/pbf_play/runs/<session>/scene_manifest.json`, outside published packages.
 
-Choose the check that covers the changed scene:
+Check the immutable publication contract:
 
 ```powershell
-python -m unittest discover -s tests -p test_rsp_publication.py
-python tools/check_rsp_published_scene.py
-python tools/check_rsp_published_scene.py --preset pbf_empty --frames 2
-python tools/check_rsp_published_scene.py --preset pbf_multi --frames 2
-python tools/check_rsp_published_scene.py --preset pbf_wide --frames 2
+python -B -m unittest discover -s tests -p test_rsp_publication.py
 ```
 
-The playback checker uses the existing checkpoint, defaults to 11 headless
-frames, checks reset, forbids preparation calls, and verifies published files
-are unchanged.
+For scene changes, select the relevant preset in `python tools/run_rsp.py`.
+Existing packages are verified and reused by preparation; this is not a cold
+bake. Use a separate publication/cache root when checking asset generation,
+so existing versioned packages and saved scene references remain intact.
 
 ## G1 collision-based playback
 
@@ -143,10 +141,7 @@ selects a complete humanoid profile, never a mesh with an unrelated policy.
 Unavailable profile resources are reported without preventing the default
 humanoid from running. Model and policy loading happen after selection.
 
-The explicit short integration check is:
-
-```powershell
-python tests/check_rsp_g1_playback.py
-python tests/check_rsp_g1_playback.py --custom empty
-python tests/check_rsp_g1_playback.py --custom multi
-```
+Run the G1 profile with `python tools/run_rsp.py --profile g1 --direct`.
+The prior one-off headless/GSI acceptance is recorded in
+`output/architecture_completion_checks/REPORT.md`; it is not part of the small
+CPU contract suite.

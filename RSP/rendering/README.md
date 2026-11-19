@@ -27,8 +27,8 @@ Speed colors, opacity sliders and automatic depth shading work in both settings.
 The private target is allocated on first use, cached across switches and freed
 on resize/close. Equally deep faces use the first drawn face; changing which
 particle is nearest can expose square edges and cause color changes.
-The fixed-scene render-only check is `python tools/profile_rsp_transparent_layers.py`;
-see `docs/transparent_layer_results.md` for results and limitations.
+The prior fixed-scene comparison is recorded in
+`docs/transparent_layer_results.md`, including results and limitations.
 
 **Depth shading (automatic range)** enables near-bright/far-dark fluid color;
 **Depth strength** ranges from 0 to 1, default 0.5. At the default strength,
@@ -45,10 +45,9 @@ cached and recreated on resize. Disabling the effect skips reduction passes.
 No manual near/far distance controls are provided. The automatic range follows
 camera/visibility changes and is not temporally filtered.
 
-Compare the effect with `python tools/profile_rsp_fluid_modes.py Transparent --transparent-depth off`
-and `--transparent-depth on`. Both use the same 80/100%
-opacity settings; results go to `output/rsp_render_profile/transparent_depth/`.
-See `docs/transparent_depth_results.md` for the measured cost and check results.
+Compare the effect by switching depth shading in the playback UI with the same
+80/100% opacity settings. See `docs/transparent_depth_results.md` for the prior
+measured cost and check results.
 
 Within SSFR, **SSFR material** selects **Water** (default) or **Velocity**:
 
@@ -78,12 +77,9 @@ thickness and smoothing algorithms. Switching is queued at the frame boundary,
 works while paused, and preserves the selection across reset and mode changes.
 No simulation Graph or physical parameters are changed.
 
-Profile a preset with `python tools/profile_rsp_fluid_modes.py SSFR --ssfr-preset Water`
-(or `Velocity`). Add `--check-materials` to perform a short
-paused-switch/reset check after the timed batch. Preset measurements use a
-separate `output/rsp_render_profile/ssfr_presets/` directory so previous mode
-results remain available for historical comparison.
-See `docs/ssfr_material_presets_results.md` for the measured preset comparison.
+Switch Water/Velocity in the playback UI, including while paused and across
+reset. See `docs/ssfr_material_presets_results.md` for the prior measured
+preset comparison.
 
 Optional implementations live in `fluid/`; edit `fluid/config.py` for their
 startup settings. They compose the shared `ParticleInstances` resource and
@@ -104,14 +100,10 @@ SSFR approximates only the visible surface; refraction is limited to the current
 screen. No foam, spray, anisotropy, caustics or multiple optical bounces are added.
 The first version uses single-sample fluid targets over the resolved MSAA scene.
 
-Necessary checks: `tests/test_rsp_fluid_rendering.py`; per-mode performance tool:
-`python tools/profile_rsp_fluid_modes.py Original` (or `Transparent` / `SSFR`).
-The tool warms 30 frames and samples 180 once, with GPU timestamps resolved
-after the batch. Nested GPU timings are attribution, not additive CPU costs.
-It produces one still image per mode, with no recording tests or video files.
-Use `--check-switches` for the short paused-switch/reset check instead of timing
-another batch. Measurements and limitations are in
-`docs/rendering_fluid_modes_results.md` at the repository root.
+Prior mode measurements and limitations are in
+`docs/rendering_fluid_modes_results.md`. The one-off performance scripts and
+intermediate outputs were removed after acceptance. Historical commands in
+those dated reports describe the original experiments, not maintained tools.
 
 `BillboardBatch` owns its shaders and a `ParticleInstances` batch. Optional fluid
 passes use the same quad and instance layout. `RegisteredBuffer` manages mapping,
@@ -191,28 +183,23 @@ Newton, run the rendering tests to verify this internal scene-object contract.
 
 ## Verification and timing
 
-Use the project's WarpSim environment from the repository root. Select only the
-checks relevant to the change; this list is not a required full suite. The
-integration check covers policy loading and GSI reset with recording disabled.
-Do not run recording tests or generate recording test artifacts.
+Use the active WarpSim environment from the repository root:
 
-```text
-python -m unittest discover -s tests -p test_rsp_rendering.py -v
+```powershell
 python tools/check_rsp_architecture.py
-python tools/check_newton_pbf_refactor.py integration --revision after
-python tools/profile_rsp_render.py --label billboard --hidden
+python -B -m unittest discover -s tests -p test_rsp_launcher_ui.py
+python tools/run_rsp.py
 ```
 
-The profiler runs the existing SMP policy and PBF scene with the real Newton UI.
-`--hidden` hides the window after creation; it does not use Newton's headless
-mode, which disables UI. It warms up 30 frames, then measures 180 frames in each
-of two modes: normal rate limiting and a process-local bypass of that limiter.
-Simulation frequencies, production pacing and Presentation are unchanged.
+The maintained CPU contracts check ownership and callback cleanup; they do not
+validate CUDA/OpenGL interop or visual output. After renderer changes, check the
+relevant mode, paused switches, reset and window close in the actual application.
+The latest acceptance evidence is retained in
+`output/architecture_completion_checks/REPORT.md` and `output/render_architecture.log`.
+See [local-check policy](../README.md#running-and-checking) for the retained suite.
 
-Reports and screenshots go to `output/rsp_render_profile/<label>`. Frame times
-include policy, physics, scene/UI rendering and presentation. Render timings are
-CPU call durations, including driver/interop waits, **not GPU kernel timings**.
-GPU work is drained only at batch boundaries, with an additional completed-batch
-mean reported. Screenshot readback, loading, JIT compilation and reset/warmup
-are outside the sampled interval. Compare identical arguments and scene configs
-before and after a change; unrelated WarpLab scenes are not an FPS baseline.
+Generate targeted profiling probes only when needed, under ignored `output/`.
+Compare identical scene/configuration and warmup conditions. Drain GPU work at
+batch boundaries, distinguish CPU call time from GPU kernel timings, and keep
+loading, JIT compilation and readback outside the measured interval. Do not run
+recording tests or generate recording test artifacts.

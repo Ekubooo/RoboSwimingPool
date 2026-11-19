@@ -216,14 +216,13 @@ to the same artifact are outside the supported workflow.
 
 ## Verification
 
-For changes to publication and scene resolution, run these focused CPU checks
-from the repository root. The scene check uses existing published packages.
+For publication changes, run this focused CPU contract check from the repository
+root in the active environment. It uses temporary fixtures and does not bake assets.
 
 ```powershell
-conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_publication.py -v
-conda run -n WarpSim python -m unittest discover -s tests -p test_rsp_scene_assembly.py -v
+python -B -m unittest discover -s tests -p test_rsp_publication.py -v
 ```
 
-For a short CUDA playback and reset check using read-only published assets, see
+For playback using read-only published assets, see
 the [published package guide](PUBLISHED_ASSETS.md). Run checks for SDF, volume map
 or collision generation only when those production paths change.

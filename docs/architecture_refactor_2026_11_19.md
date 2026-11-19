@@ -1,5 +1,10 @@
 # RSP 架构重构实施记录
 
+> 清理说明：本文保留重构验收时的历史命令。一次性测试/性能脚本已在
+> 2026-11-19 清理；当前维护入口见 [本地检查约定](../RSP/README.md#running-and-checking)，
+> 最新验收报告与对照快照仍保留在 `output/architecture_completion_checks`
+> 和 `output/newton_pbf_refactor_checks`。
+
 本轮完成六个模块的职责整理，保持单仓库、原安装方式与依赖版本。
 入口仍为 `python tools/run_rsp.py`；当前架构和资源所有权见
 [RSP/README.md](../RSP/README.md)。

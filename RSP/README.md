@@ -70,7 +70,6 @@ python -m pip install -e . --no-deps --no-build-isolation
 python tools/run_rsp.py
 python tools/run_rsp.py --profile g1 --direct
 python tools/prepare_rsp_assets.py
-python tools/check_rsp_architecture.py
 ```
 
 The distribution includes RSP code, not MimicKit or asset data. Asset dependency
@@ -81,5 +80,14 @@ and ImGui dependencies. This refactor does not change any dependency version.
 Run only checks relevant to a change. The architecture checker parses imports
 without initializing CUDA or GL. Its optional `--solver-baseline REV` verifies
 that a Solver relocation changed only the explicitly allowed import/module
-paths. Short playback checks use already-published assets. Recording interfaces
-are retained, but recording checks and recording artifacts are excluded.
+paths. Tests and standalone checking/profiling scripts are local-only and ignored
+by Git; a fresh checkout does not include them. Existing local copies may be
+restored from a workspace backup, or regenerated for the change under review.
+Commands in module guides that reference these scripts require those local copies.
+
+The local contracts cover immutable publication, playback cadence/reset, Viewer
+ownership, fluid-clock/Graph bookkeeping, and stable state storage. One-off probes,
+traces and timing reports belong under ignored `output/`. Shared evaluation
+libraries stay versioned: prior scoring lives in `tools/getup/prior_scoring.py`,
+while the G1 evaluator also uses its control-probe and joint-diagnostic modules.
+Recording interfaces are retained; recording tests and artifacts are excluded.

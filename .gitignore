@@ -2,6 +2,9 @@
 
 .vs/
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 output/
 .vscode/
 wandb/
@@ -14,3 +17,17 @@ wandb/
 # Historical PBF output locations (RSP originals live in data/assets_RSP/origin).
 /mimickit/PBF/Assets/
 /mimickit/solvers/pbf/Assets/
+
+# Local checks and profiling entrypoints are not distributed with the source.
+/tests/
+/tools/check_rsp_*.py
+/tools/check_newton_pbf_*.py
+/tools/profile_rsp_*.py
+/tools/analyze_rsp_*.py
+/tools/diagnose_rsp_*.py
+/tools/diffusion_model/check_getup_prior.py
+/tools/g1_dodgeball/run_control_probe.py
+/tools/getup/diagnose_getup.py
+
+# ImGui's machine-local window layout (keep authored application configs).
+/imgui.ini

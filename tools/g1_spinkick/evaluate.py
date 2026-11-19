@@ -17,7 +17,7 @@ import yaml
 from tools.g1_spinkick.workflow import ENV, ENGINE, AGENT, PRIOR_DIR, audit_assets, check_prior
 from tools.getup.common import read_yaml, provenance, sha256, write_json
 from tools.getup.evaluate_getup import Tee
-from tools.getup.diagnose_getup import score_windows
+from tools.getup.prior_scoring import score_windows
 
 
 def standing_candidate(env, count=64):

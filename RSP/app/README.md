@@ -34,9 +34,10 @@ a placeholder without altering runtime asset checks.
 Focused checks (active conda environment, project root):
 
 ```powershell
-python -m unittest discover -s tests -p "test_rsp_launcher*.py"
-python -m unittest discover -s tests -p "test_rsp_previews.py"
+python -B -m unittest discover -s tests -p "test_rsp_launcher_ui.py"
+python -B -m unittest discover -s tests -p "test_rsp_playback.py"
 ```
 
-The latter includes a real hidden GL window and in-memory pixel checks; it writes
-no preview images. Interactive layout acceptance is a separate check.
+These CPU contracts cover playback scheduling and window/callback ownership.
+They do not open a real GL window. Interactive layout acceptance is a separate
+check using `python tools/run_rsp.py`; see [local-check policy](../README.md#running-and-checking).
