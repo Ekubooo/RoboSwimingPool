@@ -31,6 +31,14 @@ and passes settings explicitly. It derives the boundary support radius with the
 existing PBF configuration code and supplies that value to asset preparation and
 scene validation. The asset package never discovers a running solver.
 
+The bundled playback presets use a 0.0125 m particle radius and a 55 x 45 x 141
+lattice (348,975 particles). Their Z-up fluid bounds are (1.56, 0.75, 0.50) to
+(2.96, 1.90, 4.05). Each main frame advances both systems by 1/150 s: four rigid
+substeps at 1/600 s and two fluid substeps at 1/300 s, with three pressure
+iterations per fluid substep. The policy stays at 30 Hz (every five frames).
+These settings require volume maps baked with support radius 0.05 m; the
+bundled source manifests and scene references select new immutable versions.
+
 Volume-map precomputation belongs to `sim_ready`: its numerical function works
 in memory, the preparation pipeline writes SDF plus volume-map NVDB resources,
 and the boundary loader validates and reads them. Runtime body transforms,

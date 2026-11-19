@@ -2,17 +2,17 @@ schema: 1
 container:
   category: containers
   name: pbf_pool
-  version: '2'
+  version: '3'
 character:
   category: articulations
   name: humanoid
-  version: '2'
+  version: '3'
 instances:
 - name: scene_sphere
   asset:
     category: props
     name: scene_sphere
-    version: '2'
+    version: '3'
   position:
   - 1.75
   - 1.55
@@ -26,7 +26,7 @@ instances:
   asset:
     category: props
     name: light_box
-    version: '2'
+    version: '3'
   position:
   - 1.1
   - 0.45
@@ -52,7 +52,7 @@ instances:
   asset:
     category: props
     name: light_box
-    version: '2'
+    version: '3'
   position:
   - 2.55
   - 0.45
@@ -65,7 +65,7 @@ instances:
   asset:
     category: props
     name: heavy_box
-    version: '2'
+    version: '3'
   position:
   - 2.55
   - 1.55
@@ -86,4 +86,4 @@ fluid:
   end:
   - 2.96
   - 1.9
-  - 3.1
+  - 4.05

@@ -2,6 +2,6 @@ schema: 1
 identity:
   category: props
   name: heavy_box
-  version: '2'
+  version: '3'
 recipe: reference_prop
 inputs: []

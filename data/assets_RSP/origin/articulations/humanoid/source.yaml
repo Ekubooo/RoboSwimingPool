@@ -2,7 +2,7 @@ schema: 1
 identity:
   category: articulations
   name: humanoid
-  version: '2'
+  version: '3'
 recipe: mjcf
 inputs:
 - articulations/humanoid/humanoid.xml

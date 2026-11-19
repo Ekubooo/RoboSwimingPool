@@ -1,8 +1,8 @@
 engine_name: newton_pbf
 control_mode: pos
-# Backend frame frequency; the playback policy remains 30 Hz (every 4 frames).
-control_freq: 120
-sim_freq: 480
+# Backend frame frequency; the playback policy remains 30 Hz (every 5 frames).
+control_freq: 150
+sim_freq: 600
 env_spacing: 5
 enable_cuda_graph: true
 newton_njmax: 8192
