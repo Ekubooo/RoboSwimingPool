@@ -92,4 +92,5 @@ DEFAULT_SETTINGS = FluidSettings(
                   # The regular lattice deliberately includes the static bunny.
                   block_start=(1.56, .50, .10), block_end=(2.96, 3.10, 1.25)),
     time_scale=1.0,
+    max_dt=1.0 / 240.0,
 )

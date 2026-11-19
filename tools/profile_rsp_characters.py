@@ -26,6 +26,8 @@ def main():
     parser.add_argument('--warmup', type=int, default=30)
     parser.add_argument('--frames', type=int, default=60)
     parser.add_argument('--nsys', action='store_true')
+    parser.add_argument('--width', type=int, default=1280)
+    parser.add_argument('--height', type=int, default=720)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -49,7 +51,7 @@ def main():
     started = time.perf_counter()
     try:
         with wp.ScopedDevice(profile.device), torch.no_grad():
-            viewer = resource_util.construct(NewtonBillboardViewer, width=1280, height=720, vsync=False)
+            viewer = resource_util.construct(NewtonBillboardViewer, width=args.width, height=args.height, vsync=False)
             viewer.renderer.window.set_visible(False)
             with simulation(profile, profile.scene_preset, viewer) as (env, agent):
                 runner = PlaybackRunner(env, agent)
@@ -111,7 +113,14 @@ def main():
                         (env, '_post_physics_step', 'observations', False),
                         (engine._presentation, 'render', 'render', False),
                         (viewer, 'log_state', 'state_upload', False),
-                        (pipeline, 'original_render', 'scene_draw', True)):
+                        (pipeline, 'original_render', 'scene_draw', True),
+                        (viewer.renderer, 'present', 'present', False),
+                        (viewer.renderer, 'update', 'events', False),
+                        (viewer.gui, 'prepare_frame', 'ui_build', False),
+                        (viewer.gui, 'render_prepared_frame', 'ui_draw', True),
+                        (wp.RegisteredGLBuffer, 'map', 'interop_map', False),
+                        (wp.RegisteredGLBuffer, 'unmap', 'interop_unmap', False)):
+
                         hook(stack, obj, method, label, gpu)
                     initial_root = None
                     # GSI samples use a pre-shuffled cursor, not just the global RNG.
