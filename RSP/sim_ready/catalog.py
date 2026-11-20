@@ -77,6 +77,21 @@ class AssetRef:
 
 
 STAIRS_REF = AssetRef("containers", "pbf_stairs")
+FULL_STAIRS_REF = AssetRef("containers", "pbf_stairs_full")
+_REFERENCE_POOLS = {"pbf_pool": "reference_pool", "pbf_pool_wide": "wide_pool"}
+_BUILTIN_CONTAINER_NAMES = {STAIRS_REF.name, FULL_STAIRS_REF.name, *_REFERENCE_POOLS}
+
+
+def terrain_reference(name):
+    """Validate an authored terrain name in the container namespace."""
+    ref = AssetRef("containers", name)
+    stem = name.split(".", 1)[0].rstrip(" ").upper()
+    if (stem in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+            or (len(stem) == 4 and stem[:3] in {"COM", "LPT"} and stem[3] in "123456789¹²³")):
+        raise ValueError(f"Reserved device name: {name}")
+    if name.casefold() in _BUILTIN_CONTAINER_NAMES:
+        raise ValueError(f"Reserved built-in container name: {name}")
+    return ref
 
 
 @dataclass(frozen=True)
@@ -88,6 +103,19 @@ class SourceAsset:
     @property
     def recipe(self):
         return self.record["recipe"]
+
+    @property
+    def is_terrain(self):
+        return self.ref.category == "containers" and self.recipe in {"stairs", "procedural_terrain"}
+
+    @property
+    def terrain_recipe(self):
+        """Procedural settings, or None for the legacy local stairs."""
+        if self.recipe != "procedural_terrain":
+            return None
+        from .terrain import TerrainRecipe
+
+        return TerrainRecipe.from_dict(self.record["terrain_recipe"])
 
     def input_files(self):
         files = {name: contained(self.origin, name) for name in self.record["inputs"]}
@@ -149,7 +177,12 @@ class SourceAsset:
 
     @property
     def container_size(self):
+        if self.is_terrain:
+            from .reference import POOL_SIZE
+
+            return POOL_SIZE
         from .source_geometry import CONTAINER_SIZES
+
         return CONTAINER_SIZES.get(self.recipe)
 
     def bunny_mesh(self):
@@ -178,8 +211,9 @@ class SourceCatalog(dict[AssetRef, SourceAsset]):
         self.errors: list[SourceIssue] = []
 
 
-def _source(origin, ref, recipe, inputs=()):
-    return SourceAsset(ref, dict(schema=1, identity=asdict(ref), recipe=recipe, inputs=list(inputs)), origin)
+def _source(origin, ref, recipe, inputs=(), **metadata):
+    return SourceAsset(ref, dict(schema=1, identity=asdict(ref), recipe=recipe, inputs=list(inputs),
+                                 **metadata), origin)
 
 
 def _articulation_source(path, origin):
@@ -197,9 +231,29 @@ def _articulation_source(path, origin):
     return _source(origin, ref, record["recipe"], record["inputs"])
 
 
+def read_terrain_source(path, origin):
+    """Read a named terrain definition into the existing container catalog."""
+    from .terrain import TerrainRecipe
+
+    ref = terrain_reference(path.parent.name)
+    relative = path.relative_to(origin)
+    resolved = contained(origin, relative)
+    if relative.parts != ("terrains", ref.name, "terrain.yaml") or resolved != path:
+        raise ValueError("Terrain definitions must use physical paths inside origin/terrains")
+    data = path.read_bytes()
+    record = yaml.safe_load(data)
+    if (not isinstance(record, dict) or record.keys() != {"schema", "kind", "parameters"}
+            or type(record["schema"]) is not int or record["schema"] != 1):
+        raise ValueError("Invalid terrain definition schema")
+    recipe = TerrainRecipe.from_dict({key: record[key] for key in ("kind", "parameters")})
+    return _source(origin, ref, "procedural_terrain", (relative.as_posix(),), terrain_recipe=recipe.to_dict(),
+                   terrain_input_digest=hashlib.sha256(data).hexdigest())
+
+
 def scan_sources(origin=ORIGIN_ROOT):
-    """Discover OBJ props and articulation declarations without preparing runtime data."""
+    """Discover source assets without preparing runtime data."""
     from .source_geometry import PROPS
+    from .terrain import TerrainRecipe
 
     origin = Path(origin).resolve()
     sources = SourceCatalog()
@@ -207,8 +261,10 @@ def scan_sources(origin=ORIGIN_ROOT):
         ref = AssetRef("props", name)
         sources[ref] = _source(origin, ref, "reference_prop")
     sources[STAIRS_REF] = _source(origin, STAIRS_REF, "stairs")
+    sources[FULL_STAIRS_REF] = _source(origin, FULL_STAIRS_REF, "procedural_terrain",
+                                      terrain_recipe=TerrainRecipe.default().to_dict())
     bunny = "props/bunny_flat_bottom.obj"
-    for name, recipe in (("pbf_pool", "reference_pool"), ("pbf_pool_wide", "wide_pool")):
+    for name, recipe in _REFERENCE_POOLS.items():
         ref = AssetRef("containers", name)
         try:
             if not contained(origin, bunny).is_file():
@@ -218,6 +274,7 @@ def scan_sources(origin=ORIGIN_ROOT):
             sources.errors.append(SourceIssue(origin / bunny, str(exc), ref))
 
     reserved = {ref.relative.as_posix().casefold() for ref in sources}
+    reserved.update(f"containers/{name}" for name in _BUILTIN_CONTAINER_NAMES)
     discovered = {}
 
     def collect(path, source):
@@ -242,6 +299,12 @@ def scan_sources(origin=ORIGIN_ROOT):
     for path in sorted((origin / "articulations").rglob("source.yaml")):
         try:
             collect(path, _articulation_source(path, origin))
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            sources.errors.append(SourceIssue(path, str(exc)))
+
+    for path in sorted((origin / "terrains").glob("*/terrain.yaml")):
+        try:
+            collect(path, read_terrain_source(path, origin))
         except (OSError, ValueError, yaml.YAMLError) as exc:
             sources.errors.append(SourceIssue(path, str(exc)))
 
@@ -317,8 +380,18 @@ def read_prepared_asset(path, source, *, verify=True):
         asset.file(record.get("visible_mesh") or record["bunny"])
         if record.get("hulls") is not None:
             asset.file(record["hulls"])
-        if not isinstance(record["container"], dict):
+        layout = record["container"]
+        if not isinstance(layout, dict):
             raise ValueError(f"Missing container layout: {path}")
+        if source.is_terrain:
+            from .terrain import TerrainRecipe
+
+            kind = "stairs" if source.terrain_recipe is None else TerrainRecipe.from_dict(layout.get("terrain_recipe")).kind
+            if layout.get("terrain") != kind or "terrain_prop" not in layout:
+                raise ValueError(f"Invalid prepared terrain layout: {path}")
+            prop = layout["terrain_prop"]
+            if prop is not None and (AssetRef.from_mapping(prop).category != "props" or not record.get("hulls")):
+                raise ValueError(f"Missing prepared terrain OBJ collision geometry: {path}")
     else:
         asset.model_path
         if source.recipe == "obj":

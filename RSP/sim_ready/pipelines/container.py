@@ -1,22 +1,26 @@
-"""Build one fixed pool with Newton stairs and an optional platform model."""
+"""Build the fixed pool around a closed terrain and an optional static OBJ."""
 
 from dataclasses import asdict, dataclass
+import json
 
 import numpy as np
 import trimesh
 
 from ..config import BakeOptions
 from ..lib.mesh import geometry, validation
-from ..lib.storage.mesh_io import save_mesh_obj
+from ..lib.mesh.convex import measure_hull_error, validate_convex_mesh, validate_hulls
+from ..lib.storage.fingerprints import recipe_digest
+from ..lib.storage.hull_io import load_hulls, save_hulls
+from ..lib.storage.mesh_io import load_mesh_obj, save_mesh_obj
 from ..reference import POOL_SIZE
-from ..source_geometry import WALL_THICKNESS
+from ..source_geometry import WALL_THICKNESS, normalized_obj
+from .terrain_geometry import PLATFORM_WIDTH, terrain_boxes
 
 
 _STAIR_SIZE = (1.6, 1.6)
 _STAIR_CENTER = (2.05, 1.0)
 _STEP_WIDTH = 0.15
 _STEP_HEIGHT = 0.06
-_PLATFORM_WIDTH = 0.7
 _MODEL_FRACTION = 0.95
 _MODEL_SINK = 0.003
 _SIMPLIFY_TOLERANCE = 0.001
@@ -27,6 +31,8 @@ class TerrainDescription:
     visible_mesh: trimesh.Trimesh
     layout: dict
     model: trimesh.Trimesh | None
+    hulls: tuple[trimesh.Trimesh, ...] = ()
+    model_transform: np.ndarray | None = None
 
     @property
     def static_boxes(self):
@@ -44,7 +50,7 @@ def _terrain_boxes():
     terrain = Mesh.create_terrain(
         grid_size=(1, 1), block_size=_STAIR_SIZE, terrain_types="pyramid_stairs",
         terrain_params={"pyramid_stairs": dict(step_width=_STEP_WIDTH,
-            step_height=_STEP_HEIGHT, platform_width=_PLATFORM_WIDTH)},
+            step_height=_STEP_HEIGHT, platform_width=PLATFORM_WIDTH)},
         compute_inertia=False,
     )
     points = np.asarray(terrain.vertices, dtype=np.float64).copy()
@@ -70,29 +76,46 @@ def _terrain_boxes():
     return boxes
 
 
-def _place_model(source, platform):
+def _place_model(source, platform, prepared):
     if source.ref.category != "props" or source.recipe != "obj":
         raise ValueError("The platform model must be a discovered prop OBJ")
-    path, = source.input_files().values()
     try:
-        parts = validation.validate_rigid_parts(geometry.prepare_rigid(path))
-        model = parts[0] if len(parts) == 1 else geometry.union(parts)
-        span = model.extents[[0, 2]].max()  # Imported OBJ is Y-up.
+        if prepared is None:
+            model, hulls = normalized_obj(source), ()
+        else:
+            if prepared.source.ref != source.ref:
+                raise ValueError("Prepared geometry does not match the platform OBJ")
+            model = load_mesh_obj(prepared.file(prepared.record["mesh"]))
+            hull_path = prepared.record.get("hulls")
+            if hull_path is None:
+                validate_convex_mesh(model)
+                hulls = (model.copy(),)
+            else:
+                hulls = load_hulls(prepared.file(hull_path))
+                validate_hulls(hulls)
+
+        low, high = _mesh_bounds(model, *hulls)
+        span = (high - low)[:2].max()
         if span <= 0:
             raise ValueError("Expected a nonzero horizontal extent")
-        model.apply_scale(_MODEL_FRACTION * platform.extents[:2].min() / span)
-        # Measure the support section after scaling so the sink depth is in meters.
-        support = geometry.support_center(model, _MODEL_SINK)
-        transform = np.array(((1., 0., 0., 0.), (0., 0., -1., 0.),
-                              (0., 1., 0., 0.), (0., 0., 0., 1.)))
+        scale = _MODEL_FRACTION * platform.extents[:2].min() / span
+        support = np.r_[(low + high)[:2] / 2, model.bounds[0, 2]]
         target = np.r_[platform.bounds.mean(axis=0)[:2], platform.bounds[1, 2] - _MODEL_SINK]
-        transform[:3, 3] = target - transform[:3, :3] @ support
-        model.apply_transform(transform)
-        if np.any(model.bounds[0] <= 0) or np.any(model.bounds[1] >= POOL_SIZE):
+        transform = np.diag((scale, scale, scale, 1.))
+        transform[:3, 3] = target - scale * support
+        for mesh in (model, *hulls):
+            mesh.apply_transform(transform)
+        low, high = _mesh_bounds(model, *hulls)
+        if np.any(low[:2] <= 0) or low[2] <= -WALL_THICKNESS or np.any(high >= POOL_SIZE):
             raise ValueError("Placed model must fit strictly inside the container")
-        return model
-    except (ValueError, OSError) as error:
-        raise ValueError(f"Cannot place platform OBJ {path}: {error}") from error
+        return model, hulls, transform
+    except (KeyError, ValueError, OSError) as error:
+        raise ValueError(f"Cannot place platform OBJ {source.ref.relative}: {error}") from error
+
+
+def _mesh_bounds(*meshes):
+    bounds = np.asarray([mesh.bounds for mesh in meshes])
+    return np.array([bounds[:, 0].min(axis=0), bounds[:, 1].max(axis=0)])
 
 
 def _pool_shell():
@@ -116,16 +139,22 @@ def _box_record(box):
     return dict(center=box.bounds.mean(axis=0).tolist(), half=(box.extents / 2).tolist())
 
 
-def describe_terrain(terrain_source=None):
+def describe_terrain(terrain_source=None, *, recipe=None, terrain_asset=None):
     """Generate visible geometry and layout on CPU for previews and placement."""
-    ground, *steps = _terrain_boxes()
-    platform = max(steps, key=lambda box: box.bounds[1, 2])
-    model = None if terrain_source is None else _place_model(terrain_source, platform)
-    terrain_parts = [ground, *steps]
-    obstacles = steps
+    if recipe is None:
+        ground, *boxes = _terrain_boxes()
+        platform = max(boxes, key=lambda box: box.bounds[1, 2])
+    else:
+        ground, boxes, platform = terrain_boxes(recipe)
+    if terrain_source is None and terrain_asset is not None:
+        terrain_source = terrain_asset.source
+    model, hulls, transform = (None, (), None) if terrain_source is None else _place_model(
+        terrain_source, platform, terrain_asset)
+    terrain_parts = [ground, *boxes]
+    obstacles = [mesh.bounds.tolist() for mesh in boxes]
     if model is not None:
         terrain_parts.append(model)
-        obstacles = [*steps, model]
+        obstacles.append(_mesh_bounds(model, *hulls).tolist())
     visible = geometry.simplify(geometry.union(terrain_parts), _SIMPLIFY_TOLERANCE)
     walls = _pool_shell()[0][1:]
     x, y, z = POOL_SIZE
@@ -135,40 +164,63 @@ def describe_terrain(terrain_source=None):
                   ceiling=[1., 1., z + .05], platform=platform.bounds.mean(axis=0).tolist())
     layout = dict(
         units="m", up_axis="Z", size=list(POOL_SIZE), wall_thickness=WALL_THICKNESS,
-        terrain="stairs", terrain_prop=None if terrain_source is None else asdict(terrain_source.ref),
+        terrain="stairs" if recipe is None else recipe.kind,
+        terrain_prop=None if terrain_source is None else asdict(terrain_source.ref),
         terrain_footprint=ground.bounds[:, :2].tolist(),
-        boxes=[_box_record(box) for box in [*walls, *steps]],
-        obstacles=[mesh.bounds.tolist() for mesh in obstacles], probes=probes,
+        boxes=[_box_record(box) for box in [*walls, *boxes]], obstacles=obstacles, probes=probes,
     )
-    return TerrainDescription(visible, layout, model)
+    if recipe is not None:
+        layout["terrain_recipe"] = recipe.to_dict()
+    if model is not None:
+        # Fluid clearance follows the original geometry; rigid clearances
+        # also account for the convex approximation.
+        layout["fluid_model_bounds"] = model.bounds.tolist()
+    return TerrainDescription(visible, layout, model, hulls, transform)
 
 
-def prepare_stairs(store, device, support_radius, *, terrain_source=None, previous=None):
-    """Stage the visual, native collision and dual-grid fluid boundary data."""
-    from ..boundary.schema import BoundaryArtifact
-    from .boundary import prepare_boundary_asset
-    from .collision import hulls_fingerprint, prepare_hulls
-
-    terrain = describe_terrain(terrain_source)
+def validate_terrain(terrain):
+    """Build and validate the single closed fluid cavity before baking."""
     shell, bounds = _pool_shell()
     solid = geometry.simplify(geometry.union([*shell, terrain.visible_mesh]), _SIMPLIFY_TOLERANCE)
     checked = validation.validate_container(solid, bounds, tolerance=_SIMPLIFY_TOLERANCE)
+    return solid, checked
+
+
+def prepare_stairs(store, device, support_radius, *, terrain_source=None, terrain_asset=None,
+                   recipe=None, previous=None):
+    """Stage the visual, native collision and dual-grid fluid boundary data."""
+    from ..boundary.schema import BoundaryArtifact
+    from .boundary import prepare_boundary_asset
+
+    if terrain_source is not None and terrain_asset is None:
+        raise ValueError("The platform OBJ must be prepared before building the container")
+    terrain = describe_terrain(terrain_source, recipe=recipe, terrain_asset=terrain_asset)
+    solid, checked = validate_terrain(terrain)
     old = None if previous is None else BoundaryArtifact(previous.file(previous.record["boundary"]))
+    provenance = dict(terrain=terrain.layout["terrain"], terrain_prop=terrain.layout["terrain_prop"],
+                      model_fraction=_MODEL_FRACTION)
+    if recipe is not None:
+        provenance["terrain_recipe"] = recipe.to_dict()
     artifact = prepare_boundary_asset(
         solid, checked, store=store, device=device, support_radius=support_radius, container=True,
         bake_options=BakeOptions(voxel_size=.0075, max_support_radius=support_radius),
-        provenance=dict(terrain="stairs", terrain_prop=terrain.layout["terrain_prop"],
-                        platform_span=_PLATFORM_WIDTH, model_fraction=_MODEL_FRACTION),
+        provenance=provenance,
         previous=old,
     )
     save_mesh_obj(terrain.visible_mesh, store.path("landscape.obj"), digits=17)
     metadata = dict(boundary=artifact.manifest_path.relative_to(store.root).as_posix(),
                     visible_mesh="landscape.obj", container=terrain.layout)
-    if terrain.model is not None:
-        hulls = prepare_hulls(terrain.model, "stairs_platform_model", store, destination="collision", previous=previous)
-        # Fluid clearance follows the actual SDF geometry. Rigid layout also accounts for its proxies.
-        terrain.layout["fluid_model_bounds"] = terrain.model.bounds.tolist()
-        bounds = np.asarray([mesh.bounds for mesh in (terrain.model, *hulls)])
-        terrain.layout["obstacles"][-1] = [bounds[:, 0].min(axis=0).tolist(), bounds[:, 1].max(axis=0).tolist()]
-        metadata.update(hulls="collision/hulls.npz", hulls_fingerprint=hulls_fingerprint(terrain.model))
+    if terrain.hulls:
+        relative = "collision/hulls.npz"
+        stored = terrain_asset.record
+        files = stored["files"]
+        source = dict(mesh=files[stored["mesh"]], hulls=files[stored["hulls"]] if "hulls" in stored else None)
+        identity = dict(source=source, transform=terrain.model_transform.tolist())
+        fingerprint = recipe_digest(identity)
+        metrics = dict(identity, fingerprint=fingerprint, parts=len(terrain.hulls),
+                       **measure_hull_error(terrain.model, terrain.hulls))
+        store.directory("collision")
+        save_hulls(terrain.hulls, store.path(relative))
+        store.path("collision", "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+        metadata.update(hulls=relative, hulls_fingerprint=fingerprint)
     return metadata

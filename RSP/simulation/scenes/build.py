@@ -55,9 +55,9 @@ def add_collisions(builder, layout, visible_mesh, hulls):
     import warp as wp
     cfg = builder.ShapeConfig(density=0., mu=1.)
     cfg.flags = newton.ShapeFlags.COLLIDE_SHAPES
-    stairs = layout.get("terrain") == "stairs"
-    box_label = "pool_enclosure" if stairs else "pool_wall"
-    mesh_label = "pool_landscape" if stairs else "pool_bunny"
+    terrain = "terrain" in layout
+    box_label = "pool_enclosure" if terrain else "pool_wall"
+    mesh_label = "pool_landscape" if terrain else "pool_bunny"
     for index, box in enumerate(layout["boxes"]):
         hx, hy, hz = box["half"]
         builder.add_shape_box(-1, xform=wp.transform(box["center"], wp.quat_identity()),
@@ -270,6 +270,25 @@ class PBFScene:
         if high[2] + shift[2] > self.container_size[2] - .05:
             raise ValueError("Sampled humanoid pose cannot fit above the initial fluid block")
         return shift.astype(np.float32)
+
+    def terrain_character_translation(self, state, body_ids):
+        """Lift the sampled pose above new full-floor terrain only at reset."""
+        from .layout import terrain_character_lift
+
+        if not self.layout.get("terrain_recipe"):
+            return np.zeros(3, dtype=np.float32)
+        poses = state.body_q.numpy()
+        bounds = []
+        for body_id in body_ids:
+            mesh = self.body_meshes.get(body_id)
+            if mesh is None:
+                continue
+            pose = poses[body_id]
+            matrix = trimesh.transformations.quaternion_matrix([pose[6], pose[3], pose[4], pose[5]])
+            matrix[:3, 3] = pose[:3]
+            points = trimesh.transform_points(mesh.vertices, matrix)
+            bounds.append([points.min(axis=0), points.max(axis=0)])
+        return np.array([0., 0., terrain_character_lift(bounds, self.layout)], dtype=np.float32)
 
     def draw_pool(self, viewer):
         if not hasattr(self, "_line_starts"):

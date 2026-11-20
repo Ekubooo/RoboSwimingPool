@@ -53,7 +53,7 @@ def select_scene(viewer, panel):
     window.push_handlers(on_close=cancel_close)
     try:
         panel.attach(viewer)
-        gui.set_selection_callback(panel.draw, cancel_callback=panel.cancel)
+        gui.set_selection_callback(panel.draw, cancel_callback=panel.handle_escape)
         while viewer.is_running() and panel.result is None and not panel.cancelled:
             panel.prepare_previews()
             viewer.begin_frame(0.)
@@ -85,6 +85,7 @@ def open_playback(profile, selection, viewer, *, visualize=True, asset_progress=
 
 
 def run(*, profile_id="humanoid", direct=False):
+    import torch
     import warp as wp
 
     from RSP.integrations.mimickit.session import playback_process
@@ -140,10 +141,13 @@ def run(*, profile_id="humanoid", direct=False):
                 show_progress("Checking scene assets...")
                 with open_playback(profile, selection, viewer, asset_progress=show_progress) as session:
                     viewer.hide_loading_splash()
-                    panel = None  # Release source browsing data before playback.
                     viewer.set_paused(False)
                     with bind_playback(session) as runner:
-                        runner.run()
+                        # Keep the selection available until the first sampled pose fits.
+                        with torch.no_grad():
+                            runner.reset()
+                        panel = None
+                        runner.run(reset=False)
             except _StartupCancelled:
                 return
             except AssetPreparationError as error:

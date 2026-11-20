@@ -55,6 +55,15 @@ class SceneReset:
         self._clear_dof_feedback()
         self._runtime.clear_contact_feedback()
 
+    def place_on_terrain(self, obj_id):
+        self._state.pre_step_update()
+        self._state.eval_fk()
+        shift = self._play_scene.terrain_character_translation(
+            self._state.raw_state, self._state.get_obj_body_ids(obj_id))
+        root = self._state.get_root_pos(obj_id)
+        root.add_(torch.as_tensor(shift, device=root.device))
+        return shift
+
 
 class NewtonEngine(NewtonEngineAPI):
     """Assemble components and run workflows behind NewtonEngineAPI.
@@ -169,6 +178,9 @@ class NewtonEngine(NewtonEngineAPI):
 
     def reset_play_scene(self):
         self._scene_reset.reset()
+
+    def place_character_on_terrain(self, obj_id):
+        return self._scene_reset.place_on_terrain(obj_id)
 
     def render(self):
         self._presentation.render(self.get_sim_time(), self._state.raw_state)

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import math
 import yaml
-from RSP.sim_ready.catalog import AssetRef, STAIRS_REF
+from RSP.sim_ready.catalog import AssetRef
 from RSP.sim_ready.paths import PROJECT_ROOT, SCENE_ROOT
 
 
@@ -93,8 +93,8 @@ def parse_scene(record):
     terrain_prop = record.get("terrain_prop")
     if terrain_prop is not None:
         terrain_prop = AssetRef.from_mapping(terrain_prop)
-        if container != STAIRS_REF or terrain_prop.category != "props":
-            raise ValueError("A terrain prop must be a prop on the stairs container")
+        if terrain_prop.category != "props":
+            raise ValueError("A terrain prop must reference a prop asset")
     enabled = record["policy_use_scene_sphere"]
     if not isinstance(enabled, bool) or (enabled and "policy_sphere" not in roles):
         raise ValueError("Scene sphere observations require a policy_sphere instance")

@@ -7,11 +7,16 @@ permanent primary state and a second state for substeps.
 With an odd substep count, the final state is copied back to the primary arrays
 on the GPU so borrowed state views keep their addresses.
 
-The optional `terrain_prop` scene reference selects an OBJ for the fixed stair
+The optional `terrain_prop` scene reference selects an OBJ for a procedural
 container; it does not create a dynamic body. Static assembly consumes prepared
 visible geometry, collision boxes and optional convex parts without knowledge
 of the terrain generator. The read-only preflight verifies the requested
-container combination, flat spawn area and water/prop clearances.
+container combination and water/prop clearances. Legacy local stairs keep the
+flat-spawn requirement. New full-floor terrains lift a sampled character only
+at initialization/reset, using per-body bounds and prepared static obstacles.
+This preserves articulation and velocity, rejects wall/ceiling intersections,
+and adds no per-frame terrain checks. Full-floor stairs, grid and gap all use
+the same static assembly interface.
 
 `RSP.physics.fluid_clock.DEFAULT_SETTINGS` holds the fluid defaults. The
 application passes those settings to the simulation and asset preparation.

@@ -73,13 +73,25 @@ class AssetPreviews:
             return
         key, _ = self.pending.popitem(last=False)
         try:
-            from .geometry import load_geometry, project_geometry
-            triangles, lines = project_geometry(load_geometry(self.assets[key[0]], key[1],
-                prepared=self.prepared_assets.get(key[0])))
-            self.textures[key] = self._render(triangles, lines)
+            from .geometry import load_geometry
+            geometry = load_geometry(self.assets[key[0]], key[1], prepared=self.prepared_assets.get(key[0]))
+            self.textures[key] = self.render_geometry(geometry)
         except Exception as error:
             self.errors[key] = str(error)
             logging.exception('Asset preview failed: %s', key[0])
+
+    def render_geometry(self, geometry):
+        """Render in-memory preview geometry. The caller owns the texture."""
+        from .geometry import project_geometry
+
+        return self._render(*project_geometry(geometry, aspect=self.width / self.height))
+
+    @staticmethod
+    def release_texture(value):
+        from pyglet import gl
+
+        texture = gl.GLuint(value)
+        gl.glDeleteTextures(1, ctypes.byref(texture))
 
     def _render(self, triangles, lines):
         from pyglet import gl
@@ -156,10 +168,8 @@ void main(){ result=vec4(rgb,1.0); }''', 'fragment'))
     def close(self):
         if self.closed:
             return
-        from pyglet import gl
         for value in self.textures.values():
-            texture = gl.GLuint(value)
-            gl.glDeleteTextures(1, ctypes.byref(texture))
+            self.release_texture(value)
         self.textures.clear()
         self.pending.clear()
         self.errors.clear()

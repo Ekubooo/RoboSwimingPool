@@ -23,22 +23,27 @@ def _triangles(mesh, color):
     return np.column_stack((points, normals, colors)).astype(np.float32)
 
 
+def container_geometry(mesh, size):
+    """Build the same terrain and outline geometry for cards and the editor."""
+    corners = np.array(list(product((0., 1.), repeat=3))) * np.asarray(size)
+    edges = [corners[[a, b]] for a in range(8) for b in range(a+1, 8)
+             if np.count_nonzero(corners[a] != corners[b]) == 1]
+    points = np.concatenate(edges)
+    color = np.full(points.shape, .72)
+    lines = np.column_stack((points, color)).astype(np.float32)
+    return PreviewGeometry(_triangles(mesh, [.72, .72, .72]), lines)
+
+
 def load_geometry(asset, color=None, *, prepared=None):
     """Use authored geometry and primitives without preparing boundary data."""
     lines = np.empty((0, 6), dtype=np.float32)
     if asset.container_size is not None:
-        size = np.asarray(asset.container_size)
-        corners = np.array(list(product((0., 1.), repeat=3))) * size
-        edges = [corners[[a, b]] for a in range(8) for b in range(a+1, 8)
-                 if np.count_nonzero(corners[a] != corners[b]) == 1]
-        points = np.concatenate(edges)
-        lines = np.column_stack((points, np.tile([.72, .72, .72], (len(points), 1)))).astype(np.float32)
-        if asset.recipe == "stairs":
+        if asset.is_terrain:
             from RSP.sim_ready.pipelines.container import describe_terrain
-            visible = describe_terrain().visible_mesh
+            visible = describe_terrain(recipe=asset.terrain_recipe).visible_mesh
         else:
             visible = asset.bunny_mesh()
-        return PreviewGeometry(_triangles(visible, [.72, .72, .72]), lines)
+        return container_geometry(visible, asset.container_size)
 
     if asset.prop_kind is not None:
         if asset.prop_kind == "box":

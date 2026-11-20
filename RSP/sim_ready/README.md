@@ -10,7 +10,8 @@ See the [runtime asset guide](RUNTIME_ASSETS.md) for usage.
 data/assets_RSP/
 ├── origin/
 │   ├── props/                        automatically discovered Y-up OBJ files
-│   └── articulations/                original humanoid declarations and models
+│   ├── articulations/                original humanoid declarations and models
+│   └── terrains/<name>/terrain.yaml  confirmed terrain recipes, kept as sources
 └── runtime/                          generated, ignored by Git
     └── <category>/<name>/
         ├── asset.json                build fingerprint and file checksums
@@ -30,6 +31,7 @@ records how to find each generated resource.
 RSP/sim_ready/
 ├── catalog.py                        source discovery, runtime verification
 ├── source_geometry.py                shared source previews and dimensions
+├── terrain.py                        validated authored terrain parameters
 ├── adapters/newton.py                physical model import and extraction
 ├── boundary/                         boundary manifest and read-only GPU load
 ├── lib/
@@ -40,7 +42,9 @@ RSP/sim_ready/
     ├── runtime.py                    current asset generation and reuse
     ├── boundary.py                   prepare one boundary per geometry
     ├── rigid.py                      OBJ normalization, inertia and rigid model
-    ├── container.py                  fixed Newton stairs and optional model
+    ├── container.py                  closed container assembly and reused OBJ hulls
+    ├── terrain_geometry.py           full-floor stairs, closed grid and gap boxes
+    ├── terrain_authoring.py          validate and atomically save a new recipe
     ├── articulation.py               validate links, share identical boundaries
     ├── collision.py                  convex collision preparation
     └── recipes/                      reference container, prop and G1 logic
@@ -54,6 +58,29 @@ conda run -n WarpSim python tools/run_rsp.py
 ```
 
 ## Active call sequence and interfaces
+
+The built-in `pbf_stairs_full` uses two continuous full-floor stair levels and
+a central platform at 0.1, 0.2 and 0.3 m. The original `pbf_stairs` remains a
+local stair patch. User-authored terrain recipes use `TerrainRecipe` and are
+discovered as containers; no new runtime category or version directory is used.
+`save_terrain(name, recipe)` validates geometry and saves a new source recipe;
+it does not bake SDFs, volume maps or convex decompositions. Existing names cannot
+be overwritten through the editor.
+
+All new terrains fit the 3 × 2 × 5 m inner cavity with 0.3 m walls. Grid terrain
+uses 6 × 4 square cells of 0.5 m. Its random heights come from Newton, but closed
+boxes are reconstructed because its duplicated side vertices do not follow the
+top-face displacement. Gap geometry is raised above the fixed floor so the slab
+does not fill the trench. One box description drives Boolean solids and rigid
+collision; walls and the lid stay invisible.
+
+An optional OBJ uses its prepared local mesh and convex pieces under one common
+transform. Stairs and gap place it on the central platform; grid always uses the
+first cell at (0.25, 0.25). The combined horizontal bounds are fitted to 95% of
+the placement surface and the visible base sinks 0.003 m. The container never
+reruns CoACD for this dependency. Changing a prop source or its hulls invalidates
+the dependent container, while its volume-map radius does not define collision
+geometry. The original mesh still supplies the Boolean and fluid SDF surfaces.
 
 `scan_sources()` discovers inputs and records per-file errors. `prepare_sources()`
 prepares every discovered OBJ for selection and returns available sources,

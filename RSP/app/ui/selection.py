@@ -8,6 +8,7 @@ from RSP.integrations.mimickit.profiles import LaunchRequest, character_for_scen
 from RSP.simulation.scenes.spec import parse_scene
 
 from .scene_choices import asset_label
+from .terrain_editor import TerrainEditor
 
 
 @dataclass
@@ -37,6 +38,7 @@ class SelectionPanel:
         self._font_viewer = None
         self.scale = 1.
         self.previews = None
+        self.terrain_editor = TerrainEditor()
 
     def attach(self, viewer):
         if viewer.gui is None or not viewer.ui.is_available:
@@ -53,18 +55,35 @@ class SelectionPanel:
 
     def detach(self):
         if self.previews is not None:
-            self.previews.close()
-            self.previews = None
+            try:
+                self.terrain_editor.detach(self.previews)
+            finally:
+                self.previews.close()
+                self.previews = None
 
     def cancel(self):
         self.cancelled = True
+
+    def handle_escape(self):
+        if self.terrain_editor.active:
+            self.terrain_editor.request_cancel()
+        else:
+            self.cancel()
 
     def resume_after_failure(self, error):
         self.result = None
         self.status = f"Asset preparation failed: {error}"
 
     def prepare_previews(self):
-        self.previews.process_one()
+        asset = self.terrain_editor.process(self.previews)
+        if asset is not None:
+            self.choices.add_terrain(asset)
+            self.container = asset_label(asset.ref)
+            self.terrain_prop = None
+            self.invalidate()
+            self.status = f"Saved terrain {self.container}."
+        if not self.terrain_editor.active:
+            self.previews.process_one()
         # Only cards visible in the upcoming UI frame renew queued requests.
         self.previews.pending.clear()
 
@@ -153,6 +172,8 @@ class SelectionPanel:
         from .cards import card_grid, card, asset_card
         for group, options in (('Container × 1', self.choices.containers), ('Humanoid × 1', self.characters)):
             imgui.separator_text(group)
+            if group == 'Container × 1' and imgui.button("Generate terrain"):
+                self.terrain_editor.open()
             with card_grid(imgui, group, self.scale) as opened:
                 if not opened:
                     continue
@@ -179,10 +200,12 @@ class SelectionPanel:
                         if is_character and option.error:
                             imgui.text_wrapped(option.error)
         selected = self.choices.containers.get(self.container)
-        if selected is not None and self.choices.assets[selected].recipe == 'stairs':
+        if selected is not None and self.choices.assets[selected].is_terrain:
             labels = ['None', *self.choices.terrain_props]
             refs = [None, *self.choices.terrain_props.values()]
-            changed, index = imgui.combo('Central platform model', refs.index(self.terrain_prop), labels)
+            recipe = self.choices.assets[selected].terrain_recipe
+            label = 'Grid model' if recipe is not None and recipe.kind == 'random_grid' else 'Central platform model'
+            changed, index = imgui.combo(label, refs.index(self.terrain_prop), labels)
             if changed:
                 self.terrain_prop = refs[index]
                 self.invalidate()
@@ -265,6 +288,7 @@ class SelectionPanel:
                         imgui.text(f"{item['name']}   {asset_label(AssetRef.from_mapping(item['asset']))}   {position}")
             finally:
                 imgui.end_child()
+            self.terrain_editor.draw(imgui, self.scale)
             imgui.separator()
             if imgui.button("Start simulation"):
                 self.request_start()

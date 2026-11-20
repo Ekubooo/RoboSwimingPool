@@ -7,6 +7,10 @@ import numpy as np
 import trimesh
 
 
+class ScenePlacementError(ValueError):
+    """The sampled pose cannot fit at its scene spawn."""
+
+
 def asset_bounds(asset):
     bounds = asset.record.get("layout_bounds")
     if bounds is None:
@@ -30,9 +34,28 @@ def terrain_fluid_region(start, end, layout, *, gap=.02):
             if np.all(start[:2] < bounds[1, :2]) and np.all(bounds[0, :2] < end[:2])]
     lift = max(0., max(tops) + gap - start[2]) if tops else 0.
     if end[2] + lift > layout["size"][2]:
-        raise ValueError("The initial water block does not fit above the stair terrain")
+        raise ValueError("The initial water block does not fit above the terrain")
     shift = np.array([0., 0., lift])
     return start + shift, end + shift
+
+
+def terrain_character_lift(body_bounds, layout, *, gap=.02):
+    """Conservative reset-only vertical clearance for a sampled character pose."""
+    bounds = np.asarray(body_bounds, dtype=float)
+    if bounds.ndim != 3 or bounds.shape[1:] != (2, 3) or not len(bounds) or not np.isfinite(bounds).all():
+        raise ValueError("Expected finite character body bounds")
+    size = np.asarray(layout["size"], dtype=float)
+    if np.any(bounds[:, 0, :2] < gap) or np.any(bounds[:, 1, :2] > size[:2] - gap):
+        raise ScenePlacementError("Sampled humanoid pose intersects the container walls at this spawn")
+    lift = max(0., gap - float(bounds[:, 0, 2].min()))
+    for obstacle in container_obstacle_bounds(layout):
+        overlap = (np.all(bounds[:, 0, :2] < obstacle[1, :2] + gap, axis=1)
+                   & np.all(obstacle[0, :2] - gap < bounds[:, 1, :2], axis=1))
+        if overlap.any():
+            lift = max(lift, float(obstacle[1, 2] + gap - bounds[overlap, 0, 2].min()))
+    if float(bounds[:, 1, 2].max()) + lift > size[2] - gap:
+        raise ScenePlacementError("Sampled humanoid pose cannot fit above the terrain")
+    return lift
 
 
 def transformed_bounds(center, half, position, rotation):

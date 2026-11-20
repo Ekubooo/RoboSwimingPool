@@ -9,3 +9,6 @@
 !containers/**
 !environments/
 !environments/**
+!terrains/
+!terrains/*/
+!terrains/*/terrain.yaml

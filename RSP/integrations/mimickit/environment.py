@@ -10,7 +10,9 @@ from envs.smp_env import SMPEnv
 from envs.sim_env import SimEnv
 from envs.task_dodgeball_env import compute_dodgeball_observations
 from RSP.sim_ready.lib.asset_validation import SkeletonDescription
+from RSP.sim_ready.lib.storage.runtime_slot import AssetPreparationError
 from RSP.physics import fluid_clock
+from RSP.simulation.scenes.layout import ScenePlacementError
 from util.camera import Camera, CameraMode
 
 
@@ -23,7 +25,7 @@ class PBFPlayEnv(SMPEnv):
             raise ValueError("pbf_play requires one newton_pbf environment")
         from RSP.sim_ready.lib.storage.runtime_slot import runtime_asset_lease
         from RSP.sim_ready.paths import SCENE_ROOT, configured_runtime_root
-        from RSP.sim_ready.pipelines.runtime import AssetPreparationError, ensure_runtime_assets
+        from RSP.sim_ready.pipelines.runtime import ensure_runtime_assets
         from RSP.simulation.scenes.fluid import boundary_support_radius
         from RSP.simulation.scenes.spec import load_scene
         from RSP.simulation.scenes.resolve import resolve_scene
@@ -67,6 +69,7 @@ class PBFPlayEnv(SMPEnv):
             self.policy_use_scene_sphere = bool(env_config["policy_use_scene_sphere"])
             self._spawn_xy = scene.spawn_xy
             self._scene_spec = scene
+            self._terrain_spawn = bool(resolved.layout.get("terrain_recipe"))
             self._instance_ids = {}
             self._policy_sphere_id = None
             self._scene_obj_ids = []
@@ -221,12 +224,17 @@ class PBFPlayEnv(SMPEnv):
             self._engine.set_root_rot(env_ids, obj_id, torch.tensor(spec.rotation, device=self._device))
             self._engine.set_root_vel(env_ids, obj_id, torch.tensor(spec.linear_velocity, device=self._device))
             self._engine.set_root_ang_vel(env_ids, obj_id, torch.tensor(spec.angular_velocity, device=self._device))
-        # Preserve MimicKit's sampled pose, root height and velocity. Only move
-        # its horizontal origin to the left clearing; no lift above the water.
+        # Preserve the sampled articulation and velocity. New full-floor terrain
+        # adds reset-only vertical clearance after placing the horizontal origin.
         char_id = self._get_char_id()
         root = self._engine.get_root_pos(char_id)[env_ids].clone()
         root[:, :2] = root.new_tensor(self._spawn_xy)
         self._engine.set_root_pos(env_ids, char_id, root)
+        if self._terrain_spawn:
+            try:
+                self._engine.place_character_on_terrain(char_id)
+            except ScenePlacementError as error:
+                raise AssetPreparationError(f"Scene placement is invalid: {error}") from error
         self._engine.reset_play_scene()
 
     def _build_camera(self, env_config):

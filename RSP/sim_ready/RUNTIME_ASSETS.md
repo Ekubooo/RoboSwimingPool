@@ -11,7 +11,7 @@ Startup scans `origin/props` recursively for OBJ files, prepares their validated
 local meshes, collision models and SDFs, then opens scene selection. Invalid
 files are listed and excluded. Choose a preset or assemble a scene from a container,
 humanoid profile and props. Regular and seeded random layouts use source
-bounds and avoid the static bunny and other props. The application prepares
+bounds and avoid static terrain/models and other props. The application prepares
 volume maps only for the selected assets and continues into simulation in the same window.
 
 Preparation is automatic. For an explicit preparation step, use
@@ -54,7 +54,31 @@ sphere observation. The scene preflight checks the spawn, fluid region, rotated
 prop bounds and prop overlap. Water and internal static geometry may initially
 overlap authored props.
 
-## Fixed stair container
+## Terrain containers and generation
+
+Select `pbf_stairs_full` for continuous full-floor stairs, with a central 0.7 m
+platform. Default level tops are 0.1, 0.2 and 0.3 m, in the same 3 x 2 x 5 m
+cavity with 0.3 m walls. The existing local `pbf_stairs` option remains available.
+
+In **Custom assembly**, choose **Generate terrain** to open an ImGui modal in
+the current window. Stairs exposes step height; Random grid exposes maximum
+height and seed; Gap exposes gap width and depth. The preview uses the same
+orthographic camera as the container cards. Confirm **Save terrain** with a
+new name to save `origin/terrains/<name>/terrain.yaml` and select its card.
+Cancel/Escape leaves no source file. Reopening the app discovers saved recipes.
+The source recipe is retained; meshes, collision geometry and dual-grid NVDBs
+are generated in `runtime/containers/<name>` when simulation starts.
+
+Random grid uses closed 0.5 m cells, 6 x 4 across the floor. An optional OBJ is
+always placed in the first cell, centered at (0.25, 0.25), with its horizontal
+extent fitted within 95% of the cell. Stairs and Gap use the central platform
+instead. Gap raises its border and island above the fixed floor so the trench
+remains open. Terrain and optional OBJ use a Boolean union; rigid collisions
+combine native terrain boxes and reused OBJ convex pieces under the same
+transform, without decomposing the final union again. This reuse does not
+apply to subtractive Boolean operations, which are outside this editor.
+
+### Legacy local stairs
 
 In custom assembly select `pbf_stairs`, then optionally choose a discovered OBJ
 as the central platform model. The 3 x 2 x 5 m pool has 0.3 m walls. Its Newton
@@ -68,7 +92,9 @@ generated `landscape.obj` excludes walls and the lid; the boundary mesh includes
 the closed enclosure. Changing the central model replaces this container's one
 current runtime slot. A hand-authored scene must match the prepared selection.
 
-Stair layouts preserve the character's flat spawn area. If necessary, assembly
+Legacy stairs preserve the character's flat spawn area. New full-floor terrains
+lift the sampled character above overlapping obstacles at reset, preserving
+its horizontal spawn, articulated pose and velocity. If necessary, assembly
 raises the entire water block above the terrain/model, preserving its size and
 particle count, before placing props. An arrangement that exceeds the ceiling
 is rejected. Loading a hand-authored scene validates placement without rewriting
@@ -80,8 +106,8 @@ The default `pbf_asset_dir` is `data/assets_RSP/runtime`. Each source retains
 one current set of generated files. An unchanged build is verified and reused.
 Changes to inputs, build code, dependencies or support radius generate a new
 current set. Each preparation call uses its starting source declarations and
-build code. Source declaration changes made while it runs apply on the next
-call. Preparation never edits the original model, meshes, motions or policy
+build code. A terrain recipe changed after discovery is rejected until it is
+discovered again. Preparation never edits the original model, meshes, motions or policy
 files. Old `published` and `pbf_play` asset directories are outside the
 active workflow. Simulation reports remain under `output/pbf_play/runs`.
 

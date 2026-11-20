@@ -42,18 +42,25 @@ class SceneChoices:
             self._bounds[ref] = (np.asarray(center, dtype=float), np.asarray(half, dtype=float))
         return self._bounds[ref]
 
-    def terrain(self, terrain_prop=None):
-        if terrain_prop not in self._terrain:
+    def add_terrain(self, asset):
+        """Register a freshly saved terrain in the already filtered catalog."""
+        self.assets[asset.ref] = asset
+        self.containers[asset_label(asset.ref)] = asset.ref
+
+    def terrain(self, container, terrain_prop=None):
+        key = (container, terrain_prop)
+        if key not in self._terrain:
             from RSP.sim_ready.pipelines.container import describe_terrain
             if terrain_prop is not None and terrain_prop not in self.terrain_props.values():
-                raise ValueError("Select an available OBJ for the central platform")
+                raise ValueError("Select an available terrain OBJ")
             source = None if terrain_prop is None else self.assets[terrain_prop]
-            self._terrain[terrain_prop] = describe_terrain(source)
-        return self._terrain[terrain_prop]
+            self._terrain[key] = describe_terrain(source, recipe=self.assets[container].terrain_recipe,
+                                                  terrain_asset=self.prepared_assets.get(terrain_prop))
+        return self._terrain[key]
 
     def obstacles(self, container, terrain_prop=None):
-        if self.assets[container].recipe == "stairs":
-            return self.terrain(terrain_prop).obstacle_bounds
+        if self.assets[container].is_terrain:
+            return self.terrain(container, terrain_prop).obstacle_bounds
         if container not in self._obstacles:
             self._obstacles[container] = np.asarray(self.assets[container].bunny_mesh().bounds)
         return [self._obstacles[container]]
@@ -82,12 +89,12 @@ class SceneChoices:
         record["policy_use_scene_sphere"] = use_sphere
         record.pop("terrain_prop", None)
         start, end = np.array(self.template_spec.fluid_start), np.array(self.template_spec.fluid_end)
-        if self.assets[container].recipe == "stairs":
+        if self.assets[container].is_terrain:
             if terrain_prop is not None:
                 record["terrain_prop"] = asdict(terrain_prop)
-            start, end = terrain_fluid_region(start, end, self.terrain(terrain_prop).layout, gap=GAP)
+            start, end = terrain_fluid_region(start, end, self.terrain(container, terrain_prop).layout, gap=GAP)
         elif terrain_prop is not None:
-            raise ValueError("A central model is only available in the stair container")
+            raise ValueError("A terrain model requires a procedural terrain container")
         record["fluid"] = dict(start=start.tolist(), end=end.tolist())
         if not expanded:
             parse_scene(record)

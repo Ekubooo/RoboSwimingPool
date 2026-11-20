@@ -6,10 +6,7 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 
-from ..catalog import (
-    AssetRef, SourceCatalog, SourceIssue, digest, physical_signature,
-    read_prepared_asset, scan_sources,
-)
+from ..catalog import SourceCatalog, SourceIssue, digest, physical_signature, read_prepared_asset, scan_sources
 from ..config import BakeOptions, check_volume_options
 from ..lib.storage.fingerprints import recipe_digest
 from ..lib.storage.runtime_slot import (
@@ -24,7 +21,7 @@ def _producer_identity():
     root = Path(__file__).resolve().parents[1]
     paths = (
         "pipelines/runtime.py", "pipelines/rigid.py", "pipelines/container.py",
-        "catalog.py", "reference.py", "source_geometry.py",
+        "catalog.py", "reference.py", "source_geometry.py", "terrain.py", "pipelines/terrain_geometry.py",
         "pipelines/recipes/container.py", "pipelines/recipes/pbf_play.py",
         "pipelines/recipes/g1.py", "config.py", "adapters/newton.py",
         "pipelines/articulation.py", "pipelines/collision.py", "pipelines/boundary.py",
@@ -46,9 +43,13 @@ def source_identity(source, *, producer=None, dependencies=None):
         producer = _producer_identity()
     if dependencies is None:
         dependencies = _dependencies()
+    files = {name: digest(path) for name, path in source.input_files().items()}
+    terrain_digest = source.record.get("terrain_input_digest")
+    if terrain_digest is not None and files[source.record["inputs"][0]] != terrain_digest:
+        raise ValueError("Terrain definition changed after discovery")
     return recipe_digest(dict(
         source=source.record,
-        files={name: digest(path) for name, path in source.input_files().items()},
+        files=files,
         producer=producer, dependencies=dependencies,
     ))
 
@@ -80,7 +81,7 @@ def write_runtime_asset(stage, source, metadata, *, build_digest):
     return read_prepared_asset(path, source)
 
 
-def _prepare(stage, source, support_radius, device, previous, *, sdf_only=False, terrain_source=None):
+def _prepare(stage, source, support_radius, device, previous, *, sdf_only=False, terrain_asset=None):
     import newton
 
     from ..adapters.newton import describe_articulations, finalize_model, import_physical_asset
@@ -97,9 +98,12 @@ def _prepare(stage, source, support_radius, device, previous, *, sdf_only=False,
         from .rigid import prepare_obj
         return prepare_obj(source, store=store, device=device, support_radius=support_radius,
                            previous=previous, sdf_only=sdf_only)
-    if source.recipe == "stairs":
+    if source.is_terrain:
         from .container import prepare_stairs
-        return prepare_stairs(store, device, support_radius, terrain_source=terrain_source, previous=previous)
+        return prepare_stairs(
+            store, device, support_radius, recipe=source.terrain_recipe, terrain_asset=terrain_asset,
+            terrain_source=None if terrain_asset is None else terrain_asset.source, previous=previous,
+        )
     if sdf_only:
         raise ValueError("SDF preflight is only needed for discovered OBJ assets")
     if source.container_size is not None and source.ref.category == "containers":
@@ -144,41 +148,61 @@ def _prepare(stage, source, support_radius, device, previous, *, sdf_only=False,
     return metadata
 
 
-def _configured_sources(origin, terrain_prop=None):
-    sources = scan_sources(origin)
-    ref = AssetRef("containers", "pbf_stairs")
-    terrain_source = None
-    if terrain_prop is not None:
-        terrain_source = sources.get(terrain_prop)
-        if terrain_source is None or terrain_source.recipe != "obj":
-            raise ValueError("The central terrain model must reference a discovered OBJ")
-    if ref in sources:
-        record = dict(sources[ref].record, terrain_prop=None if terrain_prop is None else asdict(terrain_prop),
-                      inputs=[] if terrain_source is None else list(terrain_source.record["inputs"]))
-        sources[ref] = replace(sources[ref], record=record)
-    return sources, terrain_source
+def _terrain_with_prop(source, prop):
+    dependencies = {key: prop.record["files"][prop.record[key]]
+                    for key in ("mesh", "hulls") if key in prop.record}
+    record = dict(source.record, terrain_prop=asdict(prop.source.ref), terrain_dependency=dependencies,
+                  inputs=[*source.record["inputs"], *prop.source.record["inputs"]])
+    return replace(source, record=record)
 
 
 def ensure_runtime_assets(refs, *, support_radius, device="cuda:0",
                           root=RUNTIME_ROOT, origin=ORIGIN_ROOT, progress=None, terrain_prop=None):
     """Return verified current assets, building only requested missing or stale slots."""
     check_volume_options(support_radius, 16)
+    refs = tuple(dict.fromkeys(refs))
     try:
         root = runtime_root(root, origin=origin)
-        sources, terrain_source = _configured_sources(origin, terrain_prop)
+        sources = scan_sources(origin)
         producer, dependencies = _producer_identity(), _dependencies()
     except Exception as exc:
         raise AssetPreparationError(f"Cannot discover runtime asset sources: {exc}") from exc
     ready = {}
     with runtime_asset_lease(root, reuse=True):
-        for ref in dict.fromkeys(refs):
+        terrain_ref = terrain_asset = None
+        if terrain_prop is not None:
+            if progress is not None:
+                progress(f"Checking terrain OBJ {terrain_prop.name}…")
+            try:
+                selected = [ref for ref in refs if ref in sources and sources[ref].is_terrain]
+                if len(selected) != 1:
+                    raise ValueError("A terrain model requires one selected procedural container")
+                terrain_ref, = selected
+                prop_source = sources.get(terrain_prop)
+                if prop_source is None or prop_source.recipe != "obj":
+                    raise ValueError("The terrain model must reference a discovered OBJ")
+                terrain_asset = _prepare_obj_source(
+                    root, prop_source, support_radius, device, producer=producer, dependencies=dependencies,
+                    require_sdf_coverage=False,
+                )
+            except Exception as exc:
+                raise AssetPreparationError(f"Cannot prepare terrain OBJ {terrain_prop.relative}: {exc}") from exc
+
+        for ref in refs:
             if progress is not None:
                 progress(f"Checking {ref.category}/{ref.name}…")
             try:
                 source = sources.get(ref)
                 if source is None:
                     raise ValueError("No source declaration for this asset")
+                terrain_dependency = terrain_asset if ref == terrain_ref else None
+                if terrain_dependency is not None:
+                    source = _terrain_with_prop(source, terrain_dependency)
                 identity = build_identity(source, support_radius, producer=producer, dependencies=dependencies)
+                if terrain_dependency is not None and source_identity(
+                        terrain_dependency.source, producer=producer, dependencies=dependencies,
+                ) != terrain_dependency.record["source_digest"]:
+                    raise ValueError("Terrain OBJ changed after preparation")
                 previous = recover_runtime_asset(root, source)
                 if (previous is not None and previous.record.get("state", "ready") == "ready"
                         and previous.record["build_digest"] == identity):
@@ -191,11 +215,8 @@ def ensure_runtime_assets(refs, *, support_radius, device="cuda:0",
                 progress(f"Preparing {ref.category}/{ref.name}…")
             with stage_runtime_asset(root, source) as stage:
                 try:
-                    if source.recipe == "stairs":
-                        metadata = _prepare(stage, source, float(support_radius), device, previous,
-                                            terrain_source=terrain_source)
-                    else:
-                        metadata = _prepare(stage, source, float(support_radius), device, previous)
+                    metadata = _prepare(stage, source, float(support_radius), device, previous,
+                                        terrain_asset=terrain_dependency)
                     metadata = dict(metadata, state="ready", source_digest=source_identity(
                         source, producer=producer, dependencies=dependencies))
                     asset = write_runtime_asset(stage, source, metadata, build_digest=identity)
@@ -228,6 +249,25 @@ def _covers_support(asset, support_radius):
     return bool(asset.record["links"])
 
 
+def _prepare_obj_source(root, source, support_radius, device, *, producer, dependencies,
+                        require_sdf_coverage=True):
+    """Reuse or prepare one OBJ slot under the caller's runtime lease."""
+    identity = source_identity(source, producer=producer, dependencies=dependencies)
+    previous = recover_runtime_asset(root, source)
+    if (previous is not None and previous.record.get("source_digest") == identity
+            and (not require_sdf_coverage or previous.record.get("state", "ready") == "ready"
+                 or _covers_support(previous, support_radius))):
+        return previous
+    with stage_runtime_asset(root, source) as stage:
+        metadata = _prepare(stage, source, float(support_radius), device, previous, sdf_only=True)
+        metadata = dict(metadata, state="sdf_ready", source_digest=identity)
+        asset = write_runtime_asset(stage, source, metadata, build_digest=recipe_digest(
+            dict(source=identity, sdf_support_radius=float(support_radius))))
+        if source_identity(source, producer=producer, dependencies=dependencies) != identity:
+            raise ValueError("Source asset changed during preparation")
+        return commit_runtime_asset(root, asset)
+
+
 def prepare_sources(*, support_radius, device="cuda:0", root=RUNTIME_ROOT,
                     origin=ORIGIN_ROOT, sources=None, progress=None):
     """Prepare every discovered OBJ for selection, never computing a volume map.
@@ -250,21 +290,8 @@ def prepare_sources(*, support_radius, device="cuda:0", root=RUNTIME_ROOT,
             if progress is not None:
                 progress(f"Checking OBJ {ref.name}…")
             try:
-                identity = source_identity(source, producer=producer, dependencies=dependencies)
-                previous = recover_runtime_asset(root, source)
-                if (previous is not None and previous.record.get("source_digest") == identity
-                        and (previous.record.get("state", "ready") == "ready"
-                             or _covers_support(previous, support_radius))):
-                    ready[ref] = previous
-                    continue
-                with stage_runtime_asset(root, source) as stage:
-                    metadata = _prepare(stage, source, float(support_radius), device, previous, sdf_only=True)
-                    metadata = dict(metadata, state="sdf_ready", source_digest=identity)
-                    asset = write_runtime_asset(stage, source, metadata, build_digest=recipe_digest(
-                        dict(source=identity, sdf_support_radius=float(support_radius))))
-                    if source_identity(source, producer=producer, dependencies=dependencies) != identity:
-                        raise ValueError("Source asset changed during preparation")
-                    ready[ref] = commit_runtime_asset(root, asset)
+                ready[ref] = _prepare_obj_source(root, source, support_radius, device,
+                                                 producer=producer, dependencies=dependencies)
             except Exception as exc:
                 names = source.record["inputs"]
                 failed_inputs.update(names)
