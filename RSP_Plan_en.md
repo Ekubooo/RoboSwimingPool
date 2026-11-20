@@ -1,19 +1,12 @@
-This repository contains the latest version of MimicKit, with a custom fluid solver integrated into the Newton physics engine layer.
+This project is based on a recent clone of the Mimickit repository, with a custom fluid solver integrated into the NVIDIA Newton physics engine layer.
 
-The environment is configured (using a Conda environment named "warpsim") to support the latest stable versions of the Newton engine, NVIDIA Warp DSL, and MuJoCo Warp.
+The project is currently configured to work with recent stable versions of the Newton engine, NVIDIA Warp DSL, and MuJoCo Warp, utilizing a Conda environment named "warpsim."
 
-For reference regarding experimental or previous implementations, please consult the following projects:
-1. Fluid Solver: `D:\ComputerScience\PROJECT\WarpLab`. Focus on the PBF and `simready` components in the root directory; ignore the `demo` folder, as it contains archived legacy code.
-2. MimicKit (adapted for the new Newton engine) and its associated tools/fixes: `D:/ComputerScience/PROJECT/MimicKit`.
+Current Status and Objectives:
+1. The project is largely complete in its overall architecture. It encompasses a custom solver, coupling with a rigid-body solver, an asset pipeline, basic rendering capabilities, scene assembly, and the loading of reinforcement learning (RL) policies for humanoid agents. The project structure is well-defined, with clear, logical module responsibilities and a self-consistent set of features.
+2. The primary objective is to execute existing RL policies—specifically those developed for the "dodgeball" task within Mimickit’s SMP (Simulation/Motion/Physics) pipeline—by loading humanoid robots into a fluid-structure interaction (FSI) environment to observe their behavior in fluid. The focus is on visual output and program execution; machine learning training, multi-environment parallel execution, and high-precision physical force calculations are currently out of scope.
 
-Current Status and Tasks:
-1. The PBF (Position Based Fluids) solver is integrated into the Newton engine as a custom solver. It utilizes a "volume map" method to achieve two-way coupling between the fluid and solid objects.
-2. The custom fluid-structure interaction (FSI) solver within the Newton physics engine is now fully implemented.
-3. The backend integration for the Newton physics engine is largely complete, as are the asset pipeline capabilities and definitions. The rendering integration and overall time-stepping scheme are also well-established. A lightweight, high-performance observation system for reinforcement learning (RL) policies—designed for single-environment scenarios—is in place, and the current demo delivers strong overall performance.
-4. UI components and scene assembly functionality have been largely implemented.
-5. The current objective is to review and refine the overall software architecture, enhance existing features, and address any potential defects.
-6. The primary objective is to run existing RL policies—specifically those developed for the "dodgeball" task within the MimicKit SMP framework—by loading a humanoid robot into the fluid-solid coupled environment to observe its behavior. The focus is on visual demonstration and system execution; machine learning training and multi-environment parallel execution are not currently in scope.
-
-Important Notes:
-1. Preservation: It is critical to maintain—or at least minimize disruption to—the existing architecture of the MimicKit-Newton backend, the PBF solver, the core solver methods/structures, and the established asset pipeline.
-2. Accuracy: Written documentation and records may not always be precise; they should be used only as a reference. Always verify details by analyzing the actual source code. 3. Without referencing existing code, conduct an analysis and review of the architectural design and code implementation by drawing upon standards and practices found in the Newton engine specifications, Newton-related open-source libraries, and other large-scale open-source robotics simulation software. In other words, provide analysis and recommendations based on the conventions and requirements established by these prominent open-source projects.
+Key Guidelines:
+1. Minimize disruption: Avoid altering the existing overall program architecture unless absolutely necessary.
+2. Exercise caution with documentation: Written descriptions may be inaccurate; all project documentation, records, and test logs should be treated as reference material only—the actual source code must be analyzed directly.
+3. Independent analysis: Do not rely on or execute existing test code. Instead, evaluate the architecture and implementation by benchmarking against established standards found in the Newton engine specifications, related open-source Newton libraries, and other prominent open-source robotics simulation software. Provide recommendations based on the conventions and requirements typical of such large-scale, open-source projects.
