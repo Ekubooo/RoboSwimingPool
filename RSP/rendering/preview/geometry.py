@@ -32,7 +32,7 @@ def load_geometry(asset, color=None, *, prepared=None):
         edges = [corners[[a, b]] for a in range(8) for b in range(a+1, 8)
                  if np.count_nonzero(corners[a] != corners[b]) == 1]
         points = np.concatenate(edges)
-        lines = np.column_stack((points, np.tile([.55, .72, .85], (len(points), 1)))).astype(np.float32)
+        lines = np.column_stack((points, np.tile([.72, .72, .72], (len(points), 1)))).astype(np.float32)
         if asset.recipe == "stairs":
             from RSP.sim_ready.pipelines.container import describe_terrain
             visible = describe_terrain().visible_mesh

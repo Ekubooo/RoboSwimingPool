@@ -91,6 +91,11 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
             self.renderer.window.push_handlers(on_deactivate=self.gui.clear_pressed_keys)
         return self.gui
 
+    def show_loading_splash(self, text=None):
+        # Loading precedes selection/playback binding, including direct startup.
+        self.install_gui()
+        super().show_loading_splash(text)
+
     def on_key_press(self, symbol, modifiers):
         if self.gui is not None:
             self.gui.handle_key_press(symbol, close_fn=self.close)

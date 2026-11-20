@@ -63,26 +63,26 @@ class NewtonGuiHost:
 
     def prepare_frame(self, update_fps=True):
         self._prepared = False
-        self._uses_native_frame = self.selection_callback is None and self._panel is None
+        loading = self._base._loading_splash_active
+        self._uses_native_frame = not loading and self.selection_callback is None and self._panel is None
         if self._uses_native_frame:
             self._base.prepare_frame(update_fps=update_fps)
             return
         if not self.is_available:
             return
-        loading = self._base._loading_splash_active
         if not self.show_ui and not loading and self.selection_callback is None:
             return
         self.ui.begin_frame()
         try:
             imgui = self.ui.imgui
-            if self.selection_callback is not None:
+            if loading:
+                self._base._render_loading_splash()
+            elif self.selection_callback is not None:
                 self.selection_callback(imgui)
-            elif self.show_ui and not loading:
+            elif self.show_ui:
                 self._panel.draw(imgui, self.ui.dpi_scale, self._base._ui_callbacks["side"])
                 for callback in self._base._ui_callbacks["free"]:
                     callback(imgui)
-            if loading:
-                self._base._render_loading_splash()
         finally:
             self.ui.end_frame()
         self._prepared = True
