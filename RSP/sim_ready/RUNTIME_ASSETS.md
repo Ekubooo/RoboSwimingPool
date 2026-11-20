@@ -7,21 +7,31 @@ python tools/run_rsp.py
 python tools/run_rsp.py --profile g1 --direct
 ```
 
-The scene selector reads the source catalog and draws thumbnails before
-runtime assets exist. Choose a preset or assemble a scene from a container,
+Startup scans `origin/props` recursively for OBJ files, prepares their validated
+local meshes, collision models and SDFs, then opens scene selection. Invalid
+files are listed and excluded. Choose a preset or assemble a scene from a container,
 humanoid profile and props. Regular and seeded random layouts use source
 bounds and avoid the static bunny and other props. The application prepares
-only the selected assets and continues into simulation in the same window.
+volume maps only for the selected assets and continues into simulation in the same window.
 
 Preparation is automatic. For an explicit preparation step, use
 `python tools/prepare_rsp_assets.py --asset props/scene_sphere` or omit
 `--asset` to prepare every declared source. The CLI uses the same support radius
 and generated directory as playback.
 
+Use `python tools/prepare_rsp_assets.py --sdf-only` to perform just OBJ
+preprocessing, without computing volume maps.
+
 ## Inputs and layout
 
-Source declarations live under `data/assets_RSP/origin`. They give the
-`category`, `name`, recipe and file inputs. A source may refer to other
+Place new Y-up OBJ files under `data/assets_RSP/origin/props`; no per-OBJ YAML is
+required. Filenames must be unique (case-insensitive), including built-in prop
+names. Dynamic OBJ props are uniformly scaled to a 0.3 m longest edge, centered
+and converted to Z-up. They use the existing prop-color rendering path; this
+import path does not add material/texture authoring.
+
+Articulation declarations retain their category, name, recipe and file inputs.
+A source may refer to other
 approved repository assets, such as the authored G1 model under
 `data/assets/g1`. Simulations still read the configured policies and motions.
 
@@ -43,6 +53,26 @@ angular velocities. A `policy_sphere` role explicitly binds a single prop to the
 sphere observation. The scene preflight checks the spawn, fluid region, rotated
 prop bounds and prop overlap. Water and internal static geometry may initially
 overlap authored props.
+
+## Fixed stair container
+
+In custom assembly select `pbf_stairs`, then optionally choose a discovered OBJ
+as the central platform model. The 3 x 2 x 5 m pool has 0.3 m walls. Its Newton
+stair patch is 1.6 x 1.6 m, centered at (2.05, 1.0), with 0.15 m step widths,
+0.06 m heights and a 0.7 m platform. The optional model has a 0.665 m maximum
+horizontal span, is centered on the platform and sinks 0.003 m into it.
+
+Scene YAML stores the optional `terrain_prop: {category: props, name: ...}`
+reference. It is a container dependency, not an extra dynamic object. The
+generated `landscape.obj` excludes walls and the lid; the boundary mesh includes
+the closed enclosure. Changing the central model replaces this container's one
+current runtime slot. A hand-authored scene must match the prepared selection.
+
+Stair layouts preserve the character's flat spawn area. If necessary, assembly
+raises the entire water block above the terrain/model, preserving its size and
+particle count, before placing props. An arrangement that exceeds the ceiling
+is rejected. Loading a hand-authored scene validates placement without rewriting
+it. Existing reference presets keep their original layout rules.
 
 ## Generated data and invalidation
 

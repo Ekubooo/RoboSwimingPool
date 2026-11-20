@@ -2,8 +2,6 @@
 from contextlib import ExitStack
 import logging
 import math
-from os.path import abspath
-from pathlib import Path
 import numpy as np
 import torch
 
@@ -24,7 +22,7 @@ class PBFPlayEnv(SMPEnv):
         if engine_config["engine_name"] != "newton_pbf" or num_envs != 1:
             raise ValueError("pbf_play requires one newton_pbf environment")
         from RSP.sim_ready.lib.storage.runtime_slot import runtime_asset_lease
-        from RSP.sim_ready.paths import ASSET_ROOT, PROJECT_ROOT, RUNTIME_ROOT, SCENE_ROOT
+        from RSP.sim_ready.paths import SCENE_ROOT, configured_runtime_root
         from RSP.sim_ready.pipelines.runtime import AssetPreparationError, ensure_runtime_assets
         from RSP.simulation.scenes.fluid import boundary_support_radius
         from RSP.simulation.scenes.spec import load_scene
@@ -40,10 +38,10 @@ class PBFPlayEnv(SMPEnv):
         if not math.isfinite(self._policy_hz) or self._policy_hz <= 0:
             raise ValueError("Playback policy frequency must be finite and positive")
 
-        requested = Path(engine_config.get("pbf_asset_dir") or RUNTIME_ROOT).expanduser()
-        asset_root = Path(abspath(PROJECT_ROOT / requested))
-        if asset_root == ASSET_ROOT / "published":
-            asset_root = RUNTIME_ROOT
+        try:
+            asset_root = configured_runtime_root(engine_config.get("pbf_asset_dir"))
+        except (OSError, ValueError) as error:
+            raise AssetPreparationError(f"Cannot access configured runtime assets: {error}") from error
         support_radius = boundary_support_radius(settings)
         self._startup_resources = None
         with ExitStack() as startup:
@@ -54,9 +52,12 @@ class PBFPlayEnv(SMPEnv):
 
             assets = ensure_runtime_assets(
                 scene.asset_refs, support_radius=support_radius, device=device,
-                root=asset_root, progress=asset_progress,
+                root=asset_root, progress=asset_progress, terrain_prop=scene.terrain_prop,
             )
-            resolved = resolve_scene(scene, asset_root, support_radius=support_radius, assets=assets)
+            try:
+                resolved = resolve_scene(scene, asset_root, support_radius=support_radius, assets=assets)
+            except ValueError as error:
+                raise AssetPreparationError(f"Scene placement is invalid: {error}") from error
             if asset_progress is not None:
                 asset_progress("Scene assets are ready. Loading the simulation...")
 

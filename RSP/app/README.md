@@ -9,14 +9,16 @@ removes its callbacks without closing the borrowed environment or window.
 ## Scene selection and startup
 
 `python tools/run_rsp.py` opens the Newton window and reads scene choices from
-the source catalog in `data/assets_RSP/origin`. The selector works with an
-empty runtime directory. Presets show a composition of the source assets, and
-custom mode controls prop quantities and placement. Asset references identify
+the source catalog in `data/assets_RSP/origin`. Before selection, every discovered
+OBJ is validated and prepared with a collision model and SDF. This also works
+with an empty runtime directory. Failures are displayed and excluded. Presets
+show asset compositions; custom mode controls prop quantities, placement and
+the optional central model of the fixed stair container. Asset references identify
 an asset by category and name.
 
 - `RSP/rendering/preview/geometry.py` reads authored robot geometry on the CPU
   through Newton's MJCF importer, uses the source primitive dimensions for
-  props, and draws the container and its positioned bunny mesh.
+  primitives, reads prepared OBJ meshes, and draws the reference bunny or stairs.
 - `ui/cards.py` draws cards and queues preview requests. `application.select_scene`
   processes one visible-card request per frame outside the draw callback.
 - `RSP/rendering/preview/textures.py` renders orthographic thumbnails into GL

@@ -38,7 +38,7 @@ def _box(extents, center):
     return mesh
 
 
-def static_geometry(source=ORIGIN_ROOT / "bunny_flat_bottom.obj"):
+def static_geometry(source=ORIGIN_ROOT / "props" / "bunny_flat_bottom.obj"):
     """One exterior, one cavity and a disjoint positive bunny shell; no union."""
     size_y = np.array([3., 5., 2.])
     outer = _box(size_y + 2 * WALL_THICKNESS, size_y / 2)

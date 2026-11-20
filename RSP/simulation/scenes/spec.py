@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import math
 import yaml
-from RSP.sim_ready.catalog import AssetRef
+from RSP.sim_ready.catalog import AssetRef, STAIRS_REF
 from RSP.sim_ready.paths import PROJECT_ROOT, SCENE_ROOT
 
 
@@ -35,6 +35,7 @@ class SceneSpec:
     policy_use_scene_sphere: bool
     fluid_start: tuple = (1.56, .75, .5)
     fluid_end: tuple = (2.96, 1.9, 2.34)
+    terrain_prop: AssetRef | None = None
 
     @property
     def props(self):
@@ -42,7 +43,7 @@ class SceneSpec:
 
     @property
     def asset_refs(self):
-        """The distinct source assets needed to start this scene."""
+        """The distinct runtime assets needed to start this scene."""
         return tuple(dict.fromkeys((self.container, self.character, *self.props)))
 
 
@@ -56,7 +57,8 @@ def load_scene(path=SCENE_ROOT / "pbf_play.yaml"):
 def parse_scene(record):
     """Parse the same scene schema from a preset or a launcher-generated mapping."""
     required = {"schema", "container", "character", "instances", "spawn_xy", "policy_use_scene_sphere"}
-    if not isinstance(record, dict) or not required <= record.keys() or record.keys() - required - {"fluid"} or record["schema"] != 1:
+    if (not isinstance(record, dict) or not required <= record.keys()
+            or record.keys() - required - {"fluid", "terrain_prop"} or record["schema"] != 1):
         raise ValueError("Invalid scene fields or schema")
     instances, names, roles = [], {"character"}, set()
     for entry in record["instances"]:
@@ -88,6 +90,11 @@ def parse_scene(record):
     character = AssetRef.from_mapping(record["character"])
     if container.category != "containers" or character.category != "articulations":
         raise ValueError("Expected a container and an articulated character")
+    terrain_prop = record.get("terrain_prop")
+    if terrain_prop is not None:
+        terrain_prop = AssetRef.from_mapping(terrain_prop)
+        if container != STAIRS_REF or terrain_prop.category != "props":
+            raise ValueError("A terrain prop must be a prop on the stairs container")
     enabled = record["policy_use_scene_sphere"]
     if not isinstance(enabled, bool) or (enabled and "policy_sphere" not in roles):
         raise ValueError("Scene sphere observations require a policy_sphere instance")
@@ -97,4 +104,5 @@ def parse_scene(record):
     start, end = vector(fluid["start"], 3, "fluid.start"), vector(fluid["end"], 3, "fluid.end")
     if any(a < 0 or b <= a for a, b in zip(start, end)):
         raise ValueError("Invalid initial fluid region")
-    return SceneSpec(container, character, tuple(instances), vector(record["spawn_xy"], 2, "spawn_xy"), enabled, start, end)
+    return SceneSpec(container, character, tuple(instances), vector(record["spawn_xy"], 2, "spawn_xy"),
+                     enabled, start, end, terrain_prop)

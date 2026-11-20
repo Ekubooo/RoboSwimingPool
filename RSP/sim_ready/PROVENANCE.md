@@ -36,11 +36,11 @@ migration; a fresh bake is evaluated separately from bytewise migration parity.
 
 ## RSP phase-two source relocation
 
-The two RSP originals now live in `data/assets_RSP/origin`; this relocation
+The two RSP originals now live in `data/assets_RSP/origin/props`; this relocation
 preserves their bytes. MimicKit's own inputs remain in their original locations.
 The new RSP output root is rebuilt from source without migrating old caches.
 
 | Current source | SHA-256 before and after relocation |
 | --- | --- |
-| `data/assets_RSP/origin/bunny_flat_bottom.obj` | `5c2fc17c5e851b02dd5503ac50bd6456dbb09959d90492a784c3481cef22d529` |
-| `data/assets_RSP/origin/spot_triangulated_good.obj` | `8ebde58a910fefe6aef9739a5044d4e61169376c35f37b3d7a09e8f96bd612f2` |
+| `data/assets_RSP/origin/props/bunny_flat_bottom.obj` | `5c2fc17c5e851b02dd5503ac50bd6456dbb09959d90492a784c3481cef22d529` |
+| `data/assets_RSP/origin/props/spot_triangulated_good.obj` | `8ebde58a910fefe6aef9739a5044d4e61169376c35f37b3d7a09e8f96bd612f2` |

@@ -1,13 +1,16 @@
 # RSP asset preparation
 
 The asset pipeline builds disposable files from source models and recipes.
-Playback prepares the selected scene's assets before it creates the Newton
-simulation. The scene selector can display source assets on a clean checkout.
+Startup validates discovered OBJ props and prepares their collision models and
+SDFs, then opens scene selection. Playback completes only the selected scene's
+volume maps before creating the Newton simulation.
 See the [runtime asset guide](RUNTIME_ASSETS.md) for usage.
 
 ```text
 data/assets_RSP/
-├── origin/                           source manifests, models and meshes
+├── origin/
+│   ├── props/                        automatically discovered Y-up OBJ files
+│   └── articulations/                original humanoid declarations and models
 └── runtime/                          generated, ignored by Git
     └── <category>/<name>/
         ├── asset.json                build fingerprint and file checksums
@@ -17,7 +20,9 @@ data/assets_RSP/
 
 The humanoid and G1 are imported from their original MJCF files. G1 also reads
 its original relative mesh files and license. Pool recipes use the source bunny
-mesh; props have programmatic primitive descriptions. Each prepared source has
+mesh; primitive props and containers have built-in descriptions. New OBJ props
+need no YAML: filenames identify them, and conflicting names are reported and
+excluded. Each prepared source has
 one directory at `category/name`. Its internal manifest validates reuse and
 records how to find each generated resource.
 
@@ -34,6 +39,8 @@ RSP/sim_ready/
 └── pipelines/
     ├── runtime.py                    current asset generation and reuse
     ├── boundary.py                   prepare one boundary per geometry
+    ├── rigid.py                      OBJ normalization, inertia and rigid model
+    ├── container.py                  fixed Newton stairs and optional model
     ├── articulation.py               validate links, share identical boundaries
     ├── collision.py                  convex collision preparation
     └── recipes/                      reference container, prop and G1 logic
@@ -45,6 +52,15 @@ From the repository root in the pinned WarpSim environment:
 conda run -n WarpSim python -m pip install -e . --no-deps --no-build-isolation
 conda run -n WarpSim python tools/run_rsp.py
 ```
+
+## Active call sequence and interfaces
+
+`scan_sources()` discovers inputs and records per-file errors. `prepare_sources()`
+prepares every discovered OBJ for selection and returns available sources,
+prepared assets and failures. Invalid inputs and their dependent containers are
+excluded without stopping unrelated assets. `ensure_runtime_assets()` prepares
+the selected scene for a particular support radius. Application and environment
+resolve the same configured runtime directory.
 
 The API is also available to source-checkout tooling:
 
@@ -69,8 +85,11 @@ previous directory if the replacement fails. A later invocation can recover a
 complete directory after an interrupted replacement. Source inputs are outside
 the generated root, and roots overlapping source inputs are rejected.
 
-Each boundary stores one `boundary.nvdb` containing the SDF and its matching
-volume map. The map is precomputed on a separate grid. A compatible persisted
+The `sdf_ready` preparation state stores one SDF in `boundary.nvdb`. Starting
+the selected scene upgrades the same directory to `ready`, with the SDF and its
+matching volume map in the same NVDB. Only `ready` assets may enter simulation.
+Selection does not downgrade ready assets; coverage is rechecked at launch.
+The map is precomputed on a separate grid. A compatible persisted
 SDF can be reused when the support radius changes. Otherwise the pipeline
 rebuilds the SDF with adequate coverage. The boundary loader checks the grid
 metadata, layout and fingerprints before handing the volumes to the solver.
@@ -79,3 +98,14 @@ Supported source models use Newton's physical geometry and inertia handling.
 `finalize_model(..., require_dfs=True)` also checks the joint order for the
 reference recipes and MimicKit backend. MimicKit-specific skeleton and action
 validation happens in the integration layer.
+
+OBJ props are converted from Y-up to Z-up, centered, and uniformly scaled to a
+longest extent of 0.3 m. Their default density is 1000 kg/m3. The original surface
+defines the visual mesh, inertia and fluid boundary; convex collision proxies
+use existing CoACD preparation. The generated MJCF has one free rigid body.
+No automatic repair or broader mesh-validation guarantees are added.
+
+`pbf_stairs` uses Newton's public `Mesh.create_terrain` interface in a fixed
+3 x 2 x 5 m cavity with 0.3 m walls. Its generated visual landscape excludes the
+walls and lid. A separate closed mesh defines the fluid boundary; Newton boxes
+and optional model hulls define rigid contacts. These share the same placement.

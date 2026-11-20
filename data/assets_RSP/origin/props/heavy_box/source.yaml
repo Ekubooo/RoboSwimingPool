@@ -1,6 +1,0 @@
-schema: 1
-identity:
-  category: props
-  name: heavy_box
-recipe: reference_prop
-inputs: []

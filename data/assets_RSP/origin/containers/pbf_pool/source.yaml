@@ -1,7 +1,0 @@
-schema: 1
-identity:
-  category: containers
-  name: pbf_pool
-recipe: reference_pool
-inputs:
-- bunny_flat_bottom.obj

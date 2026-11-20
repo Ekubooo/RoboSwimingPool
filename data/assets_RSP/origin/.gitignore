@@ -1,7 +1,5 @@
 *
 !.gitignore
-!bunny_flat_bottom.obj
-!spot_triangulated_good.obj
 
 !articulations/
 !articulations/**

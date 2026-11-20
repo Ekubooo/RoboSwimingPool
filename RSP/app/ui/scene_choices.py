@@ -5,7 +5,7 @@ from dataclasses import asdict
 import numpy as np
 
 from RSP.sim_ready.catalog import scan_sources
-from RSP.simulation.scenes.layout import place_props
+from RSP.simulation.scenes.layout import place_props, terrain_fluid_region
 from RSP.simulation.scenes.spec import parse_scene
 
 GAP = .02
@@ -16,29 +16,50 @@ def asset_label(ref):
 
 
 class SceneChoices:
-    def __init__(self, template, *, sources=None):
+    def __init__(self, template, *, sources=None, prepared_assets=None):
         self.template = deepcopy(template)
         self.template_spec = parse_scene(template)
         self.assets = scan_sources() if sources is None else sources
+        self.prepared_assets = {} if prepared_assets is None else prepared_assets
+        self.errors = tuple(getattr(self.assets, "errors", ()))
         self.containers = {asset_label(ref): ref for ref, asset in self.assets.items()
                            if ref.category == "containers" and asset.container_size is not None}
         self.props = {ref.name: ref for ref, asset in self.assets.items()
                       if ref.category == "props" and asset.prop_kind is not None}
         self._bounds = {}
         self._obstacles = {}
+        self._terrain = {}
+        self.terrain_props = {ref.name: ref for ref, asset in self.assets.items() if asset.recipe == "obj"}
 
     def bounds(self, ref):
         if ref not in self._bounds:
-            center, half = self.assets[ref].prop_bounds
+            prepared = self.prepared_assets.get(ref)
+            if prepared is not None and "layout_bounds" in prepared.record:
+                bounds = prepared.record["layout_bounds"]
+                center, half = bounds["center"], bounds["half"]
+            else:
+                center, half = self.assets[ref].prop_bounds
             self._bounds[ref] = (np.asarray(center, dtype=float), np.asarray(half, dtype=float))
         return self._bounds[ref]
 
-    def obstacles(self, container):
+    def terrain(self, terrain_prop=None):
+        if terrain_prop not in self._terrain:
+            from RSP.sim_ready.pipelines.container import describe_terrain
+            if terrain_prop is not None and terrain_prop not in self.terrain_props.values():
+                raise ValueError("Select an available OBJ for the central platform")
+            source = None if terrain_prop is None else self.assets[terrain_prop]
+            self._terrain[terrain_prop] = describe_terrain(source)
+        return self._terrain[terrain_prop]
+
+    def obstacles(self, container, terrain_prop=None):
+        if self.assets[container].recipe == "stairs":
+            return self.terrain(terrain_prop).obstacle_bounds
         if container not in self._obstacles:
             self._obstacles[container] = np.asarray(self.assets[container].bunny_mesh().bounds)
-        return self._obstacles[container]
+        return [self._obstacles[container]]
 
-    def build(self, container, counts, *, mode="regular", seed=1234, use_sphere=False, character=None):
+    def build(self, container, counts, *, mode="regular", seed=1234, use_sphere=False, character=None,
+              terrain_prop=None):
         """Generate an entire layout or fail without dropping requested instances."""
         if container not in self.containers.values() or mode not in ("regular", "random"):
             raise ValueError("Select an available container and placement mode")
@@ -59,15 +80,24 @@ class SceneChoices:
         record["container"] = asdict(container)
         record["instances"] = []
         record["policy_use_scene_sphere"] = use_sphere
+        record.pop("terrain_prop", None)
+        start, end = np.array(self.template_spec.fluid_start), np.array(self.template_spec.fluid_end)
+        if self.assets[container].recipe == "stairs":
+            if terrain_prop is not None:
+                record["terrain_prop"] = asdict(terrain_prop)
+            start, end = terrain_fluid_region(start, end, self.terrain(terrain_prop).layout, gap=GAP)
+        elif terrain_prop is not None:
+            raise ValueError("A central model is only available in the stair container")
+        record["fluid"] = dict(start=start.tolist(), end=end.tolist())
         if not expanded:
             parse_scene(record)
             return record
         size = np.asarray(self.assets[container].container_size)
-        lower = np.maximum(self.template_spec.fluid_start, np.zeros(3)) + GAP
-        upper = np.minimum(self.template_spec.fluid_end, size) - GAP
+        lower = np.maximum(start, np.zeros(3)) + GAP
+        upper = np.minimum(end, size) - GAP
         positions = place_props(
             [self.bounds(ref) for ref, _ in expanded], lower=lower, upper=upper,
-            obstacles=[self.obstacles(container)], mode=mode, seed=seed, gap=GAP,
+            obstacles=self.obstacles(container, terrain_prop), mode=mode, seed=seed, gap=GAP,
             labels=[ref.name for ref, _ in expanded])
         colors = {item["asset"]["name"]: item["color"] for item in self.template["instances"]}
         for (ref, index), position in zip(expanded, positions, strict=True):

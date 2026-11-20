@@ -1,65 +1,57 @@
-"""Terrain/container generation and placement recipes, followed by asset preparation."""
+"""Build one fixed pool with Newton stairs and an optional platform model."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 import trimesh
-from newton import Mesh
 
-from ..config import GeometryOptions, BakeOptions
+from ..config import BakeOptions
 from ..lib.mesh import geometry, validation
-from ..lib.volume import sdf
-from ..lib.storage.mesh_io import load_mesh_obj, save_mesh_obj
-from ..lib.storage.nvdb_io import save_volume
-from ..lib.storage.store import AssetStore
-from . import collision
+from ..lib.storage.mesh_io import save_mesh_obj
+from ..reference import POOL_SIZE
+from ..source_geometry import WALL_THICKNESS
 
 
-@dataclass
-class Scene:
-    terrain: trimesh.Trimesh
-    model: trimesh.Trimesh
-    scale: float
+_STAIR_SIZE = (1.6, 1.6)
+_STAIR_CENTER = (2.05, 1.0)
+_STEP_WIDTH = 0.15
+_STEP_HEIGHT = 0.06
+_PLATFORM_WIDTH = 0.7
+_MODEL_FRACTION = 0.95
+_MODEL_SINK = 0.003
+_SIMPLIFY_TOLERANCE = 0.001
 
 
-def _check_options(options):
-    positive = (*options.size, options.step_width, options.step_height,
-                options.platform_width, options.wall_thickness, options.ceiling,
-                options.simplify_tolerance)
-    if not all(np.isfinite(v) and v > 0 for v in positive):
-        raise ValueError("Geometry dimensions and tolerances must be finite and positive")
-    if not 0 < options.model_fraction <= 1:
-        raise ValueError("Model fraction must lie in (0, 1]")
-    if not np.isfinite(options.model_sink) or options.model_sink < 0:
-        raise ValueError("Model sink must be finite and nonnegative")
-    if not np.isfinite(options.model_yaw):
-        raise ValueError("Model yaw must be finite")
-    if not 0 < options.overlap < options.wall_thickness:
-        raise ValueError("Overlap must lie between zero and wall thickness")
-    if min(options.size) <= max(options.platform_width, 2 * options.overlap):
-        raise ValueError("Terrain must accommodate both the platform and the cavity")
+@dataclass(frozen=True)
+class TerrainDescription:
+    visible_mesh: trimesh.Trimesh
+    layout: dict
+    model: trimesh.Trimesh | None
+
+    @property
+    def static_boxes(self):
+        return self.layout["boxes"]
+
+    @property
+    def obstacle_bounds(self):
+        return np.asarray(self.layout["obstacles"])
 
 
-def terrain_boxes(options):
-    """Return generator boxes with shared float32 boundaries aligned once.
+def _terrain_boxes():
+    """Convert the generated stair boxes once for both rigid and fluid geometry."""
+    from newton import Mesh
 
-    Both the solid terrain and native rigid collisions use these coordinates.
-    """
-    _check_options(options)
     terrain = Mesh.create_terrain(
-        grid_size=(1, 1), block_size=options.size, terrain_types="pyramid_stairs",
+        grid_size=(1, 1), block_size=_STAIR_SIZE, terrain_types="pyramid_stairs",
+        terrain_params={"pyramid_stairs": dict(step_width=_STEP_WIDTH,
+            step_height=_STEP_HEIGHT, platform_width=_PLATFORM_WIDTH)},
         compute_inertia=False,
-        terrain_params={"pyramid_stairs": dict(step_width=options.step_width,
-            step_height=options.step_height, platform_width=options.platform_width)},
     )
-    source, indices = terrain.vertices, terrain.indices
-    width = float(source[:, 1].max())
-    points = np.column_stack((source[:, 0], source[:, 2], width - source[:, 1])).astype(np.float64)
-    # Adjacent boxes can differ by one float32 ULP. Align only the generated
-    # terrain, before union; applying this to an imported model would alter it.
+    points = np.asarray(terrain.vertices, dtype=np.float64).copy()
+    # Align generator coordinates that differ by a float32 ULP at shared faces.
     for axis in range(3):
         coordinates, inverse = np.unique(points[:, axis], return_inverse=True)
-        epsilon = float(np.spacing(np.float32(max(1, np.abs(coordinates).max()))))
+        epsilon = float(np.spacing(np.float32(max(1., np.abs(coordinates).max()))))
         anchors = coordinates.copy()
         start = 0
         for end in range(1, len(coordinates) + 1):
@@ -67,9 +59,10 @@ def terrain_boxes(options):
                 anchors[start:end] = coordinates[start]
                 start = end
         points[:, axis] = anchors[inverse]
-    faces = indices.reshape(-1, 3)
+    points[:, :2] += np.asarray(_STAIR_CENTER) - np.asarray(_STAIR_SIZE) / 2
+    faces = np.asarray(terrain.indices).reshape(-1, 3)
     if not len(faces) or len(faces) % 12:
-        raise ValueError("Expected twelve triangles per generated stair box")
+        raise ValueError("Expected twelve triangles per Newton stair box")
     boxes = []
     for block in faces.reshape(-1, 12, 3):
         ids, local = np.unique(block, return_inverse=True)
@@ -77,116 +70,105 @@ def terrain_boxes(options):
     return boxes
 
 
-def terrain_mesh(options):
-    """Union the same aligned boxes used by the rigid collision scene."""
-    return geometry.union(terrain_boxes(options))
+def _place_model(source, platform):
+    if source.ref.category != "props" or source.recipe != "obj":
+        raise ValueError("The platform model must be a discovered prop OBJ")
+    path, = source.input_files().values()
+    try:
+        parts = validation.validate_rigid_parts(geometry.prepare_rigid(path))
+        model = parts[0] if len(parts) == 1 else geometry.union(parts)
+        span = model.extents[[0, 2]].max()  # Imported OBJ is Y-up.
+        if span <= 0:
+            raise ValueError("Expected a nonzero horizontal extent")
+        model.apply_scale(_MODEL_FRACTION * platform.extents[:2].min() / span)
+        # Measure the support section after scaling so the sink depth is in meters.
+        support = geometry.support_center(model, _MODEL_SINK)
+        transform = np.array(((1., 0., 0., 0.), (0., 0., -1., 0.),
+                              (0., 1., 0., 0.), (0., 0., 0., 1.)))
+        target = np.r_[platform.bounds.mean(axis=0)[:2], platform.bounds[1, 2] - _MODEL_SINK]
+        transform[:3, 3] = target - transform[:3, :3] @ support
+        model.apply_transform(transform)
+        if np.any(model.bounds[0] <= 0) or np.any(model.bounds[1] >= POOL_SIZE):
+            raise ValueError("Placed model must fit strictly inside the container")
+        return model
+    except (ValueError, OSError) as error:
+        raise ValueError(f"Cannot place platform OBJ {path}: {error}") from error
 
 
-def platform_bounds(terrain):
-    top = terrain.bounds[1, 1]
-    selected = (np.all(np.isclose(terrain.triangles[:, :, 1], top, atol=1e-7, rtol=0), axis=1)
-                & (terrain.face_normals[:, 1] > 1 - 1e-7) & (terrain.area_faces > 0))
-    if not selected.any():
-        raise ValueError("Terrain has no upward-facing platform at its maximum height")
-    points = terrain.triangles[selected].reshape(-1, 3)
-    return np.array([points.min(axis=0), points.max(axis=0)])
+def _pool_shell():
+    """Return the floor and five enclosing boxes with the fixed inner dimensions."""
+    x, y, z = POOL_SIZE
+    w = WALL_THICKNESS
+    bounds = np.array([[-w, -w, -w], [x + w, y + w, z + w]])
+    # The shell boxes overlap within the walls so the Boolean keeps one cavity.
+    faces = (
+        (bounds[0], (x + w, y + w, 0.)),
+        ((-w, -w, -w), (0., y + w, z + w)),
+        ((x, -w, -w), bounds[1]),
+        ((-w, -w, -w), (x + w, 0., z + w)),
+        ((-w, y, -w), bounds[1]),
+        ((-w, -w, z), bounds[1]),
+    )
+    return [trimesh.creation.box(bounds=np.asarray((low, high))) for low, high in faces], bounds
 
 
-def prepare_scene(obj_path, *, options=GeometryOptions(), obj_up_axis="Y"):
-    terrain = terrain_mesh(options)
-    model = load_mesh_obj(obj_path)
-    if not isinstance(model, trimesh.Trimesh) or model.is_empty or not np.isfinite(model.vertices).all():
-        raise ValueError("Input OBJ must contain a finite, nonempty triangle mesh")
-    if obj_up_axis not in ("Y", "Z"):
-        raise ValueError("OBJ up axis must be Y or Z")
-    model = geometry.weld(model)
-    geometry.to_solid(model)  # Reject open inputs before attempting placement or boolean operations.
-    if obj_up_axis == "Z":
-        model.apply_transform(trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0]))
-    model.apply_transform(trimesh.transformations.rotation_matrix(np.deg2rad(options.model_yaw), [0, 1, 0]))
-    platform = platform_bounds(terrain)
-    span = model.extents[[0, 2]].max()
-    if span <= 0:
-        raise ValueError("Model must have a nonzero horizontal span")
-    scale = options.model_fraction * np.min((platform[1] - platform[0])[[0, 2]]) / span
-    model.apply_scale(scale)
-    target = platform.mean(axis=0)
-    target[1] -= options.model_sink
-    model.apply_translation(target - geometry.support_center(model, options.model_sink))
-    if model.bounds[1, 1] >= options.ceiling:
-        raise ValueError("Placed model reaches or exceeds the container ceiling")
-    return Scene(terrain, model, float(scale))
+def _box_record(box):
+    return dict(center=box.bounds.mean(axis=0).tolist(), half=(box.extents / 2).tolist())
 
 
-def container_parts(terrain, options):
-    """Four overlapping walls, lid and outward base extension; one outer outline."""
-    _check_options(options)
-    low, high = terrain.bounds
-    if options.ceiling <= high[1]:
-        raise ValueError("Container ceiling must be above the terrain")
-    w, delta = options.wall_thickness, options.overlap
-    outer_low = low[[0, 2]] - (w - delta)
-    outer_high = high[[0, 2]] + (w - delta)
-    length, width = outer_high - outer_low
-    cx, cz = (outer_low + outer_high) / 2
-    wall_top = options.ceiling + delta
-    height, cy = wall_top - low[1], (wall_top + low[1]) / 2
-
-    def box(size, center):
-        result = trimesh.creation.box(extents=size)
-        result.apply_translation(center)
-        return result
-
-    short = min(high[2] - low[2] + delta, width)
-    parts = [
-        box((length, height, w), (cx, cy, outer_low[1] + w / 2)),
-        box((length, height, w), (cx, cy, outer_high[1] - w / 2)),
-        box((w, height, short), (outer_low[0] + w / 2, cy, cz)),
-        box((w, height, short), (outer_high[0] - w / 2, cy, cz)),
-        box((length, w, width), (cx, options.ceiling + w / 2, cz)),
-    ]
-    growth = max(w - 0.15, 0.0)
-    parts.append(box((length, growth + delta, width), (cx, low[1] + (delta - growth) / 2, cz)))
-    bounds = np.array([[outer_low[0], low[1] - growth, outer_low[1]],
-                       [outer_high[0], options.ceiling + w, outer_high[1]]])
-    return parts, bounds
+def describe_terrain(terrain_source=None):
+    """Generate visible geometry and layout on CPU for previews and placement."""
+    ground, *steps = _terrain_boxes()
+    platform = max(steps, key=lambda box: box.bounds[1, 2])
+    model = None if terrain_source is None else _place_model(terrain_source, platform)
+    terrain_parts = [ground, *steps]
+    obstacles = steps
+    if model is not None:
+        terrain_parts.append(model)
+        obstacles = [*steps, model]
+    visible = geometry.simplify(geometry.union(terrain_parts), _SIMPLIFY_TOLERANCE)
+    walls = _pool_shell()[0][1:]
+    x, y, z = POOL_SIZE
+    probes = dict(cavity=[.5, .5, 1.], bottom=[1., 1., -.05],
+                  left_wall=[-.05, 1., 1.], right_wall=[x + .05, 1., 1.],
+                  front_wall=[1., -.05, 1.], back_wall=[1., y + .05, 1.],
+                  ceiling=[1., 1., z + .05], platform=platform.bounds.mean(axis=0).tolist())
+    layout = dict(
+        units="m", up_axis="Z", size=list(POOL_SIZE), wall_thickness=WALL_THICKNESS,
+        terrain="stairs", terrain_prop=None if terrain_source is None else asdict(terrain_source.ref),
+        terrain_footprint=ground.bounds[:, :2].tolist(),
+        boxes=[_box_record(box) for box in [*walls, *steps]],
+        obstacles=[mesh.bounds.tolist() for mesh in obstacles], probes=probes,
+    )
+    return TerrainDescription(visible, layout, model)
 
 
-def landscape(scene, options):
-    return geometry.simplify(geometry.union([scene.terrain, scene.model]), options.simplify_tolerance)
+def prepare_stairs(store, device, support_radius, *, terrain_source=None, previous=None):
+    """Stage the visual, native collision and dual-grid fluid boundary data."""
+    from ..boundary.schema import BoundaryArtifact
+    from .boundary import prepare_boundary_asset
+    from .collision import hulls_fingerprint, prepare_hulls
 
-
-def container(scene, options):
-    parts, bounds = container_parts(scene.terrain, options)
-    solid = geometry.union([scene.terrain, scene.model, *parts])
-    return geometry.simplify(solid, options.simplify_tolerance), bounds
-
-
-def prepare(source, *, options=GeometryOptions()):
-    """Return the placed scene, visible mesh and aligned native collision boxes."""
-    scene = prepare_scene(source, options=options)
-    walls, _ = container_parts(scene.terrain, options)
-    boxes = terrain_boxes(options) + walls
-    static_boxes = [(m.bounds.mean(axis=0).tolist(), (m.extents / 2.).tolist()) for m in boxes]
-    visible = landscape(scene, options)
-    return scene, visible, static_boxes
-
-
-def build(scene, visible, stem, *, geometry_options=GeometryOptions(),
-          bake_options=BakeOptions(), store: AssetStore, collision_name="model", device="cuda:0"):
-    """Validate the cavity, prepare model collision and stage an OBJ/SDF pair.
-
-    The caller selects the store and owns scene metadata and final publication.
-    Boundary artifacts add volume maps through their separate preparation API.
-    """
-    stem = store.path(stem)
-    relative = stem.relative_to(store.root)
-    mesh_path = store.path(relative.with_suffix(".obj"))
-    sdf_path = store.path(relative.with_suffix(".nvdb"))
-    solid, bounds = container(scene, geometry_options)
-    checked = validation.validate_container(solid, bounds, tolerance=geometry_options.simplify_tolerance)
-    hulls = collision.prepare_hulls(scene.model, collision_name, store)
-    volume = sdf.bake(checked, options=bake_options, device=device)
-    save_mesh_obj(visible, mesh_path, digits=8)
-    save_volume(volume, sdf_path)
-    return mesh_path, sdf_path, hulls
+    terrain = describe_terrain(terrain_source)
+    shell, bounds = _pool_shell()
+    solid = geometry.simplify(geometry.union([*shell, terrain.visible_mesh]), _SIMPLIFY_TOLERANCE)
+    checked = validation.validate_container(solid, bounds, tolerance=_SIMPLIFY_TOLERANCE)
+    old = None if previous is None else BoundaryArtifact(previous.file(previous.record["boundary"]))
+    artifact = prepare_boundary_asset(
+        solid, checked, store=store, device=device, support_radius=support_radius, container=True,
+        bake_options=BakeOptions(voxel_size=.0075, max_support_radius=support_radius),
+        provenance=dict(terrain="stairs", terrain_prop=terrain.layout["terrain_prop"],
+                        platform_span=_PLATFORM_WIDTH, model_fraction=_MODEL_FRACTION),
+        previous=old,
+    )
+    save_mesh_obj(terrain.visible_mesh, store.path("landscape.obj"), digits=17)
+    metadata = dict(boundary=artifact.manifest_path.relative_to(store.root).as_posix(),
+                    visible_mesh="landscape.obj", container=terrain.layout)
+    if terrain.model is not None:
+        hulls = prepare_hulls(terrain.model, "stairs_platform_model", store, destination="collision", previous=previous)
+        # Fluid clearance follows the actual SDF geometry. Rigid layout also accounts for its proxies.
+        terrain.layout["fluid_model_bounds"] = terrain.model.bounds.tolist()
+        bounds = np.asarray([mesh.bounds for mesh in (terrain.model, *hulls)])
+        terrain.layout["obstacles"][-1] = [bounds[:, 0].min(axis=0).tolist(), bounds[:, 1].max(axis=0).tolist()]
+        metadata.update(hulls="collision/hulls.npz", hulls_fingerprint=hulls_fingerprint(terrain.model))
+    return metadata

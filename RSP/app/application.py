@@ -10,7 +10,7 @@ import yaml
 from RSP.integrations.mimickit.profiles import load_presets, read_yaml, load_characters
 from RSP.simulation.scenes.spec import parse_scene
 
-from .config import POLICY_HZ, get_fluid_settings
+from .config import POLICY_HZ, boundary_support_radius, get_fluid_settings
 from .ui.scene_choices import SceneChoices
 from .ui.selection import SelectionPanel
 
@@ -27,6 +27,8 @@ def scene_path(selection, profile):
     record = deepcopy(selection)
     record["container"] = asdict(spec.container)
     record["character"] = asdict(spec.character)
+    if spec.terrain_prop is not None:
+        record["terrain_prop"] = asdict(spec.terrain_prop)
     for item, instance in zip(record["instances"], spec.instances, strict=True):
         item["asset"] = asdict(instance.asset)
     path = profile.out_dir / "scenes" / uuid4().hex / "scene.yaml"
@@ -88,7 +90,9 @@ def run(*, profile_id="humanoid", direct=False):
     from RSP.integrations.mimickit.session import playback_process
     from RSP.rendering.newton_gl import open_viewer
     from RSP.sim_ready.catalog import scan_sources
-    from RSP.sim_ready.pipelines.runtime import AssetPreparationError
+    from RSP.sim_ready.config import BakeOptions
+    from RSP.sim_ready.paths import configured_runtime_root
+    from RSP.sim_ready.pipelines.runtime import AssetPreparationError, prepare_sources
 
     from .playback import bind_playback
 
@@ -96,11 +100,6 @@ def run(*, profile_id="humanoid", direct=False):
     characters = load_characters(sources=sources)
     profile = characters[profile_id].require_available()
     with playback_process(profile.device), wp.ScopedDevice(profile.device), open_viewer(headless=False) as viewer:
-        panel = None
-        if not direct:
-            panel = SelectionPanel(SceneChoices(read_yaml(profile.scene_preset), sources=sources),
-                                   load_presets(), profile.scene_preset, characters=characters)
-
         def show_progress(message):
             if not viewer.is_running():
                 raise _StartupCancelled()
@@ -109,6 +108,23 @@ def run(*, profile_id="humanoid", direct=False):
             viewer.end_frame()
             if not viewer.is_running():
                 raise _StartupCancelled()
+
+        try:
+            prepared = prepare_sources(sources=sources, device=profile.device,
+                support_radius=max(BakeOptions().max_support_radius, boundary_support_radius()),
+                root=configured_runtime_root(read_yaml(profile.engine_config).get("pbf_asset_dir")),
+                progress=show_progress)
+            show_progress("Asset checks complete. Opening scene selection...")
+        except _StartupCancelled:
+            return
+        for error in prepared.errors:
+            print(f"Asset unavailable: {error}", flush=True)
+        panel = None
+        if not direct:
+            panel = SelectionPanel(SceneChoices(read_yaml(profile.scene_preset), sources=prepared.sources,
+                                                prepared_assets=prepared.assets),
+                                   load_presets(), profile.scene_preset, characters=characters)
+            viewer.hide_loading_splash()
 
         while True:
             selection = profile.scene_preset

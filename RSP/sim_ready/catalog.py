@@ -1,8 +1,7 @@
-"""Discover source declarations and read verified, current runtime assets."""
+"""Discover source assets and read verified generated assets."""
 from dataclasses import dataclass, asdict
 import hashlib
 import json
-import os
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -77,6 +76,9 @@ class AssetRef:
         return Path(self.category) / self.name
 
 
+STAIRS_REF = AssetRef("containers", "pbf_stairs")
+
+
 @dataclass(frozen=True)
 class SourceAsset:
     ref: AssetRef
@@ -112,17 +114,37 @@ class SourceAsset:
     @property
     def prop_kind(self):
         from .source_geometry import PROPS
-        return PROPS[self.ref.name].kind if self.recipe == "reference_prop" else None
+        if self.recipe == "obj":
+            return "mesh"
+        if self.recipe == "reference_prop":
+            return PROPS[self.ref.name].kind
+        return None
 
     @property
     def prop_size(self):
-        from .source_geometry import PROPS
-        return PROPS[self.ref.name].size if self.recipe == "reference_prop" else None
+        from .source_geometry import OBJ_SIZE, PROPS
+        if self.recipe == "obj":
+            return OBJ_SIZE
+        if self.recipe == "reference_prop":
+            return PROPS[self.ref.name].size
+        return None
+
+    def prop_mesh(self):
+        from .source_geometry import normalized_obj, prop_mesh
+        if self.recipe == "obj":
+            return normalized_obj(self)
+        return prop_mesh(self.prop_kind, self.prop_size)
 
     @property
     def prop_bounds(self):
         import numpy as np
-        extent = self.prop_size / 2 if self.prop_kind == "box" else self.prop_size
+        kind = self.prop_kind
+        if kind == "mesh":
+            low, high = self.prop_mesh().bounds
+            return (low + high) / 2, (high - low) / 2
+        if kind not in {"box", "sphere"}:
+            raise ValueError(f"Not a prop: {self.ref.relative}")
+        extent = self.prop_size / 2 if kind == "box" else self.prop_size
         return np.zeros(3, dtype=np.float32), np.full(3, extent, dtype=np.float32)
 
     @property
@@ -131,38 +153,111 @@ class SourceAsset:
         return CONTAINER_SIZES.get(self.recipe)
 
     def bunny_mesh(self):
-        if self.container_size is None:
+        if self.recipe not in {"reference_pool", "wide_pool"}:
             raise ValueError(f"Not a reference container: {self.ref.relative}")
         from .source_geometry import load_bunny
         path, = self.input_files().values()
         return load_bunny(path)
 
 
+@dataclass(frozen=True)
+class SourceIssue:
+    path: Path | str
+    message: str
+    ref: AssetRef | None = None
+
+    def __str__(self):
+        return f"{self.path}: {self.message}"
+
+
+class SourceCatalog(dict[AssetRef, SourceAsset]):
+    """Discovered assets alongside per-input problems for the caller to report."""
+
+    def __init__(self):
+        super().__init__()
+        self.errors: list[SourceIssue] = []
+
+
+def _source(origin, ref, recipe, inputs=()):
+    return SourceAsset(ref, dict(schema=1, identity=asdict(ref), recipe=recipe, inputs=list(inputs)), origin)
+
+
+def _articulation_source(path, origin):
+    record = yaml.safe_load(contained(origin, path.relative_to(origin)).read_text(encoding="utf-8"))
+    if (not isinstance(record, dict) or set(record) != {"schema", "identity", "recipe", "inputs"}
+            or record["schema"] != 1 or not isinstance(record["inputs"], list)
+            or any(not isinstance(name, str) or not name for name in record["inputs"])
+            or record["recipe"] not in ("mjcf", "mimickit_g1")):
+        raise ValueError("Invalid articulation source manifest")
+    ref = AssetRef.from_mapping(record["identity"])
+    if ref.category != "articulations":
+        raise ValueError("Articulation declaration must name an articulation")
+    for name in record["inputs"]:
+        contained(origin, name)
+    return _source(origin, ref, record["recipe"], record["inputs"])
+
+
 def scan_sources(origin=ORIGIN_ROOT):
-    """Read declarations on CPU. Resolve each asset's inputs when it is used."""
+    """Discover OBJ props and articulation declarations without preparing runtime data."""
+    from .source_geometry import PROPS
+
     origin = Path(origin).resolve()
-    sources = {}
-    paths = set()
-    for path in sorted(origin.rglob("source.yaml")):
-        record = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if (not isinstance(record, dict) or set(record) != {"schema", "identity", "recipe", "inputs"}
-                or record["schema"] != 1 or not isinstance(record["inputs"], list)
-                or any(not isinstance(name, str) or not name for name in record["inputs"])
-                or not isinstance(record["recipe"], str)):
-            raise ValueError(f"Invalid source manifest: {path}")
-        ref = AssetRef.from_mapping(record["identity"])
-        key = os.path.normcase(str(ref.relative))
-        if key in paths:
-            raise ValueError(f"Duplicate source identity: {ref.relative}")
-        paths.add(key)
-        for name in record["inputs"]:
-            contained(origin, name)
-        sources[ref] = SourceAsset(ref, dict(record, identity=asdict(ref)), origin)
+    sources = SourceCatalog()
+    for name in PROPS:
+        ref = AssetRef("props", name)
+        sources[ref] = _source(origin, ref, "reference_prop")
+    sources[STAIRS_REF] = _source(origin, STAIRS_REF, "stairs")
+    bunny = "props/bunny_flat_bottom.obj"
+    for name, recipe in (("pbf_pool", "reference_pool"), ("pbf_pool_wide", "wide_pool")):
+        ref = AssetRef("containers", name)
+        try:
+            if not contained(origin, bunny).is_file():
+                raise ValueError("Missing reference pool OBJ")
+            sources[ref] = _source(origin, ref, recipe, (bunny,))
+        except (OSError, ValueError) as exc:
+            sources.errors.append(SourceIssue(origin / bunny, str(exc), ref))
+
+    reserved = {ref.relative.as_posix().casefold() for ref in sources}
+    discovered = {}
+
+    def collect(path, source):
+        key = source.ref.relative.as_posix().casefold()
+        discovered.setdefault(key, []).append((path, source))
+
+    props = origin / "props"
+    for path in sorted(props.rglob("*"), key=lambda item: (item.as_posix().casefold(), item)):
+        if path.suffix.casefold() != ".obj":
+            continue
+        ref = None
+        try:
+            ref = AssetRef("props", path.stem)
+            relative = path.relative_to(origin)
+            resolved = contained(origin, relative)
+            if not resolved.is_relative_to(props) or not resolved.is_file():
+                raise ValueError("Expected an OBJ file inside the props directory")
+            collect(path, _source(origin, ref, "obj", (relative.as_posix(),)))
+        except (OSError, ValueError) as exc:
+            sources.errors.append(SourceIssue(path, str(exc), ref))
+
+    for path in sorted((origin / "articulations").rglob("source.yaml")):
+        try:
+            collect(path, _articulation_source(path, origin))
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            sources.errors.append(SourceIssue(path, str(exc)))
+
+    for key, group in discovered.items():
+        if key in reserved or len(group) > 1:
+            reason = "reserved built-in name" if key in reserved else "duplicate asset name"
+            for path, source in group:
+                sources.errors.append(SourceIssue(path, f"{source.ref.relative}: {reason}", source.ref))
+        else:
+            _, source = group[0]
+            sources[source.ref] = source
     return sources
 
 
 @dataclass(frozen=True)
-class RuntimeAsset:
+class PreparedAsset:
     root: Path
     record: dict
     source: SourceAsset
@@ -175,7 +270,7 @@ class RuntimeAsset:
 
     @property
     def model_path(self):
-        if self.source.recipe == "reference_prop":
+        if self.source.recipe in {"reference_prop", "obj"}:
             return self.file(self.record["model"])
         path = self.source.model_path
         if path is None:
@@ -183,16 +278,24 @@ class RuntimeAsset:
         return path
 
 
-def read_runtime_asset(path, source, *, verify=True):
+class RuntimeAsset(PreparedAsset):
+    """A prepared asset with complete, simulation-ready boundary data."""
+
+
+def read_prepared_asset(path, source, *, verify=True):
+    """Read a full asset slot, which may contain only its prepared SDF."""
     from .lib.storage.fingerprints import recipe_digest
 
     path = Path(path).resolve()
     record = json.loads(path.read_text(encoding="utf-8"))
     signature = record.pop("record_sha256", None)
-    if (record["schema"] != 1 or record["identity"] != asdict(source.ref)
+    state = record.get("state", "ready")
+    if (record["schema"] != 1 or state not in ("sdf_ready", "ready")
+            or record["identity"] != asdict(source.ref)
             or not isinstance(record["build_digest"], str) or signature != recipe_digest(record)):
         raise ValueError(f"Invalid runtime asset manifest: {path}")
-    asset = RuntimeAsset(path.parent, record, source)
+    asset_type = RuntimeAsset if state == "ready" else PreparedAsset
+    asset = asset_type(path.parent, record, source)
     if not verify:
         return asset
     for relative, expected in record["files"].items():
@@ -200,22 +303,39 @@ def read_runtime_asset(path, source, *, verify=True):
             raise ValueError(f"Runtime asset checksum mismatch: {relative}")
         if relative.endswith("/boundary.json"):
             nested = json.loads(asset.file(relative).read_text(encoding="utf-8"))
-            if nested.get("kind") != "boundary":
+            if nested.get("kind") != "boundary" or nested.get("state", "ready") != state:
                 raise ValueError(f"Invalid boundary metadata: {relative}")
             for dependency in nested["files"].values():
                 target = contained(asset.root, Path(relative).parent / dependency)
                 asset.file(target.relative_to(asset.root).as_posix())
+            if state == "sdf_ready" and nested["volume_map"] is not None:
+                raise ValueError(f"SDF preparation must not include a volume map: {relative}")
+            if state == "ready" and not isinstance(nested.get("volume_map"), dict):
+                raise ValueError(f"Prepared boundary lacks a volume map: {relative}")
     if source.container_size is not None:
-        for role in ("boundary", "bunny", "hulls"):
-            asset.file(record[role])
+        asset.file(record["boundary"])
+        asset.file(record.get("visible_mesh") or record["bunny"])
+        if record.get("hulls") is not None:
+            asset.file(record["hulls"])
         if not isinstance(record["container"], dict):
             raise ValueError(f"Missing container layout: {path}")
     else:
         asset.model_path
+        if source.recipe == "obj":
+            asset.file(record["mesh"])
+            if record.get("hulls") is not None:
+                asset.file(record["hulls"])
         if not isinstance(record["physical_signature"], str):
             raise ValueError(f"Missing physical signature: {path}")
         for relative in record["links"].values():
             asset.file(relative)
+    return asset
+
+
+def read_runtime_asset(path, source, *, verify=True):
+    asset = read_prepared_asset(path, source, verify=verify)
+    if not isinstance(asset, RuntimeAsset):
+        raise ValueError(f"Runtime asset still needs a volume map: {path}")
     return asset
 
 

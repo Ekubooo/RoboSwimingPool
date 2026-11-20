@@ -29,6 +29,7 @@ class SelectionPanel:
         self.props = {name: PropChoice(ref in defaults, 1) for name, ref in choices.props.items()}
         self.placement, self.seed = "regular", 1234
         self.use_sphere = False
+        self.terrain_prop = None
         self.layout = self.result = None
         self.cancelled = False
         self.status = "Select a preset or customize assets, then click Start simulation."
@@ -41,7 +42,7 @@ class SelectionPanel:
         if viewer.gui is None or not viewer.ui.is_available:
             raise RuntimeError("Scene selection requires the Newton ImGui interface")
         from RSP.rendering.preview.textures import AssetPreviews
-        self.previews = AssetPreviews(self.choices.assets)
+        self.previews = AssetPreviews(self.choices.assets, prepared_assets=self.choices.prepared_assets)
         self.scale = viewer.ui.dpi_scale
         if self._font_viewer is not viewer:
             font_path = Path("C:/Windows/Fonts/msyh.ttc")
@@ -92,8 +93,11 @@ class SelectionPanel:
                         if tiles:
                             for ref, count in entries:
                                 imgui.table_next_column()
-                                picture(imgui, self.previews, ref, self._color(ref),
-                                        min(90*self.scale, imgui.get_content_region_avail().x))
+                                if ref in self.choices.assets:
+                                    picture(imgui, self.previews, ref, self._color(ref),
+                                            min(90*self.scale, imgui.get_content_region_avail().x))
+                                else:
+                                    imgui.text_wrapped("Asset unavailable")
                                 imgui.text_wrapped(f'{ref.name} × {count}')
                     try:
                         character_for_scene(scene, self.characters)
@@ -114,7 +118,8 @@ class SelectionPanel:
             counts = {self.choices.props[name]: p.count if p.enabled else 0
                       for name, p in self.props.items()}
             self.layout = self.choices.build(self.choices.containers[self.container], counts,
-                mode=self.placement, seed=self.seed, use_sphere=self.use_sphere, character=character.asset)
+                mode=self.placement, seed=self.seed, use_sphere=self.use_sphere, character=character.asset,
+                terrain_prop=self.terrain_prop)
             self.status = f"Generated {len(self.layout['instances'])} props with seed {self.seed}"
             return True
         except (OSError, ValueError, KeyError) as error:
@@ -131,6 +136,8 @@ class SelectionPanel:
                 for ref in (scene.container, scene.character, *scene.props):
                     if ref not in self.choices.assets:
                         raise ValueError(f"Missing scene asset source: {ref.relative}")
+                if scene.terrain_prop is not None and scene.terrain_prop not in self.choices.terrain_props.values():
+                    raise ValueError("The preset's central OBJ is unavailable")
                 self.result = LaunchRequest(choice.profile_id, self.presets[self.preset])
             elif self.layout is not None or self.generate():
                 self.characters[self.character].require_available()
@@ -167,9 +174,21 @@ class SelectionPanel:
                                 self.select_character(key)
                             else:
                                 self.container = key
+                                self.terrain_prop = None
                                 self.invalidate()
                         if is_character and option.error:
                             imgui.text_wrapped(option.error)
+        selected = self.choices.containers.get(self.container)
+        if selected is not None and self.choices.assets[selected].recipe == 'stairs':
+            labels = ['None', *self.choices.terrain_props]
+            refs = [None, *self.choices.terrain_props.values()]
+            changed, index = imgui.combo('Central platform model', refs.index(self.terrain_prop), labels)
+            if changed:
+                self.terrain_prop = refs[index]
+                self.invalidate()
+            if self.terrain_prop is not None:
+                from .cards import picture
+                picture(imgui, self.previews, self.terrain_prop, self._color(self.terrain_prop), 100*self.scale)
         imgui.separator_text('Props')
         with card_grid(imgui, 'props', self.scale) as opened:
             if opened:
@@ -235,6 +254,10 @@ class SelectionPanel:
                 else:
                     self._custom(imgui)
                     summary = self.layout
+                if self.choices.errors:
+                    imgui.separator_text('Unavailable assets')
+                    for error in self.choices.errors:
+                        imgui.text_wrapped(str(error))
                 if summary is not None:
                     imgui.separator_text('Instance / Asset / XYZ (m)')
                     for item in summary['instances']:

@@ -49,25 +49,28 @@ def runtime_config(control_dt, substeps, settings=None):
                    initial_velocity=tuple(transform[:3, :3] @ original.initial_velocity))
 
 
-def add_collisions(builder, layout, bunny, hulls):
+def add_collisions(builder, layout, visible_mesh, hulls):
     """Assemble prepared shapes using Newton's public builder interface."""
     import newton
     import warp as wp
     cfg = builder.ShapeConfig(density=0., mu=1.)
     cfg.flags = newton.ShapeFlags.COLLIDE_SHAPES
+    stairs = layout.get("terrain") == "stairs"
+    box_label = "pool_enclosure" if stairs else "pool_wall"
+    mesh_label = "pool_landscape" if stairs else "pool_bunny"
     for index, box in enumerate(layout["boxes"]):
         hx, hy, hz = box["half"]
         builder.add_shape_box(-1, xform=wp.transform(box["center"], wp.quat_identity()),
-                             hx=hx, hy=hy, hz=hz, cfg=cfg, label=f"pool_wall_{index}")
+                             hx=hx, hy=hy, hz=hz, cfg=cfg, label=f"{box_label}_{index}")
     for index, hull in enumerate(hulls):
         mesh = newton.Mesh(np.asarray(hull.vertices, dtype=np.float32),
                            np.asarray(hull.faces, dtype=np.int32).reshape(-1), compute_inertia=False)
-        builder.add_shape_convex_hull(-1, mesh=mesh, cfg=cfg, label=f"pool_bunny_collision_{index}")
+        builder.add_shape_convex_hull(-1, mesh=mesh, cfg=cfg, label=f"{mesh_label}_collision_{index}")
     visible = builder.ShapeConfig(density=0.)
     visible.flags = newton.ShapeFlags.VISIBLE
-    mesh = newton.Mesh(np.asarray(bunny.vertices, dtype=np.float32),
-                       np.asarray(bunny.faces, dtype=np.int32).reshape(-1), compute_inertia=False)
-    builder.add_shape_mesh(-1, mesh=mesh, cfg=visible, label="pool_bunny")
+    mesh = newton.Mesh(np.asarray(visible_mesh.vertices, dtype=np.float32),
+                       np.asarray(visible_mesh.faces, dtype=np.int32).reshape(-1), compute_inertia=False)
+    builder.add_shape_mesh(-1, mesh=mesh, cfg=visible, label=mesh_label)
 
 
 class PBFScene:
@@ -158,9 +161,10 @@ class PBFScene:
     def add_static(self, builder):
         record = self.static_asset.record
         self.static_path = self.static_asset.file(record["boundary"])
-        self.bunny = trimesh.load(self.static_asset.file(record["bunny"]), force="mesh", process=False)
-        hulls = load_hulls(self.static_asset.file(record["hulls"]))
-        add_collisions(builder, self.layout, self.bunny, hulls)
+        visible_path = record.get("visible_mesh") or record["bunny"]
+        visible = trimesh.load(self.static_asset.file(visible_path), force="mesh", process=False)
+        hulls = load_hulls(self.static_asset.file(record["hulls"])) if record.get("hulls") else ()
+        add_collisions(builder, self.layout, visible, hulls)
         self.static_hull_count = len(hulls)
 
     def add_particles(self, builder):
@@ -216,13 +220,14 @@ class PBFScene:
         distances = wp.empty(len(probes), dtype=float, device=self.device)
         wp.launch(sample_sdf, len(probes), inputs=[self.boundaries.assets[0].sdf.id, points],
                   outputs=[distances], device=self.device)
-        values = distances.numpy()
-        if not np.isfinite(values).all() or not (values[0] > 0 and np.all(values[1:] < 0)):
+        values = dict(zip(probes, distances.numpy().tolist()))
+        if (not np.isfinite(list(values.values())).all() or values["cavity"] <= 0
+                or any(distance >= 0 for name, distance in values.items() if name != "cavity")):
             raise ValueError(f"Static boundary sign validation failed: {values}")
         self.manifest = dict(world_up_axis="Z", particle_count=self.particles.n,
                              static_asset=str(self.static_path), bunny_body_id=None,
                              static_collision_hulls=self.static_hull_count,
-                             static_sign_distances=dict(zip(probes, values.tolist())), dynamic_boundaries=entries,
+                             static_sign_distances=values, dynamic_boundaries=entries,
                              initial_clearances=self.initial_clearances,
                              particle_radius=self.config.particle_radius,
                              support_radius=self.particles.smoothing_length,

@@ -9,7 +9,7 @@ import stat
 import tempfile
 from threading import local
 
-from ...catalog import read_runtime_asset
+from ...catalog import read_prepared_asset
 from ...paths import RUNTIME_ROOT, runtime_root
 
 
@@ -101,7 +101,7 @@ def _paths(root, source):
 def _read_candidate(directory, source):
     _check_tree(directory)
     try:
-        return read_runtime_asset(directory / "asset.json", source)
+        return read_prepared_asset(directory / "asset.json", source)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 

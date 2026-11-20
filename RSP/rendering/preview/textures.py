@@ -55,8 +55,9 @@ class AssetPreviews:
     """Requests originate in UI drawing; process_one executes outside that callback."""
     width, height = 512, 384
 
-    def __init__(self, assets):
+    def __init__(self, assets, *, prepared_assets=None):
         self.assets = assets
+        self.prepared_assets = {} if prepared_assets is None else prepared_assets
         self.textures, self.errors = {}, {}
         self.pending = OrderedDict()
         self.closed = False
@@ -73,7 +74,8 @@ class AssetPreviews:
         key, _ = self.pending.popitem(last=False)
         try:
             from .geometry import load_geometry, project_geometry
-            triangles, lines = project_geometry(load_geometry(self.assets[key[0]], key[1]))
+            triangles, lines = project_geometry(load_geometry(self.assets[key[0]], key[1],
+                prepared=self.prepared_assets.get(key[0])))
             self.textures[key] = self._render(triangles, lines)
         except Exception as error:
             self.errors[key] = str(error)

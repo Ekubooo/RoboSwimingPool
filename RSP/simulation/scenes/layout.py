@@ -8,14 +8,31 @@ import trimesh
 
 
 def asset_bounds(asset):
-    path = asset.file(next(iter(asset.record["links"].values())))
-    bounds = json.loads(path.read_text(encoding="utf-8"))["bounds"]
+    bounds = asset.record.get("layout_bounds")
+    if bounds is None:
+        path = asset.file(next(iter(asset.record["links"].values())))
+        bounds = json.loads(path.read_text(encoding="utf-8"))["bounds"]
     return np.asarray(bounds["center"]), np.asarray(bounds["half"])
 
 
-def container_obstacle_bounds(asset):
-    mesh = trimesh.load(asset.file(asset.record["bunny"]), force="mesh", process=False)
-    return np.asarray(mesh.bounds)
+def container_obstacle_bounds(layout):
+    """Return the prepared interior obstacle AABBs in scene coordinates."""
+    return tuple(np.asarray(bounds, dtype=float) for bounds in layout.get("obstacles", ()))
+
+
+def terrain_fluid_region(start, end, layout, *, gap=.02):
+    """Translate the initial water block above any overlapping terrain."""
+    start, end = np.asarray(start, dtype=float), np.asarray(end, dtype=float)
+    obstacles = container_obstacle_bounds(layout)
+    if "fluid_model_bounds" in layout:
+        obstacles = (*obstacles[:-1], np.asarray(layout["fluid_model_bounds"], dtype=float))
+    tops = [bounds[1, 2] for bounds in obstacles
+            if np.all(start[:2] < bounds[1, :2]) and np.all(bounds[0, :2] < end[:2])]
+    lift = max(0., max(tops) + gap - start[2]) if tops else 0.
+    if end[2] + lift > layout["size"][2]:
+        raise ValueError("The initial water block does not fit above the stair terrain")
+    shift = np.array([0., 0., lift])
+    return start + shift, end + shift
 
 
 def transformed_bounds(center, half, position, rotation):

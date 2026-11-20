@@ -13,6 +13,14 @@ SCENE_ROOT = PROJECT_ROOT / "data" / "scenes"
 G1_SOURCE_ROOT = PROJECT_ROOT / "data" / "assets" / "g1"
 
 
+def configured_runtime_root(value=None):
+    """Resolve the same configured destination for selection and playback."""
+    root = (PROJECT_ROOT / Path(value or RUNTIME_ROOT).expanduser()).resolve()
+    if root == ASSET_ROOT / "published":
+        root = RUNTIME_ROOT
+    return runtime_root(root)
+
+
 def output_root(path):
     """Allow explicit external roots and protect repository sources from writes.
 

@@ -40,21 +40,25 @@ These settings require volume maps baked with support radius 0.04 m. Before
 creating an environment, playback prepares the selected scene's assets using
 the same fluid settings as the simulation. Matching inputs, recipes and files
 are reused. Missing, damaged or outdated outputs are regenerated; changing the
-particle radius automatically updates the volume map. Scene browsing and
-previews use original sources and do not require generated runtime assets.
+particle radius automatically updates the volume map. Before scene selection,
+startup discovers OBJ props and prepares their validated meshes, collisions and
+SDFs. Failures are shown and excluded. Volume maps are completed only after
+assembly; previews use prepared OBJ geometry and original humanoid sources.
 
 Volume-map precomputation belongs to `sim_ready`: its numerical function works
 in memory, the preparation pipeline writes SDF plus volume-map NVDB resources,
 and the boundary loader validates and reads them. Runtime body transforms,
 queries and fluid/rigid forces belong to physics. Each asset has one current
 directory, `data/assets_RSP/runtime/<category>/<name>`, with internal build
-metadata and checksums. Each boundary stores its SDF and volume map as two grids
-in one NVDB file. An adequate existing SDF can be reused when only the volume
+metadata and checksums. Prepared OBJ boundaries initially have one SDF grid;
+simulation requires the completed SDF and volume map as two grids in one NVDB
+file. An adequate existing SDF can be reused when only the volume
 map needs updating. No asset version selection or publication step is required.
 
 Original inputs stay outside the generated tree. Runtime directories can be
-removed while the application is closed and rebuilt from source declarations
-under `data/assets_RSP/origin` and their referenced original files. Preparation
+removed while the application is closed and rebuilt from OBJ files under
+`data/assets_RSP/origin/props`, humanoid declarations, referenced originals and
+the built-in generation recipes. Preparation
 validates a temporary replacement before installing it and holds a directory
 lease through environment use. Scene assembly and simulation remain read-only.
 Legacy scene references with a version field select the current asset without
@@ -63,6 +67,10 @@ rewriting custom scene files.
 Automatic placement avoids the internal bunny and uses its existing clearance.
 Authored scene validation retains its separate exterior/prop-overlap rules.
 These paths share geometry calculations without changing placement policy.
+The additional fixed `pbf_stairs` container uses Newton-generated steps and an
+optional source OBJ on its platform. Its custom layout preserves the flat spawn
+area and raises the initial water block when needed without changing its size.
+The saved scene records that placement and its optional `terrain_prop` reference.
 
 ## Runtime and resource lifetime
 

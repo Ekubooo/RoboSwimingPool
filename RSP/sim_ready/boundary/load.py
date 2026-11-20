@@ -35,6 +35,45 @@ def _verify_file(manifest, record):
     return path
 
 
+def _boundary_grid_count(record):
+    state = record.get("state", "ready")
+    settings = record["volume_map"]
+    if state == "ready" and isinstance(settings, dict):
+        return 2
+    if state == "sdf_ready" and settings is None:
+        return 1
+    raise ValueError("Invalid boundary state or volume map metadata")
+
+
+def _read_sdf(manifest, record, support_radius, device):
+    """Verify the distance field in either preparation state."""
+    count = _boundary_grid_count(record)
+    path = _verify_file(manifest, record)
+    grids = _read_grids(path, count, device)
+    distance = grids[0]
+    if _check_support(distance, support_radius) != record["bake_options"]["max_support_radius"]:
+        raise ValueError("SDF support range differs from its manifest")
+    if fingerprints.sdf_digest(distance) != record["sdf_sha256"]:
+        raise ValueError("Boundary SDF fingerprint differs from the manifest")
+    if _grid_layout(distance) != record["grid"]:
+        raise ValueError("Boundary SDF grid differs from the manifest")
+    return path, grids
+
+
+def load_prepared_sdf(artifact, *, support_radius, device=None):
+    """Read the validated distance field from either a single-grid or complete artifact."""
+    check_volume_options(support_radius, 16)
+    artifact = artifact if isinstance(artifact, BoundaryArtifact) else BoundaryArtifact(artifact)
+    path = artifact.manifest_path
+    try:
+        record = _read_record(path, "boundary")
+        _, grids = _read_sdf(path, record, support_radius, _device(device))
+        _validate_bounds(record["bounds"])
+        return grids[0]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError) as error:
+        raise ValueError(f"Cannot load prepared SDF {path}: {error}. Prepare the asset before loading.") from error
+
+
 def load_boundary_asset(artifact, *, support_radius, quadrature_points=16, device=None):
     """Read a complete artifact without creating, rebuilding or modifying files.
 
@@ -47,21 +86,15 @@ def load_boundary_asset(artifact, *, support_radius, quadrature_points=16, devic
     path = artifact.manifest_path
     try:
         record = _read_record(path, "boundary")
+        if _boundary_grid_count(record) != 2:
+            raise ValueError("Boundary SDF is prepared but its volume map is missing")
         expected = dict(sdf_sha256=record["sdf_sha256"], support_radius=float(support_radius),
                         quadrature_points=int(quadrature_points), algorithm_version=VOLUME_MAP_ALGORITHM_VERSION)
         if record["volume_map"] != expected:
             raise ValueError("Boundary volume map does not match the requested h, quadrature or algorithm")
-        volume_path = _verify_file(path, record)
-        distance, volume_map = _read_grids(volume_path, 2, selected)
-        maximum = record["bake_options"]["max_support_radius"]
-        if _check_support(distance, support_radius) != maximum:
-            raise ValueError("SDF support range differs from its manifest")
-        if fingerprints.sdf_digest(distance) != record["sdf_sha256"]:
-            raise ValueError("Boundary SDF fingerprint differs from the manifest")
+        volume_path, (distance, volume_map) = _read_sdf(path, record, support_radius, selected)
         if volume_map.get_grid_info().name != _map_name(support_radius, quadrature_points):
             raise ValueError("Volume map grid metadata differs from the request")
-        if _grid_layout(distance) != record["grid"]:
-            raise ValueError("Boundary SDF grid differs from the manifest")
         check_volume_map_layout(distance, volume_map)
         center, half, radius = _validate_bounds(record["bounds"])
         return LoadedBoundaryAsset(artifact, volume_path, _file(path, record["files"]["mesh"]),

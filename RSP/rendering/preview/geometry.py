@@ -23,7 +23,7 @@ def _triangles(mesh, color):
     return np.column_stack((points, normals, colors)).astype(np.float32)
 
 
-def load_geometry(asset, color=None):
+def load_geometry(asset, color=None, *, prepared=None):
     """Use authored geometry and primitives without preparing boundary data."""
     lines = np.empty((0, 6), dtype=np.float32)
     if asset.container_size is not None:
@@ -33,14 +33,21 @@ def load_geometry(asset, color=None):
                  if np.count_nonzero(corners[a] != corners[b]) == 1]
         points = np.concatenate(edges)
         lines = np.column_stack((points, np.tile([.55, .72, .85], (len(points), 1)))).astype(np.float32)
-        bunny = asset.bunny_mesh()
-        return PreviewGeometry(_triangles(bunny, [.72, .72, .72]), lines)
+        if asset.recipe == "stairs":
+            from RSP.sim_ready.pipelines.container import describe_terrain
+            visible = describe_terrain().visible_mesh
+        else:
+            visible = asset.bunny_mesh()
+        return PreviewGeometry(_triangles(visible, [.72, .72, .72]), lines)
 
     if asset.prop_kind is not None:
         if asset.prop_kind == "box":
             mesh = trimesh.creation.box(extents=(asset.prop_size,) * 3)
         elif asset.prop_kind == "sphere":
             mesh = trimesh.creation.icosphere(subdivisions=3, radius=asset.prop_size)
+        elif asset.prop_kind == "mesh":
+            mesh = (trimesh.load(prepared.file(prepared.record["mesh"]), force="mesh", process=False)
+                    if prepared is not None else asset.prop_mesh())
         else:
             raise ValueError(f"Unsupported preview geometry: {asset.prop_kind}")
         return PreviewGeometry(_triangles(mesh, [.7, .7, .7] if color is None else color), lines)
