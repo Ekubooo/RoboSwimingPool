@@ -6,11 +6,17 @@ Version-specific access stays in the rendering adapters, without changing
 Presentation's frame order or the installed Newton package.
 """
 
+from collections import namedtuple
 from contextlib import contextmanager
 import logging
 import sys
 
 import newton
+
+
+_SceneFrame = namedtuple(
+    "_SceneFrame", "framebuffer color depth view projection sky_upper sky_lower sun environment",
+)
 
 
 @contextmanager
@@ -63,7 +69,8 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         self._billboard_settings = {"speed_color_mid": speed_color_mid, "speed_color_max": speed_color_max}
         super().__init__(*args, **kwargs)
         from .fluid.pipeline import FluidPipeline
-        self.fluid_pipeline = FluidPipeline(self)
+        self.fluid_pipeline = FluidPipeline(self, self.renderer.render, **self._billboard_settings)
+        self.renderer.render = self.fluid_pipeline.render
         # RSP's application already owns pacing. Newton's requested 1 ms wait
         # can become a Windows timer tick, masking faster GPU uploads. Adapt
         # this renderer instance only; retain all event and camera processing.
@@ -71,6 +78,19 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
         # The OS close event can destroy the context before the engine's finally
         # block runs. Release interop resources while that context still exists.
         self.renderer.window.push_handlers(on_close=self._close_window)
+
+    def make_context_current(self):
+        self.renderer._make_current()
+
+    def get_framebuffer_size(self):
+        return self.renderer._screen_width, self.renderer._screen_height
+
+    def get_scene_frame(self):
+        """Borrow the resolved targets and camera data after Newton's scene pass."""
+        renderer = self.renderer
+        return _SceneFrame(renderer._frame_fbo, renderer._frame_texture, renderer._frame_depth_texture,
+                           renderer._view_matrix, renderer._projection_matrix, renderer.sky_upper,
+                           renderer.sky_lower, renderer._sun_direction, getattr(renderer, "_env_texture", None))
 
     def set_paused(self, paused):
         """Set playback state and cancel any previously requested single step."""
@@ -259,7 +279,8 @@ pass classification is refreshed only on this explicit edit notification.
         if self.fluid_pipeline.mode != "Original":
             if drawable is not None:
                 drawable.hidden = True
-            self.fluid_pipeline.update(state)
+            points = self._apply_layer_transform_to_points(state.particle_q)
+            self.fluid_pipeline.update(points, state.particle_qd, self.model.particle_radius)
             return
         if drawable is None:
             drawable = _BillboardObject(self.renderer, self.device, **self._billboard_settings)
@@ -273,7 +294,7 @@ pass classification is refreshed only on this explicit edit notification.
         if renderer is not None:
             renderer._make_current()
         if hasattr(self, "fluid_pipeline"):
-            mode = self.fluid_pipeline.mode
+            mode = self.fluid_pipeline.pending or self.fluid_pipeline.mode
             self.fluid_pipeline.close()
             self.fluid_pipeline.mode = "Original"
             self.fluid_pipeline.request(mode)

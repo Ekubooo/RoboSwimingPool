@@ -13,6 +13,8 @@ from time import perf_counter
 import torch
 import warp as wp
 
+from RSP.simulation.scenes.layout import ScenePlacementError
+
 from .playback_stats import PlaybackStats
 from .ui.interaction import FluidInteraction
 from .ui.playback import PlaybackPanel, draw_policy_controls
@@ -35,6 +37,7 @@ class PlaybackRunner:
             raise ValueError("Policy period must be a positive whole number of simulation frames")
         self.policy_interval = round(ratio)
         self._clear_action()
+        self._reset_error = None
         self._torch_stream = self._warp_stream = None
         if torch.device(session.device).type == "cuda":
             self._torch_stream = torch.cuda.current_stream(session.device)
@@ -56,6 +59,7 @@ class PlaybackRunner:
                 self.fluid_controls.apply_pending()
             self.obs, self.info = self.session.reset()
             self._clear_action()
+            self._reset_error = None
 
     def _clear_action(self):
         self._policy_phase = 0
@@ -81,7 +85,21 @@ class PlaybackRunner:
         if self.session.consume_reset_request():
             if self.viewer is not None:
                 self.viewer.set_paused(True)
-            self.reset()
+            try:
+                self.reset()
+            except ScenePlacementError as error:
+                if self.viewer is None:
+                    raise
+                self._reset_error = f"Reset failed: {error}. Try Reset again."
+                logging.exception("Scene reset failed; playback paused")
+        if self._reset_error is not None:
+            # A failed reset may have written only part of the sampled state.
+            # Only another successful reset can enable simulation again.
+            self.viewer.set_paused(True)
+            if self.fluid_controls is not None:
+                self.fluid_controls.error = self._reset_error
+            self.session.render_only()
+            return False
         if self.fluid_controls is not None:
             self.fluid_controls.apply_pending()
         self.session.apply_commands()

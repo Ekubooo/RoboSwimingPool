@@ -3,7 +3,7 @@ from pyglet import gl
 from .resources import texture
 
 
-def render(context):
+def render(context, scene):
     layered = context.config.transparent_layer_blending
     target = context.targets['oit' if layered else 'nearest']
     target.bind([(0.,)*4, (1.,)*4, (0.,)*4])
@@ -21,7 +21,7 @@ def render(context):
         gl.glDepthMask(True)
         gl.glClearBufferfv(gl.GL_DEPTH, 0, (gl.GLfloat*1)(1.))
     try:
-        context.particle_pass('transparent', 1.)
+        context.particle_pass(scene, 'transparent', 1.)
     finally:
         gl.glDisable(gl.GL_BLEND)
         gl.glDisable(gl.GL_DEPTH_TEST)
@@ -47,7 +47,7 @@ def render(context):
     context.targets['output'].bind()
     shader = context.programs['resolve']
     with shader:
-        texture(shader, 'background', context.viewer.renderer._frame_texture, 0)
+        texture(shader, 'background', scene.color, 0)
         texture(shader, 'accumulation', target.textures[0], 1)
         texture(shader, 'reveal', target.textures[1], 2)
         texture(shader, 'weighted_depth', depth, 3)

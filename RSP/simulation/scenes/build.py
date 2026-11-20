@@ -14,7 +14,7 @@ import warp as wp
 from RSP.physics import fluid_clock
 from RSP.physics.pbf import boundary_model, pbf_helper
 from RSP.sim_ready.adapters.newton import describe_articulations
-from RSP.sim_ready.catalog import physical_signature
+from RSP.sim_ready.lib.storage.fingerprints import physical_signature
 from RSP.sim_ready.lib.asset_validation import (
     ValidationReport, diagnostic_scope, validate_coverage, validate_physical_asset,
 )
@@ -249,18 +249,24 @@ class PBFScene:
                 wp.copy(state.particle_q, self.particles.model.particle_q)
                 wp.copy(state.particle_qd, self.particles.model.particle_qd)
 
-    def character_translation(self, state, body_ids, root_position):
+    def _body_bounds(self, state, body_ids):
         poses = state.body_q.numpy()
-        points = []
+        bounds = []
         for body_id in body_ids:
-            if body_id not in self.body_meshes:
+            mesh = self.body_meshes.get(body_id)
+            if mesh is None:
                 continue
             pose = poses[body_id]
             matrix = trimesh.transformations.quaternion_matrix([pose[6], pose[3], pose[4], pose[5]])
             matrix[:3, 3] = pose[:3]
-            points.append(trimesh.transform_points(self.body_meshes[body_id].vertices, matrix))
-        points = np.concatenate(points)
-        low, high = points.min(axis=0), points.max(axis=0)
+            points = trimesh.transform_points(mesh.vertices, matrix)
+            bounds.append([points.min(axis=0), points.max(axis=0)])
+        return np.asarray(bounds)
+
+    def character_translation(self, state, body_ids, root_position):
+        """Legacy Engine placement above water; current playback uses terrain clearance."""
+        bounds = self._body_bounds(state, body_ids)
+        low, high = bounds[:, 0].min(axis=0), bounds[:, 1].max(axis=0)
         desired = np.array([.8, 1.]) - np.asarray(root_position)[:2]
         minimum = .05 - low[:2]
         maximum = self.container_size[:2] - .05 - high[:2]
@@ -277,20 +283,11 @@ class PBFScene:
 
         if not self.layout.get("terrain_recipe"):
             return np.zeros(3, dtype=np.float32)
-        poses = state.body_q.numpy()
-        bounds = []
-        for body_id in body_ids:
-            mesh = self.body_meshes.get(body_id)
-            if mesh is None:
-                continue
-            pose = poses[body_id]
-            matrix = trimesh.transformations.quaternion_matrix([pose[6], pose[3], pose[4], pose[5]])
-            matrix[:3, 3] = pose[:3]
-            points = trimesh.transform_points(mesh.vertices, matrix)
-            bounds.append([points.min(axis=0), points.max(axis=0)])
+        bounds = self._body_bounds(state, body_ids)
         return np.array([0., 0., terrain_character_lift(bounds, self.layout)], dtype=np.float32)
 
     def draw_pool(self, viewer):
+        """Compatibility hook for newton_pbf_engine_before_refactor only."""
         if not hasattr(self, "_line_starts"):
             corners = np.array([[x, y, z] for x in (0., self.container_size[0])
                                 for y in (0., self.container_size[1]) for z in (0., self.container_size[2])])

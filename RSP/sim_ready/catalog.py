@@ -7,40 +7,14 @@ import xml.etree.ElementTree as ET
 
 import yaml
 
-from .paths import ORIGIN_ROOT, RUNTIME_ROOT
+from .paths import G1_SOURCE_ROOT, ORIGIN_ROOT, RUNTIME_ROOT, contained
 
 CATEGORIES = ("articulations", "props", "containers", "environments")
-
-
-def physical_signature(asset):
-    """Compare local geometry/topology, independent of scene label prefixes."""
-    def plain(value):
-        if hasattr(value, "tolist"):
-            return value.tolist()
-        if isinstance(value, dict):
-            return {k: (v.split("/")[-1] if k == "name" else plain(v)) for k, v in value.items()}
-        if isinstance(value, (tuple, list)):
-            return [plain(v) for v in value]
-        return value
-    record = plain(asdict(asset))
-    record.pop("name")
-    return hashlib.sha256(json.dumps(record, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
 def digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def contained(root, relative):
-    root = Path(root).resolve()
-    path = Path(relative)
-    if path.is_absolute() or path.drive:
-        raise ValueError(f"Expected relative asset path: {relative}")
-    result = (root / path).resolve()
-    if not result.is_relative_to(root):
-        raise ValueError(f"Asset path escapes its directory: {relative}")
-    return result
 
 
 def _name_component(value):
@@ -94,6 +68,18 @@ def terrain_reference(name):
     return ref
 
 
+def _g1_source_files():
+    """Resolve only dependencies of the repository's unchanged g1.xml."""
+    root = ET.parse(G1_SOURCE_ROOT / "g1.xml").getroot()
+    names = {"g1.xml", "LICENSE.txt"}
+    names.update(element.attrib["file"] for element in root.iter() if "file" in element.attrib)
+    files = {name: contained(G1_SOURCE_ROOT, name) for name in sorted(names)}
+    for path in files.values():
+        if not path.is_file():
+            raise ValueError(f"Missing G1 source dependency: {path}")
+    return files
+
+
 @dataclass(frozen=True)
 class SourceAsset:
     ref: AssetRef
@@ -123,8 +109,7 @@ class SourceAsset:
             if not path.is_file():
                 raise ValueError(f"Missing asset input: {path}")
         if self.recipe == "mimickit_g1":
-            from .pipelines.recipes.g1 import source_files
-            return source_files()
+            return _g1_source_files()
         return files
 
     @property

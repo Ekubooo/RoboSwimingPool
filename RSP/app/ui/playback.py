@@ -108,7 +108,7 @@ class PlaybackPanel:
                     self._render_fluid_controls(imgui)
                 # Keep failures visible even when the controls are collapsed.
                 if self.fluid_controls.error:
-                    imgui.text_wrapped(f"Fluid update failed: {self.fluid_controls.error}")
+                    imgui.text_wrapped(self.fluid_controls.error)
             pipeline = getattr(viewer, "fluid_pipeline", None)
             if pipeline is not None:
                 if imgui.collapsing_header("Rendering"):

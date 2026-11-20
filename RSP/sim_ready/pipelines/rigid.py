@@ -49,9 +49,9 @@ def prepare_obj(source, *, store, device, support_radius, previous=None, sdf_onl
 
     from ..adapters.newton import describe_articulations, finalize_model, import_physical_asset
     from ..boundary.schema import BoundaryArtifact
-    from ..catalog import physical_signature
     from ..lib.asset_validation import ValidationReport, check_source, diagnostic_scope, validate_physical_asset
     from ..lib.mesh import validation
+    from ..lib.storage.fingerprints import physical_signature
     from ..lib.storage.mesh_io import save_mesh_obj
     from ..source_geometry import normalized_obj
     from .boundary import prepare_boundary_asset

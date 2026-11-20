@@ -90,7 +90,7 @@ class TerrainEditor:
         self._dirty = False
         self._release_preview(previews)
         from RSP.rendering.preview.geometry import container_geometry
-        from RSP.sim_ready.pipelines.container import describe_terrain, validate_terrain
+        from RSP.sim_ready.container_geometry import describe_terrain, validate_terrain
 
         try:
             recipe = TerrainRecipe(self._kind, dict(self._parameters))

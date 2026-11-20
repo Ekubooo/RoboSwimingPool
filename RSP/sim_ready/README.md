@@ -31,19 +31,22 @@ records how to find each generated resource.
 RSP/sim_ready/
 ├── catalog.py                        source discovery, runtime verification
 ├── source_geometry.py                shared source previews and dimensions
+├── container_geometry.py             shared pure terrain/OBJ geometry and layout
 ├── terrain.py                        validated authored terrain parameters
+├── runtime_store.py                  asset leases, validation and slot replacement
 ├── adapters/newton.py                physical model import and extraction
+├── adapters/terrain.py               Newton terrain output compatibility
 ├── boundary/                         boundary manifest and read-only GPU load
 ├── lib/
 │   ├── mesh/                         geometry, validation, convex hulls
 │   ├── volume/                       SDF and volume-map computation
-│   └── storage/                      file formats and safe directory replacement
+│   └── storage/                      file formats, fingerprints and safe file writes
 └── pipelines/
     ├── runtime.py                    current asset generation and reuse
+    ├── identity.py                   recipe and numerical-stage code fingerprints
     ├── boundary.py                   prepare one boundary per geometry
     ├── rigid.py                      OBJ normalization, inertia and rigid model
-    ├── container.py                  closed container assembly and reused OBJ hulls
-    ├── terrain_geometry.py           full-floor stairs, closed grid and gap boxes
+    ├── container.py                  persist shared geometry, hulls and boundaries
     ├── terrain_authoring.py          validate and atomically save a new recipe
     ├── articulation.py               validate links, share identical boundaries
     ├── collision.py                  convex collision preparation
@@ -115,7 +118,9 @@ the generated root, and roots overlapping source inputs are rejected.
 The `sdf_ready` preparation state stores one SDF in `boundary.nvdb`. Starting
 the selected scene upgrades the same directory to `ready`, with the SDF and its
 matching volume map in the same NVDB. Only `ready` assets may enter simulation.
-Selection does not downgrade ready assets; coverage is rechecked at launch.
+Selection keeps ready assets whose source identity still matches; coverage is
+rechecked at launch. An outdated slot is replaced with the new SDF preparation
+state, and its map is completed only if the asset is selected for simulation.
 The map is precomputed on a separate grid. A compatible persisted
 SDF can be reused when the support radius changes. Otherwise the pipeline
 rebuilds the SDF with adequate coverage. The boundary loader checks the grid
@@ -131,6 +136,14 @@ longest extent of 0.3 m. Their default density is 1000 kg/m3. The original surfa
 defines the visual mesh, inertia and fluid boundary; convex collision proxies
 use existing CoACD preparation. The generated MJCF has one free rigid body.
 No automatic repair or broader mesh-validation guarantees are added.
+
+Runtime identities include only the relevant recipe and shared producer code.
+Convex decomposition, SDF baking and volume-map generation have separate code
+and dependency fingerprints. A terrain-only edit does not invalidate an
+articulation or primitive asset. When an enclosing asset needs preparation,
+unchanged verified SDFs, maps and convex parts can still be reused. Old caches
+without stage fingerprints are regenerated on first use; this does not add
+asset versions or extra runtime slots.
 
 `pbf_stairs` uses Newton's public `Mesh.create_terrain` interface in a fixed
 3 x 2 x 5 m cavity with 0.3 m walls. Its generated visual landscape excludes the

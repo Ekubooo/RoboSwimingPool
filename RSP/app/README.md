@@ -6,6 +6,10 @@ the session interface; `ui/` owns panels, shortcuts and queued CPU commands.
 The same playback binding serves the legacy MimicKit entry point. Unbinding
 removes its callbacks without closing the borrowed environment or window.
 
+Scene assembly lives in `simulation/scenes/assembly.py`; UI panels own selection
+and draft state, not a second placement implementation. Asset preparation and
+scene-placement errors are handled separately by the application.
+
 ## Scene selection and startup
 
 Custom assembly includes **Generate terrain**, a modal inside the existing

@@ -72,6 +72,18 @@ optional source OBJ on its platform. Its custom layout preserves the flat spawn
 area and raises the initial water block when needed without changing its size.
 The saved scene records that placement and its optional `terrain_prop` reference.
 
+`simulation/scenes/assembly.py` owns selection-time layouts; the UI only gathers
+choices and displays results. Shared terrain geometry lives in
+`sim_ready/container_geometry.py`, while `pipelines/container.py` validates and
+persists generated assets. Preview and assembly do not import baking pipelines.
+Newton terrain mesh conventions are isolated in `sim_ready/adapters/terrain.py`.
+The full-floor stairs, random-grid and gap recipes use the same geometry path.
+
+Asset fingerprints are scoped to the producing recipe and numerical stage.
+SDFs, volume maps and convex pieces are independently checked before reuse.
+Existing caches without these stage fingerprints are rebuilt on first use;
+each asset still has just one current runtime directory.
+
 ## Runtime and resource lifetime
 
 The application owns the selection window and lends it to the environment.
@@ -88,6 +100,8 @@ applied at a complete frame boundary on the playback stream.
 The playback loop holds actions between policy decisions. The environment's
 existing `step` also renders; the application does not draw a second successful
 frame. Paused frames and failed graph updates use the explicit render-only path.
+An invalid sampled terrain placement leaves playback paused until a successful
+reset; initial placement errors return to scene selection.
 Rendering keeps device-side packing and CUDA/OpenGL mapping without CPU particle
 readback. CUDA registrations and GL resources are released before their context.
 

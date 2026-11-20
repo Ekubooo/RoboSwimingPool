@@ -7,6 +7,11 @@ permanent primary state and a second state for substeps.
 With an odd substep count, the final state is copied back to the primary arrays
 on the GPU so borrowed state views keep their addresses.
 
+`scenes/assembly.py` owns the CPU assembly catalog, water clearance and prop
+placement. The selection UI supplies choices and displays the resulting scene;
+these rules do not depend on ImGui. Asset geometry comes from the shared
+`sim_ready.container_geometry` interface, separate from asset preparation.
+
 The optional `terrain_prop` scene reference selects an OBJ for a procedural
 container; it does not create a dynamic body. Static assembly consumes prepared
 visible geometry, collision boxes and optional convex parts without knowledge
@@ -50,6 +55,12 @@ Reset restores fluid settings and clears held actions, clocks and feedback.
 MimicKit first samples the reset pose and velocity, then applies the scene's
 horizontal spawn position and resets solver histories. The simulation
 synchronizes the secondary state with the primary afterwards.
+
+Placement errors keep their `ScenePlacementError` type. Startup reports them
+in selection. A rejected playback reset stays paused and cannot step a partially
+reset state; another successful Reset clears the error. Headless callers receive
+the exception. The old above-water placement and pool-outline methods remain
+only for the historical Engine compatibility path.
 
 ## Backend interfaces
 

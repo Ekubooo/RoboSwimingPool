@@ -1,28 +1,24 @@
-"""Browse source assets and generate layouts without preparing runtime data."""
+"""Assemble scene descriptions from prepared assets without creating a simulation."""
 from copy import deepcopy
 from dataclasses import asdict
 
 import numpy as np
 
 from RSP.sim_ready.catalog import scan_sources
-from RSP.simulation.scenes.layout import place_props, terrain_fluid_region
-from RSP.simulation.scenes.spec import parse_scene
+from .layout import place_props, terrain_fluid_region
+from .spec import parse_scene
 
 GAP = .02
 
 
-def asset_label(ref):
-    return ref.name
-
-
-class SceneChoices:
+class SceneAssembly:
     def __init__(self, template, *, sources=None, prepared_assets=None):
         self.template = deepcopy(template)
         self.template_spec = parse_scene(template)
         self.assets = scan_sources() if sources is None else sources
         self.prepared_assets = {} if prepared_assets is None else prepared_assets
         self.errors = tuple(getattr(self.assets, "errors", ()))
-        self.containers = {asset_label(ref): ref for ref, asset in self.assets.items()
+        self.containers = {ref.name: ref for ref, asset in self.assets.items()
                            if ref.category == "containers" and asset.container_size is not None}
         self.props = {ref.name: ref for ref, asset in self.assets.items()
                       if ref.category == "props" and asset.prop_kind is not None}
@@ -45,12 +41,12 @@ class SceneChoices:
     def add_terrain(self, asset):
         """Register a freshly saved terrain in the already filtered catalog."""
         self.assets[asset.ref] = asset
-        self.containers[asset_label(asset.ref)] = asset.ref
+        self.containers[asset.ref.name] = asset.ref
 
     def terrain(self, container, terrain_prop=None):
         key = (container, terrain_prop)
         if key not in self._terrain:
-            from RSP.sim_ready.pipelines.container import describe_terrain
+            from RSP.sim_ready.container_geometry import describe_terrain
             if terrain_prop is not None and terrain_prop not in self.terrain_props.values():
                 raise ValueError("Select an available terrain OBJ")
             source = None if terrain_prop is None else self.assets[terrain_prop]

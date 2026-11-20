@@ -13,6 +13,18 @@ SCENE_ROOT = PROJECT_ROOT / "data" / "scenes"
 G1_SOURCE_ROOT = PROJECT_ROOT / "data" / "assets" / "g1"
 
 
+def contained(root, relative):
+    """Resolve an asset-relative path without allowing it to escape its root."""
+    root = Path(root).resolve()
+    path = Path(relative)
+    if path.is_absolute() or path.drive:
+        raise ValueError(f"Expected relative asset path: {relative}")
+    result = (root / path).resolve()
+    if not result.is_relative_to(root):
+        raise ValueError(f"Asset path escapes its directory: {relative}")
+    return result
+
+
 def configured_runtime_root(value=None):
     """Resolve the same configured destination for selection and playback."""
     root = (PROJECT_ROOT / Path(value or RUNTIME_ROOT).expanduser()).resolve()

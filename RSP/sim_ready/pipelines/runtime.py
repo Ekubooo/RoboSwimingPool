@@ -1,48 +1,25 @@
 """Prepare and reuse the current generated assets for one scene."""
 
 from dataclasses import asdict, dataclass, replace
-import hashlib
-from importlib.metadata import version
 import json
 from pathlib import Path
 
-from ..catalog import SourceCatalog, SourceIssue, digest, physical_signature, read_prepared_asset, scan_sources
-from ..config import BakeOptions, check_volume_options
-from ..lib.storage.fingerprints import recipe_digest
-from ..lib.storage.runtime_slot import (
+from ..catalog import SourceCatalog, SourceIssue, digest, read_prepared_asset, scan_sources
+from ..config import BakeOptions, VOLUME_MAP_ALGORITHM_VERSION, check_volume_options
+from ..lib.storage.fingerprints import physical_signature, recipe_digest
+from ..runtime_store import (
     AssetPreparationError, commit_runtime_asset, recover_runtime_asset,
     runtime_asset_lease, stage_runtime_asset,
 )
 from ..paths import ORIGIN_ROOT, RUNTIME_ROOT, runtime_root
+from .identity import asset_producer, producer_snapshot
 
 
-def _producer_identity():
-    """Track the producer implementation independently of checkout location."""
-    root = Path(__file__).resolve().parents[1]
-    paths = (
-        "pipelines/runtime.py", "pipelines/rigid.py", "pipelines/container.py",
-        "catalog.py", "reference.py", "source_geometry.py", "terrain.py", "pipelines/terrain_geometry.py",
-        "pipelines/recipes/container.py", "pipelines/recipes/pbf_play.py",
-        "pipelines/recipes/g1.py", "config.py", "adapters/newton.py",
-        "pipelines/articulation.py", "pipelines/collision.py", "pipelines/boundary.py",
-        "boundary/schema.py", "lib/storage/nvdb_io.py", "lib/storage/mesh_io.py",
-        "lib/storage/hull_io.py", "lib/storage/fingerprints.py",
-        "lib/mesh/geometry.py", "lib/mesh/validation.py", "lib/mesh/shapes.py",
-        "lib/mesh/convex.py", "lib/volume/sdf.py", "lib/volume/pbf_volume_map.py",
-    )
-    return {
-        path: hashlib.sha256((root / path).read_text(encoding="utf-8").encode()).hexdigest()
-        for path in paths
-    }
-
-
-def source_identity(source, *, producer=None, dependencies=None):
+def source_identity(source, *, producer=None):
     """Geometry/model identity independent of the consumer's support radius."""
     source.model_path  # Validate raw model dependencies before replacing generated files.
     if producer is None:
-        producer = _producer_identity()
-    if dependencies is None:
-        dependencies = _dependencies()
+        producer = producer_snapshot()
     files = {name: digest(path) for name, path in source.input_files().items()}
     terrain_digest = source.record.get("terrain_input_digest")
     if terrain_digest is not None and files[source.record["inputs"][0]] != terrain_digest:
@@ -50,19 +27,19 @@ def source_identity(source, *, producer=None, dependencies=None):
     return recipe_digest(dict(
         source=source.record,
         files=files,
-        producer=producer, dependencies=dependencies,
+        producer=asset_producer(source, producer),
     ))
 
 
-def build_identity(source, support_radius, *, producer=None, dependencies=None):
+def build_identity(source, support_radius, *, producer=None):
     """Fingerprint a complete boundary for this consumer's support radius."""
     check_volume_options(support_radius, 16)
-    return recipe_digest(dict(source=source_identity(source, producer=producer, dependencies=dependencies),
-                              support_radius=float(support_radius)))
-
-
-def _dependencies():
-    return {name: version(name) for name in ("newton", "warp-lang", "trimesh", "manifold3d", "coacd")}
+    if producer is None:
+        producer = producer_snapshot()
+    return recipe_digest(dict(source=source_identity(source, producer=producer),
+                              support_radius=float(support_radius), quadrature_points=16,
+                              volume_map_algorithm=VOLUME_MAP_ALGORITHM_VERSION,
+                              volume_map_producer=producer["volume_map"]))
 
 
 def write_runtime_asset(stage, source, metadata, *, build_digest):
@@ -99,10 +76,10 @@ def _prepare(stage, source, support_radius, device, previous, *, sdf_only=False,
         return prepare_obj(source, store=store, device=device, support_radius=support_radius,
                            previous=previous, sdf_only=sdf_only)
     if source.is_terrain:
-        from .container import prepare_stairs
-        return prepare_stairs(
+        from .container import prepare_terrain
+        return prepare_terrain(
             store, device, support_radius, recipe=source.terrain_recipe, terrain_asset=terrain_asset,
-            terrain_source=None if terrain_asset is None else terrain_asset.source, previous=previous,
+            previous=previous,
         )
     if sdf_only:
         raise ValueError("SDF preflight is only needed for discovered OBJ assets")
@@ -164,7 +141,7 @@ def ensure_runtime_assets(refs, *, support_radius, device="cuda:0",
     try:
         root = runtime_root(root, origin=origin)
         sources = scan_sources(origin)
-        producer, dependencies = _producer_identity(), _dependencies()
+        producer = producer_snapshot()
     except Exception as exc:
         raise AssetPreparationError(f"Cannot discover runtime asset sources: {exc}") from exc
     ready = {}
@@ -182,7 +159,7 @@ def ensure_runtime_assets(refs, *, support_radius, device="cuda:0",
                 if prop_source is None or prop_source.recipe != "obj":
                     raise ValueError("The terrain model must reference a discovered OBJ")
                 terrain_asset = _prepare_obj_source(
-                    root, prop_source, support_radius, device, producer=producer, dependencies=dependencies,
+                    root, prop_source, support_radius, device, producer=producer,
                     require_sdf_coverage=False,
                 )
             except Exception as exc:
@@ -198,9 +175,9 @@ def ensure_runtime_assets(refs, *, support_radius, device="cuda:0",
                 terrain_dependency = terrain_asset if ref == terrain_ref else None
                 if terrain_dependency is not None:
                     source = _terrain_with_prop(source, terrain_dependency)
-                identity = build_identity(source, support_radius, producer=producer, dependencies=dependencies)
+                identity = build_identity(source, support_radius, producer=producer)
                 if terrain_dependency is not None and source_identity(
-                        terrain_dependency.source, producer=producer, dependencies=dependencies,
+                        terrain_dependency.source, producer=producer,
                 ) != terrain_dependency.record["source_digest"]:
                     raise ValueError("Terrain OBJ changed after preparation")
                 previous = recover_runtime_asset(root, source)
@@ -218,9 +195,9 @@ def ensure_runtime_assets(refs, *, support_radius, device="cuda:0",
                     metadata = _prepare(stage, source, float(support_radius), device, previous,
                                         terrain_asset=terrain_dependency)
                     metadata = dict(metadata, state="ready", source_digest=source_identity(
-                        source, producer=producer, dependencies=dependencies))
+                        source, producer=producer))
                     asset = write_runtime_asset(stage, source, metadata, build_digest=identity)
-                    if build_identity(source, support_radius, producer=producer, dependencies=dependencies) != identity:
+                    if build_identity(source, support_radius, producer=producer) != identity:
                         raise ValueError("Source assets changed during preparation")
                 except Exception as exc:
                     raise AssetPreparationError(f"Cannot prepare {ref.relative}: {exc}") from exc
@@ -249,10 +226,10 @@ def _covers_support(asset, support_radius):
     return bool(asset.record["links"])
 
 
-def _prepare_obj_source(root, source, support_radius, device, *, producer, dependencies,
+def _prepare_obj_source(root, source, support_radius, device, *, producer,
                         require_sdf_coverage=True):
     """Reuse or prepare one OBJ slot under the caller's runtime lease."""
-    identity = source_identity(source, producer=producer, dependencies=dependencies)
+    identity = source_identity(source, producer=producer)
     previous = recover_runtime_asset(root, source)
     if (previous is not None and previous.record.get("source_digest") == identity
             and (not require_sdf_coverage or previous.record.get("state", "ready") == "ready"
@@ -263,7 +240,7 @@ def _prepare_obj_source(root, source, support_radius, device, *, producer, depen
         metadata = dict(metadata, state="sdf_ready", source_digest=identity)
         asset = write_runtime_asset(stage, source, metadata, build_digest=recipe_digest(
             dict(source=identity, sdf_support_radius=float(support_radius))))
-        if source_identity(source, producer=producer, dependencies=dependencies) != identity:
+        if source_identity(source, producer=producer) != identity:
             raise ValueError("Source asset changed during preparation")
         return commit_runtime_asset(root, asset)
 
@@ -273,7 +250,7 @@ def prepare_sources(*, support_radius, device="cuda:0", root=RUNTIME_ROOT,
     """Prepare every discovered OBJ for selection, never computing a volume map.
 
     A failed input is excluded along with built-in containers depending on it.
-    Consumer-ready assets are left intact; their coverage is checked at launch.
+    Matching consumer-ready assets stay intact; coverage is checked at launch.
     """
     check_volume_options(support_radius, 16)
     root = runtime_root(root, origin=origin)
@@ -282,7 +259,7 @@ def prepare_sources(*, support_radius, device="cuda:0", root=RUNTIME_ROOT,
     available.update(discovered)
     available.errors.extend(getattr(discovered, "errors", ()))
     ready, failed_inputs = {}, set()
-    producer, dependencies = _producer_identity(), _dependencies()
+    producer = producer_snapshot()
     with runtime_asset_lease(root, reuse=True):
         for ref, source in tuple(available.items()):
             if source.recipe != "obj":
@@ -291,7 +268,7 @@ def prepare_sources(*, support_radius, device="cuda:0", root=RUNTIME_ROOT,
                 progress(f"Checking OBJ {ref.name}…")
             try:
                 ready[ref] = _prepare_obj_source(root, source, support_radius, device,
-                                                 producer=producer, dependencies=dependencies)
+                                                 producer=producer)
             except Exception as exc:
                 names = source.record["inputs"]
                 failed_inputs.update(names)

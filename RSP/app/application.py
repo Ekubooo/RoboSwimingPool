@@ -9,9 +9,10 @@ import yaml
 
 from RSP.integrations.mimickit.profiles import load_presets, read_yaml, load_characters
 from RSP.simulation.scenes.spec import parse_scene
+from RSP.simulation.scenes.assembly import SceneAssembly
+from RSP.simulation.scenes.layout import ScenePlacementError
 
 from .config import POLICY_HZ, boundary_support_radius, get_fluid_settings
-from .ui.scene_choices import SceneChoices
 from .ui.selection import SelectionPanel
 
 
@@ -93,7 +94,8 @@ def run(*, profile_id="humanoid", direct=False):
     from RSP.sim_ready.catalog import scan_sources
     from RSP.sim_ready.config import BakeOptions
     from RSP.sim_ready.paths import configured_runtime_root
-    from RSP.sim_ready.pipelines.runtime import AssetPreparationError, prepare_sources
+    from RSP.sim_ready.pipelines.runtime import prepare_sources
+    from RSP.sim_ready.runtime_store import AssetPreparationError
 
     from .playback import bind_playback
 
@@ -122,7 +124,7 @@ def run(*, profile_id="humanoid", direct=False):
             print(f"Asset unavailable: {error}", flush=True)
         panel = None
         if not direct:
-            panel = SelectionPanel(SceneChoices(read_yaml(profile.scene_preset), sources=prepared.sources,
+            panel = SelectionPanel(SceneAssembly(read_yaml(profile.scene_preset), sources=prepared.sources,
                                                 prepared_assets=prepared.assets),
                                    load_presets(), profile.scene_preset, characters=characters)
             viewer.hide_loading_splash()
@@ -150,11 +152,12 @@ def run(*, profile_id="humanoid", direct=False):
                         runner.run(reset=False)
             except _StartupCancelled:
                 return
-            except AssetPreparationError as error:
+            except (AssetPreparationError, ScenePlacementError) as error:
                 if panel is None:
                     raise
                 if not viewer.is_running():
                     return
+                viewer.set_model(None)
                 viewer.hide_loading_splash()
                 panel.resume_after_failure(error)
                 continue

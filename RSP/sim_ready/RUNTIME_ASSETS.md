@@ -105,7 +105,11 @@ it. Existing reference presets keep their original layout rules.
 The default `pbf_asset_dir` is `data/assets_RSP/runtime`. Each source retains
 one current set of generated files. An unchanged build is verified and reused.
 Changes to inputs, build code, dependencies or support radius generate a new
-current set. Each preparation call uses its starting source declarations and
+current set when relevant to that asset. Terrain-specific code changes do not
+invalidate unrelated humanoids or primitives. SDF, volume-map and convex-piece
+identities allow verified stages to be reused independently. Caches made before
+stage fingerprints were introduced require a one-time rebuild on first use.
+Each preparation call uses its starting source declarations and
 build code. A terrain recipe changed after discovery is rejected until it is
 discovered again. Preparation never edits the original model, meshes, motions or policy
 files. Old `published` and `pbf_play` asset directories are outside the

@@ -1,5 +1,6 @@
 """Stable content identities shared by asset pipelines."""
 
+from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +16,22 @@ def recipe_digest(value, *, allow_nan=False):
 def file_digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def physical_signature(asset):
+    """Compare local geometry/topology, independent of scene label prefixes."""
+    def plain(value):
+        if hasattr(value, "tolist"):
+            return value.tolist()
+        if isinstance(value, dict):
+            return {k: (v.split("/")[-1] if k == "name" else plain(v)) for k, v in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [plain(v) for v in value]
+        return value
+
+    record = plain(asdict(asset))
+    record.pop("name")
+    return recipe_digest(record)
 
 
 def sdf_digest(volume):

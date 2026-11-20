@@ -1,8 +1,8 @@
 """Prepare a boundary SDF and add a volume map when requested."""
 
 from dataclasses import asdict, replace
-from importlib.metadata import version
 import math
+import shutil
 
 import numpy as np
 
@@ -17,6 +17,7 @@ from ..lib.storage.mesh_io import save_mesh_obj
 from ..lib.storage.store import AssetStore
 from ..lib.volume import sdf
 from ..lib.volume.pbf_volume_map import precompute_volume_map
+from .identity import stage_identity
 
 
 def _bounds(mesh):
@@ -37,10 +38,31 @@ def _reuse_current_sdf(artifact, geometry, options, device):
         if (record["geometry"] != geometry or not math.isfinite(maximum)
                 or maximum < options.max_support_radius):
             return None
-        _, grids = _read_sdf(manifest, record, options.max_support_radius, device)
-        return grids[0], record["bake_options"]
+        path, grids = _read_sdf(manifest, record, options.max_support_radius, device)
+        return path, grids, record
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
         return None
+
+
+def _copy_current_map(reuse, recipe, producer, target):
+    if reuse is None:
+        return False
+    path, grids, record = reuse
+    if record.get("volume_map") != recipe or record.get("volume_map_producer") != producer or len(grids) != 2:
+        return False
+    distance, volume_map = grids
+    if volume_map.get_grid_info().name != _map_name(recipe["support_radius"], recipe["quadrature_points"]):
+        return False
+    try:
+        check_volume_map_layout(distance, volume_map)
+    except ValueError:
+        return False
+    shutil.copyfile(path, target)
+    # Do not sign changed bytes if an external writer modified the source
+    # after its checksum was verified by _read_sdf.
+    if fingerprints.file_digest(target) != record["nvdb_sha256"]:
+        raise ValueError("Cached boundary NVDB changed during preparation")
+    return True
 
 
 def prepare_boundary_asset(mesh, checked, *, store: AssetStore, bake_options=BakeOptions(), support_radius,
@@ -54,9 +76,10 @@ def prepare_boundary_asset(mesh, checked, *, store: AssetStore, bake_options=Bak
                                                           bake_options.max_support_radius))
     base_options = asdict(options)
     del base_options["max_support_radius"]
-    geometry = dict(mesh_sha256=fingerprints.mesh_digest(mesh), container=bool(container),
+    geometry = dict(mesh_sha256=fingerprints.mesh_digest(checked),
+                    bounds=np.asarray(checked.bounds).tolist(), container=bool(container),
                     bake_options=base_options, sdf_algorithm_version=SDF_ALGORITHM_VERSION,
-                    dependencies={p: version(p) for p in ("newton", "warp-lang", "trimesh")})
+                    producer=stage_identity("sdf"))
     directory = store.path(destination)
     artifact = BoundaryArtifact(directory / "boundary.json")
     candidate = previous if previous is not None else artifact
@@ -75,20 +98,25 @@ def prepare_boundary_asset(mesh, checked, *, store: AssetStore, bake_options=Bak
                 scratch.unlink()
             persisted_options = asdict(options)
         else:
-            distance, persisted_options = reuse
-        sdf_hash = fingerprints.sdf_digest(distance)
+            _, grids, previous_record = reuse
+            distance = grids[0]
+            persisted_options = previous_record["bake_options"]
+        sdf_hash = fingerprints.sdf_digest(distance) if reuse is None else previous_record["sdf_sha256"]
         map_recipe = None
+        map_producer = None
         if sdf_only:
             if reuse is not None:
                 nvdb_io.save_volumes((distance,), volume_path)
         else:
             map_recipe = dict(sdf_sha256=sdf_hash, support_radius=float(support_radius),
                               quadrature_points=int(quadrature_points), algorithm_version=VOLUME_MAP_ALGORITHM_VERSION)
-            print(f"Building PBF volume map: {artifact}", flush=True)
-            volume_map = precompute_volume_map(distance, support_radius, quadrature_points=quadrature_points)
-            check_volume_map_layout(distance, volume_map)
-            nvdb_io.save_volumes((distance, volume_map), volume_path,
-                                grid_names=(distance.get_grid_info().name, _map_name(support_radius, quadrature_points)))
+            map_producer = stage_identity("volume_map")
+            if not _copy_current_map(reuse, map_recipe, map_producer, volume_path):
+                print(f"Building PBF volume map: {artifact}", flush=True)
+                volume_map = precompute_volume_map(distance, support_radius, quadrature_points=quadrature_points)
+                check_volume_map_layout(distance, volume_map)
+                nvdb_io.save_volumes((distance, volume_map), volume_path,
+                                    grid_names=(distance.get_grid_info().name, _map_name(support_radius, quadrature_points)))
         save_mesh_obj(mesh, stage / "mesh.obj", digits=17)
         record = dict(schema=SCHEMA_VERSION, kind="boundary", geometry=geometry,
                       state="sdf_ready" if sdf_only else "ready",
@@ -97,6 +125,8 @@ def prepare_boundary_asset(mesh, checked, *, store: AssetStore, bake_options=Bak
                       sdf_sha256=sdf_hash, grid=_grid_layout(distance), volume_map=map_recipe,
                       nvdb_sha256=fingerprints.file_digest(volume_path),
                       mesh_file_sha256=fingerprints.file_digest(stage / "mesh.obj"))
+        if map_producer is not None:
+            record["volume_map_producer"] = map_producer
         manifest = stage / "boundary.json"
         _write_record(manifest, record)
         if sdf_only:

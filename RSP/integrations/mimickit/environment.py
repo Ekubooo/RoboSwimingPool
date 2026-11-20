@@ -10,7 +10,7 @@ from envs.smp_env import SMPEnv
 from envs.sim_env import SimEnv
 from envs.task_dodgeball_env import compute_dodgeball_observations
 from RSP.sim_ready.lib.asset_validation import SkeletonDescription
-from RSP.sim_ready.lib.storage.runtime_slot import AssetPreparationError
+from RSP.sim_ready.runtime_store import AssetPreparationError
 from RSP.physics import fluid_clock
 from RSP.simulation.scenes.layout import ScenePlacementError
 from util.camera import Camera, CameraMode
@@ -23,7 +23,7 @@ class PBFPlayEnv(SMPEnv):
                  asset_progress=None):
         if engine_config["engine_name"] != "newton_pbf" or num_envs != 1:
             raise ValueError("pbf_play requires one newton_pbf environment")
-        from RSP.sim_ready.lib.storage.runtime_slot import runtime_asset_lease
+        from RSP.sim_ready.runtime_store import runtime_asset_lease
         from RSP.sim_ready.paths import SCENE_ROOT, configured_runtime_root
         from RSP.sim_ready.pipelines.runtime import ensure_runtime_assets
         from RSP.simulation.scenes.fluid import boundary_support_radius
@@ -59,7 +59,7 @@ class PBFPlayEnv(SMPEnv):
             try:
                 resolved = resolve_scene(scene, asset_root, support_radius=support_radius, assets=assets)
             except ValueError as error:
-                raise AssetPreparationError(f"Scene placement is invalid: {error}") from error
+                raise ScenePlacementError(f"Cannot assemble scene: {error}") from error
             if asset_progress is not None:
                 asset_progress("Scene assets are ready. Loading the simulation...")
 
@@ -231,10 +231,7 @@ class PBFPlayEnv(SMPEnv):
         root[:, :2] = root.new_tensor(self._spawn_xy)
         self._engine.set_root_pos(env_ids, char_id, root)
         if self._terrain_spawn:
-            try:
-                self._engine.place_character_on_terrain(char_id)
-            except ScenePlacementError as error:
-                raise AssetPreparationError(f"Scene placement is invalid: {error}") from error
+            self._engine.place_character_on_terrain(char_id)
         self._engine.reset_play_scene()
 
     def _build_camera(self, env_config):

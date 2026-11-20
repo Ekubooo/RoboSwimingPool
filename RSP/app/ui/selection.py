@@ -7,7 +7,6 @@ from RSP.sim_ready.catalog import AssetRef
 from RSP.integrations.mimickit.profiles import LaunchRequest, character_for_scene, load_characters, read_yaml
 from RSP.simulation.scenes.spec import parse_scene
 
-from .scene_choices import asset_label
 from .terrain_editor import TerrainEditor
 
 
@@ -25,7 +24,7 @@ class SelectionPanel:
         self.preset = next(name for name, path in presets.items() if path == default_preset)
         self.characters = load_characters(sources=choices.assets) if characters is None else characters
         self.character = character_for_scene(choices.template, self.characters).profile_id
-        self.container = asset_label(choices.template_spec.container)
+        self.container = choices.template_spec.container.name
         defaults = {instance.asset for instance in choices.template_spec.instances}
         self.props = {name: PropChoice(ref in defaults, 1) for name, ref in choices.props.items()}
         self.placement, self.seed = "regular", 1234
@@ -72,13 +71,13 @@ class SelectionPanel:
 
     def resume_after_failure(self, error):
         self.result = None
-        self.status = f"Asset preparation failed: {error}"
+        self.status = f"Scene startup failed: {error}"
 
     def prepare_previews(self):
         asset = self.terrain_editor.process(self.previews)
         if asset is not None:
             self.choices.add_terrain(asset)
-            self.container = asset_label(asset.ref)
+            self.container = asset.ref.name
             self.terrain_prop = None
             self.invalidate()
             self.status = f"Saved terrain {self.container}."
@@ -285,7 +284,7 @@ class SelectionPanel:
                     imgui.separator_text('Instance / Asset / XYZ (m)')
                     for item in summary['instances']:
                         position = ', '.join(f'{x:.3f}' for x in item['position'])
-                        imgui.text(f"{item['name']}   {asset_label(AssetRef.from_mapping(item['asset']))}   {position}")
+                        imgui.text(f"{item['name']}   {AssetRef.from_mapping(item['asset']).name}   {position}")
             finally:
                 imgui.end_child()
             self.terrain_editor.draw(imgui, self.scale)

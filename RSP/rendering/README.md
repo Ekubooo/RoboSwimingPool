@@ -88,7 +88,7 @@ selected mode uploads particles and draws. New modes lazily allocate shaders
 and textures, so their first use can pause briefly; resources are reused until
 resize/model replacement/close. Scene reset preserves the selected mode.
 
-`FluidPipeline` wraps this viewer instance's scene render call: Newton first
+`NewtonBillboardViewer` installs the fluid pipeline around its scene render call: Newton first
 draws the scene and resolves MSAA, then the new mode samples that color/depth
 into separate targets and commits the result before UI/display-frame capture.
 Original takes the unchanged draw path with no optional framebuffer allocation.
@@ -158,8 +158,10 @@ There is no particle lighting, shadow pass, edge overlay or transparency sort.
 ## Newton boundary
 
 The Newton adapters own the scene-object `render()`/`destroy()` protocol, shape
-batching, layer-qualified names and GUI hooks. The optional fluid passes use
-the renderer's camera matrices and frame targets. Particles draw in the opaque scene pass, sharing rigid
+batching, layer-qualified names and GUI hooks. `newton_gl.py` also supplies the
+current context, framebuffer size and resolved scene targets/camera data to the
+fluid passes; those passes do not access Newton's private renderer fields.
+Original particles draw in the opaque scene pass, sharing rigid
 depth before transparency, MSAA resolve and ImGui. Human geometry, scene lines,
 input callbacks and recording retain their Newton paths. No global monkeypatch
 or modified installed package is needed.

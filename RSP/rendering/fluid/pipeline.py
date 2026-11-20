@@ -10,8 +10,10 @@ from .resources import ParticleBuffer, Target, program, matrix, texture
 
 
 class FluidPipeline:
-    def __init__(self, viewer):
+    def __init__(self, viewer, render_scene, **particle_settings):
         self.viewer = viewer
+        self._render_scene = render_scene
+        self._particle_settings = particle_settings
         self.mode = 'Original'
         self.pending = None
         self.ssfr_preset = 'Water'
@@ -27,8 +29,6 @@ class FluidPipeline:
         self.targets = {}
         self.size = None
         self.last_switch_ms = 0.
-        self.original_render = viewer.renderer.render
-        viewer.renderer.render = self.render
         self.vao = gl.GLuint()
 
     def request(self, mode):
@@ -48,7 +48,7 @@ class FluidPipeline:
         self.pending_water_color = None
         start = time.perf_counter()
         try:
-            self.viewer.renderer._make_current()
+            self.viewer.make_context_current()
             if mode != 'Original':
                 self.prepare(mode, preset, config)
                 # Validate CUDA registration before committing the switch. It
@@ -94,7 +94,7 @@ class FluidPipeline:
         config = config or self.config
         velocity = mode == 'SSFR' and (preset or self.ssfr_preset) == 'Velocity'
         if self.batch is None:
-            self.batch = ParticleBuffer(self.viewer.device, **self.viewer._billboard_settings)
+            self.batch = ParticleBuffer(self.viewer.device, **self._particle_settings)
             gl.glGenVertexArrays(1, ctypes.byref(self.vao))
         definitions = {'transparent': (s.PARTICLE, s.TRANSPARENT), 'resolve': (s.QUAD, s.RESOLVE)} if mode == 'Transparent' else {
             'depth': (s.PARTICLE, s.DEPTH), 'thickness': (s.PARTICLE, s.THICKNESS),
@@ -107,8 +107,7 @@ class FluidPipeline:
         for name, sources in definitions.items():
             if name not in self.programs:
                 self.programs[name] = program(*sources)
-        renderer = self.viewer.renderer
-        size = (renderer._screen_width, renderer._screen_height)
+        size = self.viewer.get_framebuffer_size()
         if size != self.size:
             for target in self.targets.values():
                 target.close()
@@ -148,27 +147,25 @@ class FluidPipeline:
                 break
             level += 1
 
-    def update(self, state):
-        points = self.viewer._apply_layer_transform_to_points(state.particle_q)
-        self.batch.update(points, state.particle_qd, self.viewer.model.particle_radius, self.config,
+    def update(self, positions, velocities, radii):
+        self.batch.update(positions, velocities, radii, self.config,
                           transparent=self.mode == 'Transparent')
 
     def full_screen(self):
         gl.glBindVertexArray(self.vao)
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
-    def particle_pass(self, name, radius):
-        r = self.viewer.renderer
+    def particle_pass(self, scene, name, radius):
         shader = self.programs[name]
         with shader:
-            matrix(shader, 'view', r._view_matrix)
-            matrix(shader, 'projection', r._projection_matrix)
+            matrix(shader, 'view', scene.view)
+            matrix(shader, 'projection', scene.projection)
             # Camera matrices are column-major flat arrays.
-            inv = np.linalg.inv(np.asarray(r._projection_matrix).reshape(4, 4, order='F'))
+            inv = np.linalg.inv(np.asarray(scene.projection).reshape(4, 4, order='F'))
             matrix(shader, 'inv_projection', inv.T)
             shader['size'] = self.size
             shader['radius_scale'] = radius
-            texture(shader, 'scene_depth', r._frame_depth_texture, 0)
+            texture(shader, 'scene_depth', scene.depth, 0)
             if name == 'transparent':
                 shader['depth_enabled'] = self.config.transparent_depth_enabled and self.config.transparent_depth_strength > 0
                 shader['layer_blending'] = self.config.transparent_layer_blending
@@ -178,31 +175,25 @@ class FluidPipeline:
                 shader['attribute_depth_range'] = self.config.attribute_depth_range
             self.batch.draw_instances()
 
-    def transparent(self):
-        from .transparent import render
-        render(self)
-
-    def ssfr(self):
-        from .ssfr import render
-        render(self)
-
     def render(self, *args, **kwargs):
-        self.original_render(*args, **kwargs)
+        self._render_scene(*args, **kwargs)
         if self.mode == 'Original' or not self.visible or self.batch is None or not self.batch.count:
             return
         self.prepare(self.mode)
+        scene = self.viewer.get_scene_frame()
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glDisable(gl.GL_CULL_FACE)
         gl.glDepthMask(False)
         try:
             if self.mode == 'Transparent':
-                self.transparent()
+                from .transparent import render
             else:
-                self.ssfr()
+                from .ssfr import render
+            render(self, scene)
             # Commit the completed image to Newton's frame texture and window.
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self.targets['output'].fbo)
             gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
-            for destination in (self.viewer.renderer._frame_fbo, 0):
+            for destination in (scene.framebuffer, 0):
                 gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, destination)
                 gl.glBlitFramebuffer(0,0,*self.size,0,0,*self.size,gl.GL_COLOR_BUFFER_BIT,gl.GL_NEAREST)
         finally:

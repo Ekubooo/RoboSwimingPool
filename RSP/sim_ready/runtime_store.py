@@ -9,8 +9,8 @@ import stat
 import tempfile
 from threading import local
 
-from ...catalog import read_prepared_asset
-from ...paths import RUNTIME_ROOT, runtime_root
+from .catalog import read_prepared_asset
+from .paths import RUNTIME_ROOT, runtime_root
 
 
 class AssetPreparationError(RuntimeError):

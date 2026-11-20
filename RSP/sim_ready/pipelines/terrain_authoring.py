@@ -8,9 +8,9 @@ from tempfile import NamedTemporaryFile
 import yaml
 
 from ..catalog import read_terrain_source, terrain_reference
+from ..container_geometry import describe_terrain, validate_terrain
 from ..paths import ORIGIN_ROOT
 from ..terrain import TerrainRecipe
-from .container import describe_terrain, validate_terrain
 
 
 def save_terrain(name, recipe, *, origin=ORIGIN_ROOT):

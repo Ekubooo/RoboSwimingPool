@@ -39,7 +39,7 @@ def load_geometry(asset, color=None, *, prepared=None):
     lines = np.empty((0, 6), dtype=np.float32)
     if asset.container_size is not None:
         if asset.is_terrain:
-            from RSP.sim_ready.pipelines.container import describe_terrain
+            from RSP.sim_ready.container_geometry import describe_terrain
             visible = describe_terrain(recipe=asset.terrain_recipe).visible_mesh
         else:
             visible = asset.bunny_mesh()

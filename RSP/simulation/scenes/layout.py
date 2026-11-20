@@ -8,7 +8,7 @@ import trimesh
 
 
 class ScenePlacementError(ValueError):
-    """The sampled pose cannot fit at its scene spawn."""
+    """The scene layout or sampled pose cannot be placed as requested."""
 
 
 def asset_bounds(asset):
