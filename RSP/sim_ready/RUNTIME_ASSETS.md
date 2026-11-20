@@ -43,10 +43,11 @@ The stored version field no longer selects historical geometry.
 | Preset | Scene |
 | --- | --- |
 | `pbf_play.yaml` | Reference pool, humanoid and three props |
-| `pbf_empty.yaml` | Reference pool and humanoid |
-| `pbf_multi.yaml` | Reordered props, a rotated moving box and a policy sphere |
-| `pbf_wide.yaml` | Wider pool, with the original water region |
 | `pbf_g1.yaml` | G1 with its own policy and original props |
+
+Only these two developer-maintained scene presets are versioned. Other scene
+YAML files and terrain recipes saved under `origin/terrains/` remain local;
+keep the recipes to regenerate the corresponding runtime assets.
 
 Instances store their position, color, optional XYZW quaternion and linear and
 angular velocities. A `policy_sphere` role explicitly binds a single prop to the

@@ -1,7 +1,4 @@
 schema: 1
 presets:
   Current demo: data/scenes/pbf_play.yaml
-  No extra props: data/scenes/pbf_empty.yaml
-  Multiple instances: data/scenes/pbf_multi.yaml
-  Wide container: data/scenes/pbf_wide.yaml
   G1 demo: data/scenes/pbf_g1.yaml

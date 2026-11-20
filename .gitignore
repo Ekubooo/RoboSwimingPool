@@ -31,3 +31,9 @@ wandb/
 
 # ImGui's machine-local window layout (keep authored application configs).
 /imgui.ini
+
+# Keep only developer-maintained playback presets; other assemblies stay local.
+/data/scenes/*.yaml
+/data/scenes/*.yml
+!/data/scenes/pbf_play.yaml
+!/data/scenes/pbf_g1.yaml

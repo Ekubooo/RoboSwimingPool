@@ -9,6 +9,5 @@
 !containers/**
 !environments/
 !environments/**
-!terrains/
-!terrains/*/
-!terrains/*/terrain.yaml
+# Terrain recipes saved through the editor are user-authored local inputs.
+/terrains/
