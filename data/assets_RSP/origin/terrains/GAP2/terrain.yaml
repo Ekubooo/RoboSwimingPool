@@ -1,0 +1,5 @@
+schema: 1
+kind: gap
+parameters:
+  gap_width: 0.6
+  depth: 0.15

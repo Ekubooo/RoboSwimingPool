@@ -130,9 +130,9 @@ class PlaybackPanel:
     def _render_fluid_controls(self, imgui):
         controls = self.fluid_controls
         changed, strength = imgui.slider_float(self._field(imgui, "Gravity (m/s²)"),
-            controls.gravity_strength, 0., 20., flags=imgui.SliderFlags_.always_clamp)
+            controls.gravity_strength, 0., 20., format="%.1f", flags=imgui.SliderFlags_.always_clamp)
         if changed:
-            controls.set_gravity_strength(strength, commit=False)
+            controls.set_gravity_strength(round(strength * 10) / 10, commit=False)
         if imgui.is_item_deactivated_after_edit():
             controls.commit_gravity()
         direction = next((label for value, label in zip(controls.direction, ("X", "Y", "Z")) if value), "Z")
@@ -165,9 +165,10 @@ class PlaybackPanel:
                 pipeline.request_transparent(depth_enabled=value)
             imgui.begin_disabled(not config.transparent_depth_enabled)
             changed, value = imgui.slider_float(self._field(imgui, "Depth strength"),
-                                                config.transparent_depth_strength, 0., 1.)
+                                                config.transparent_depth_strength, 0., 1., format="%.1f",
+                                                flags=imgui.SliderFlags_.always_clamp)
             if changed:
-                pipeline.request_transparent(strength=value)
+                pipeline.request_transparent(strength=round(value * 10) / 10)
             imgui.end_disabled()
             changed, value = imgui.slider_int(self._field(imgui, "Minimum opacity (%)"),
                 round(config.transparent_alpha_low*100), 60, 80, flags=imgui.SliderFlags_.always_clamp)

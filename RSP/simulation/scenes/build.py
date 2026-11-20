@@ -70,7 +70,7 @@ def add_collisions(builder, layout, visible_mesh, hulls):
     visible.flags = newton.ShapeFlags.VISIBLE
     mesh = newton.Mesh(np.asarray(visible_mesh.vertices, dtype=np.float32),
                        np.asarray(visible_mesh.faces, dtype=np.int32).reshape(-1), compute_inertia=False)
-    builder.add_shape_mesh(-1, mesh=mesh, cfg=visible, color=(.72, .72, .72), label=mesh_label)
+    builder.add_shape_mesh(-1, mesh=mesh, cfg=visible, color=(.45, .45, .45), label=mesh_label)
 
 
 class PBFScene:
@@ -295,6 +295,6 @@ class PBFScene:
                      if np.count_nonzero(corners[a] != corners[b]) == 1]
             self._line_starts = wp.array([corners[a] for a, _ in edges], dtype=wp.vec3, device=self.device)
             self._line_ends = wp.array([corners[b] for _, b in edges], dtype=wp.vec3, device=self.device)
-            self._line_colors = wp.array([[.72, .72, .72]] * len(edges), dtype=wp.vec3, device=self.device)
+            self._line_colors = wp.array([[.45, .45, .45]] * len(edges), dtype=wp.vec3, device=self.device)
         viewer.log_lines("pbf_pool_outline", starts=self._line_starts, ends=self._line_ends,
                          colors=self._line_colors, width=.008)

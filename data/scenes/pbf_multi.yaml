@@ -75,9 +75,9 @@ policy_use_scene_sphere: true
 fluid:
   start:
   - 1.56
-  - 0.75
+  - 0.15
   - 0.5
   end:
   - 2.96
-  - 1.9
-  - 2.34
+  - 1.85
+  - 2.363

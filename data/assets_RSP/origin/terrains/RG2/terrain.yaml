@@ -1,0 +1,5 @@
+schema: 1
+kind: random_grid
+parameters:
+  max_height: 0.15
+  seed: 3

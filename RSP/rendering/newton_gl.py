@@ -188,7 +188,15 @@ class NewtonBillboardViewer(newton.viewer.ViewerGL):
                 continue
             group_scales = shapes.scales.numpy()
             group_materials = shapes.materials.numpy()
-            parts = [(shapes.name, shapes.mesh, shape_ids, [identity] * len(shape_ids), group_scales, group_materials)]
+            group_extras = [identity] * len(shape_ids)
+            if shapes.static and shapes.geo_type == newton.GeoType.PLANE:
+                # Offset only the background drawing, along the plane's local
+                # normal. Collision stays at z=0; shadow/depth passes share
+                # this same instance transform and avoid coplanar terrain.
+                group_extras = [(0., 0., -.005, 0., 0., 0., 1.)
+                                if self.model.shape_label[shape] == "ground_plane" else identity
+                                for shape in shape_ids]
+            parts = [(shapes.name, shapes.mesh, shape_ids, group_extras, group_scales, group_materials)]
             if shapes.geo_type == newton.GeoType.CAPSULE:
                 sphere = self._qualify("/geometry/_capsule_instancer/sphere")
                 cylinder = self._qualify("/geometry/_capsule_instancer/cylinder")

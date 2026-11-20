@@ -165,7 +165,9 @@ def describe_terrain(terrain_source=None, *, recipe=None, terrain_asset=None):
     model, hulls, transform = (None, (), None) if terrain_source is None else _place_model(
         terrain_source, platform, terrain_asset)
     terrain_parts = [ground, *boxes]
-    obstacles = [mesh.bounds.tolist() for mesh in boxes]
+    # Zero-height terrain is covered by the existing global ground collider.
+    collision_boxes = [box for box in boxes if box.bounds[1, 2] > 0.]
+    obstacles = [mesh.bounds.tolist() for mesh in collision_boxes]
     if model is not None:
         terrain_parts.append(model)
         obstacles.append(_mesh_bounds(model, *hulls).tolist())
@@ -181,7 +183,7 @@ def describe_terrain(terrain_source=None, *, recipe=None, terrain_asset=None):
         terrain="stairs" if recipe is None else recipe.kind,
         terrain_prop=None if terrain_source is None else asdict(terrain_source.ref),
         terrain_footprint=ground.bounds[:, :2].tolist(),
-        boxes=[_box_record(box) for box in [*walls, *boxes]], obstacles=obstacles, probes=probes,
+        boxes=[_box_record(box) for box in [*walls, *collision_boxes]], obstacles=obstacles, probes=probes,
     )
     if recipe is not None:
         layout["terrain_recipe"] = recipe.to_dict()

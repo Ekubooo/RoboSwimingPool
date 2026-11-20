@@ -6,9 +6,9 @@ from types import MappingProxyType
 
 
 _PARAMETERS = {
-    "pyramid_stairs": {"step_height": (.10, .02, .25)},
-    "random_grid": {"max_height": (.15, .02, .50), "seed": (0, 0, 2**31 - 1)},
-    "gap": {"gap_width": (.25, .05, .60), "depth": (.15, .02, .50)},
+    "pyramid_stairs": {"step_height": (.10, .0, .25)},
+    "random_grid": {"max_height": (.15, .0, .50), "seed": (0, 0, 2**31 - 1)},
+    "gap": {"gap_width": (.25, .0, .60), "depth": (.15, .0, .50)},
 }
 
 

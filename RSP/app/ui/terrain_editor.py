@@ -158,9 +158,10 @@ class TerrainEditor:
             if isinstance(value, int):
                 changed, value = imgui.input_int(label, value)
             else:
-                changed, value = imgui.slider_float(label, value, lower, upper, "%.3f")
-                value = round(value, 6)
-            if changed:
+                changed, value = imgui.slider_float(label, value, lower, upper, "%.3f",
+                                                   flags=imgui.SliderFlags_.always_clamp)
+                value = min(upper, max(lower, round(round(value / .025) * .025, 6)))
+            if changed and value != self._parameters[field]:
                 self._parameters[field] = value
                 self._invalidate()
         _, self._name = imgui.input_text("Name", self._name)

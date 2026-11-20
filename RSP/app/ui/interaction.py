@@ -7,7 +7,7 @@ import math
 
 
 class FluidInteraction:
-    def __init__(self, apply_settings, *, gravity=(0., 0., -9.81), feedback_scale=1.):
+    def __init__(self, apply_settings, *, gravity=(0., 0., -10.), feedback_scale=1.):
         self._apply_settings = apply_settings
         self._dirty = False
         self.error = None

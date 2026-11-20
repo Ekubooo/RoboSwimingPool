@@ -29,9 +29,9 @@ def container_geometry(mesh, size):
     edges = [corners[[a, b]] for a in range(8) for b in range(a+1, 8)
              if np.count_nonzero(corners[a] != corners[b]) == 1]
     points = np.concatenate(edges)
-    color = np.full(points.shape, .72)
+    color = np.full(points.shape, .45)
     lines = np.column_stack((points, color)).astype(np.float32)
-    return PreviewGeometry(_triangles(mesh, [.72, .72, .72]), lines)
+    return PreviewGeometry(_triangles(mesh, [.45, .45, .45]), lines)
 
 
 def load_geometry(asset, color=None, *, prepared=None):
