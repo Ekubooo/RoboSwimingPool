@@ -57,13 +57,11 @@ python -m pip install -r requirements.txt
 python -m pip install -e . --no-deps
 ```
 
-The requirements do not choose a CUDA PyTorch build for you. The optional
-[constraints-warpsim.txt](constraints-warpsim.txt) retains the same four backend
-pins for use when adding packages to an existing environment; it is not a separate
-installation step. The RSP asset package retains a smaller component dependency
-list for reference, but you do not need to install it separately. The submodules
-currently share this host environment; independent package/environment manifests
-can be added when standalone installation is supported.
+The requirements do not choose a CUDA PyTorch build for you. The root list also
+contains the validated backend version pins; no separate constraints or submodule
+requirements file is needed. All three submodules currently share this host
+environment. Independent package/environment manifests can be added when
+standalone installation is supported.
 
 In the **already configured** WarpSim environment, register the checkout without
 changing installed dependencies:
