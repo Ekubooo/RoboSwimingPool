@@ -13,6 +13,7 @@ wandb/
 /build/
 /dist/
 /*.egg-info/
+/Robot_Lab/*.egg-info/
 
 # Historical PBF output locations (RSP originals live in data/assets_RSP/origin).
 /mimickit/PBF/Assets/

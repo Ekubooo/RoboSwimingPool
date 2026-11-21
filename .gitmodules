@@ -1,0 +1,14 @@
+# Local repositories only: these sibling remotes have not been published yet.
+# Publish child commits before pushing the integration repository.
+[submodule "PCA4Mimickit"]
+	path = Robot_Lab/PCA
+	url = ../PCA4Mimickit.git
+	branch = main
+[submodule "Solver4Newton"]
+	path = Robot_Lab/Solver
+	url = ../Solver4Newton.git
+	branch = main
+[submodule "RobotSwimingPool"]
+	path = Robot_Lab/RSP
+	url = ../RobotSwimingPool.git
+	branch = main

@@ -64,15 +64,41 @@ WarpSim environment, install this checkout from the repository root:
 conda run -n WarpSim python -m pip install -e . --no-deps --no-build-isolation
 ```
 
-This registers the RSP package without changing the environment's dependencies.
-RSP owns the Newton-PBF simulation, solver, rendering and application; MimicKit
-integration lives in `RSP/integrations/mimickit`. Run `python tools/run_rsp.py`
+This registers the RSP, Solver and PCA packages without changing dependencies.
+RSP owns scene assembly, rendering and the application; Solver owns the numerical
+solvers and shared volume-map boundaries. MimicKit integration lives in
+`Robot_Lab/RSP/integrations/mimickit`. Run `python tools/run_rsp.py`
 to select a scene, or add `--profile humanoid --direct` / `--profile g1 --direct`.
 Startup automatically prepares the selected scene's runtime assets from original
 inputs. Each asset keeps one current generated directory under
 `data/assets_RSP/runtime`; changing the code-owned particle radius automatically
-updates its volume map. See the [RSP architecture](RSP/README.md) and
-[asset pipeline guide](RSP/sim_ready/README.md) for ownership and regeneration.
+updates its volume map. See the [RSP architecture](Robot_Lab/RSP/README.md) and
+[asset pipeline guide](Robot_Lab/RSP/sim_ready/README.md) for ownership and regeneration.
+
+### Locally maintained submodules
+
+`Robot_Lab/` is an ordinary grouping directory. Its three direct submodules are
+`RSP` (RobotSwimingPool), `Solver` (Solver4Newton), and `PCA` (PCA4Mimickit).
+Their Python import names remain `RSP`, `Solver`, and `PCA`. Data, policies,
+MimicKit and launch scripts remain in this integration repository.
+
+All repositories use `main`. Commit changes inside each affected submodule
+first, then commit their updated pointers in this repository. No intervening
+pull is required when working in the same checkout.
+
+These repositories have not been published. The relative URLs in `.gitmodules`
+reserve sibling repository names; they are not yet usable for recursive clones.
+Keep this complete local checkout until publication. Later, create the three
+remotes, set their origins and push their commits before pushing this repository.
+
+PCA uses the Newton 1.7 environment and writes new results under `output/pca`:
+
+```powershell
+python -m PCA.run_pca --motion humanoid/humanoid_getup_faceup.pkl --components 4 --play
+```
+
+See the [PCA guide](Robot_Lab/PCA/README.md) and
+[solver guide](Robot_Lab/Solver/README.md).
 
 
 ---
