@@ -1,202 +1,183 @@
-# MimicKit
+# RoboLab
 
-<p align="center">
-  <img src="images/teaser_humanoid.gif" width="32%" style="margin-right: 1px;">
-  <img src="images/teaser_g1.gif" width="32%" style="margin-right: 1px;">
-  <img src="images/teaser_go2.gif" width="32%">
-</p>
+RoboLab is a robotics simulation workspace **developed from
+[MimicKit](https://github.com/xbpeng/MimicKit)**. It retains MimicKit's motion,
+policy and training infrastructure and adds Newton 1.7 fluid/rigid simulation,
+shared solver components, and PCA motion analysis. These additions are maintained
+in three direct Git submodules. RoboLab is not the upstream MimicKit project.
 
-This framework provides a suite of motion imitation methods for training motion controllers. This codebase is designed to be clean and lightweight, with minimal dependencies. A more detailed overview of MimicKit is available in the [Starter Guide](https://arxiv.org/abs/2510.13794). For a more feature-rich and modular motion imitation framework, checkout [ProtoMotions](https://github.com/NVlabs/ProtoMotions/). 
+## Modules
 
-Instructions for each method are available here:
-- [DeepMimic](docs/README_DeepMimic.md)
-- [AMP - Adversarial Motion Priors](docs/README_AMP.md)
-- [AWR - Advantage-Weighted Regression](docs/README_AWR.md)
-- [ASE - Adversarial Skill Embeddings](docs/README_ASE.md)
-- [LCP - Lipschitz-Constrained Policies](docs/README_LCP.md)
-- [ADD - Adversarial Differential Discriminator](docs/README_ADD.md)
-- [SMP - Score-Matching Motion Priors](docs/README_SMP.md)
+| Repository / Python package | Role |
+| --- | --- |
+| [RobotSwimingPool / RSP](https://github.com/Ekubooo/RobotSwimingPool) | Scene assembly, policy playback, rendering and asset preparation |
+| [Solver4Newton / Solver](https://github.com/Ekubooo/Solver4Newton) | PBF, rigid/fluid coupling, scheduling and shared volume-map boundaries |
+| [PCA4Mimickit / PCA](https://github.com/Ekubooo/PCA4Mimickit) | Motion PCA, reconstruction, comparison playback and analysis reports |
 
----
-
-## Installation
-
-This framework supports different simulator backends (referred to as `Engines`). We highly recommend using a package manager, like [Conda](https://docs.conda.io/projects/conda/en/stable/user-guide/install/index.html), to create dedicated Python environments for each simulator.
-
-1. Install the simulator of your choice. 
-<details>
-<summary>Isaac Gym</summary>
-
-Install [Isaac Gym](https://developer.nvidia.com/isaac-gym).
-
-To use Isaac Gym, specify the argument `--engine_config data/engines/isaac_gym_engine.yaml` when running the code.
-</details>
-
-<details>
-<summary>Isaac Lab</summary>
-
-Install [Isaac Lab](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html). This framework has been tested with `2ed331acfcbb1b96c47b190564476511836c3754`.
-
-To use Isaac Lab, specify the argument `--engine_config data/engines/isaac_lab_engine.yaml` when running the code.
-</details>
-
-<details>
-<summary>Newton</summary>
-
-Install [Newton](https://newton-physics.github.io/newton/guide/installation.html). This framework has been tested with `v1.0.0`.
-
-To use Newton, specify the argument `--engine_config data/engines/newton_engine.yaml` when running the code.
-</details>
-
-2. Install the requirements.
-```
-pip install -r requirements.txt
+```text
+Robot_Lab/                   # host repository (RoboLab)
+  Robot_Lab/                 # ordinary grouping directory
+    PCA/                     # PCA4Mimickit submodule
+    Solver/                  # Solver4Newton submodule
+    RSP/                     # RobotSwimingPool submodule
+  mimickit/                  # retained framework and engine integrations
+  args/                      # command-line presets
+  data/                      # configs, original assets and generated runtime assets
+  docs/                      # retained MimicKit usage and algorithm guides
+  tools/                     # host launchers and development tools
 ```
 
-3. Download assets and motion data from [here](https://1sfu-my.sharepoint.com/:u:/g/personal/xbpeng_sfu_ca/EclKq9pwdOBAl-17SogfMW0Bved4sodZBQ_5eZCiz9O--w?e=bqXBaa), then extract the contents into [`data/`](data/).
+Use the canonical imports `RSP`, `Solver`, and `PCA`. The submodules currently
+run within this host checkout; they are not standalone application installations.
 
-### RSP asset tools (Newton-PBF)
+## Setup
 
-The project-owned asset package is `RSP.sim_ready`. In the existing pinned
-WarpSim environment, install this checkout from the repository root:
+Clone the host and its published submodules:
 
 ```powershell
-conda run -n WarpSim python -m pip install -e . --no-deps --no-build-isolation
+git clone --recurse-submodules git@github.com:Ekubooo/Robot_Lab.git
+cd Robot_Lab
 ```
 
-This registers the RSP, Solver and PCA packages without changing dependencies.
-RSP owns scene assembly, rendering and the application; Solver owns the numerical
-solvers and shared volume-map boundaries. MimicKit integration lives in
-`Robot_Lab/RSP/integrations/mimickit`. Run `python tools/run_rsp.py`
-to select a scene, or add `--profile humanoid --direct` / `--profile g1 --direct`.
-Startup automatically prepares the selected scene's runtime assets from original
-inputs. Each asset keeps one current generated directory under
-`data/assets_RSP/runtime`; changing the code-owned particle radius automatically
-updates its volume map. See the [RSP architecture](Robot_Lab/RSP/README.md) and
-[asset pipeline guide](Robot_Lab/RSP/sim_ready/README.md) for ownership and regeneration.
+For an existing clone, use `git submodule update --init --recursive` to check out
+the exact child commits recorded by the host. SSH access to GitHub must be configured;
+HTTPS cloning is also supported using the corresponding repository URL.
 
-### Locally maintained submodules
+The validated environment is Windows with an NVIDIA CUDA GPU, Python 3.11,
+**Newton 1.7.0 and Warp 1.18.0**. Backend pins are recorded in
+[constraints-warpsim.txt](constraints-warpsim.txt); resource-preparation dependencies
+are recorded in the [RSP requirements](https://github.com/Ekubooo/RobotSwimingPool/blob/main/sim_ready/requirements.txt).
+Use a compatible CUDA-enabled PyTorch installation for your GPU; the general
+requirements do not select a CUDA build for you.
 
-`Robot_Lab/` is an ordinary grouping directory. Its three direct submodules are
-`RSP` (RobotSwimingPool), `Solver` (Solver4Newton), and `PCA` (PCA4Mimickit).
-Their Python import names remain `RSP`, `Solver`, and `PCA`. Data, policies,
-MimicKit and launch scripts remain in this integration repository.
+For a new environment, install compatible PyTorch first, then install the declared
+requirements and the editable packages from the host root:
 
-All repositories use `main`. Commit changes inside each affected submodule
-first, then commit their updated pointers in this repository. No intervening
-pull is required when working in the same checkout.
+```powershell
+python -m pip install -r requirements.txt -r Robot_Lab/RSP/sim_ready/requirements.txt -c constraints-warpsim.txt
+python -m pip install "mujoco==3.15.0" "mujoco-warp==3.15.0" "imgui-bundle>=1.92.0" -c constraints-warpsim.txt
+python -m pip install -e . -c constraints-warpsim.txt
+```
 
-These repositories have not been published. The relative URLs in `.gitmodules`
-reserve sibling repository names; they are not yet usable for recursive clones.
-Keep this complete local checkout until publication. Later, create the three
-remotes, set their origins and push their commits before pushing this repository.
+In the **already configured** WarpSim environment, register the checkout without
+changing installed dependencies:
 
-PCA uses the Newton 1.7 environment and writes new results under `output/pca`:
+```powershell
+conda activate WarpSim
+python -m pip install -e . --no-deps --no-build-isolation
+```
+
+The latter command is not a complete environment installation. This documentation
+update was checked in the existing WarpSim environment, not a fresh installation.
+Run the following examples from the host root.
+
+## Resources
+
+Download upstream assets and motion data as described in the
+[MimicKit integration guide](docs/MimicKit.md#data-and-policies). Local downloaded
+assets, motions, models and `output/` are intentionally excluded from Git.
+
+RSP's default profiles additionally reference locally trained task resources:
+
+| Profile | Required local task files |
+| --- | --- |
+| Humanoid | `output/a5000_dodgeball_2048_full_r01/agent_config.yaml` and `model.pt` |
+| G1 | `output/g1_lafan_full_20261107_r01/env_config.yaml`, `agent_config.yaml` and `model.pt` |
+
+Provide those files and the prior/config/asset dependencies they reference, or
+adapt `args/rsp_pbf_demo_args.txt` / `args/rsp_pbf_g1_args.txt` to a compatible
+checkpoint and its matching configuration. A generic pretrained policy is not an
+interchangeable replacement. Cloning the repositories alone does not provide these
+local checkpoints. PCA's example requires `data/motions/humanoid/humanoid_getup_faceup.pkl`
+and the matching humanoid assets.
+
+## Run RSP
+
+```powershell
+python tools/run_rsp.py
+python tools/run_rsp.py --profile humanoid --direct
+```
+
+The first command opens scene selection. The second launches the default Humanoid
+scene directly; `--profile g1 --direct` selects G1 after its resources are prepared.
+Use the playback panel for pause, step and reset. Startup prepares missing or
+outdated runtime assets under `data/assets_RSP/runtime` from the original sources;
+it reuses valid cached assets. Optional explicit preparation:
+
+```powershell
+python tools/prepare_rsp_assets.py
+```
+
+See the [RSP guide](https://github.com/Ekubooo/RobotSwimingPool) and
+[asset pipeline guide](https://github.com/Ekubooo/RobotSwimingPool/blob/main/sim_ready/README.md).
+
+<!-- RSP screenshot slot: paste GitHub-hosted runtime image Markdown here. Keep local image files out of Git. -->
+
+## Run PCA
 
 ```powershell
 python -m PCA.run_pca --motion humanoid/humanoid_getup_faceup.pkl --components 4 --play
 ```
 
-See the [PCA guide](Robot_Lab/PCA/README.md) and
-[solver guide](Robot_Lab/Solver/README.md).
+PCA compares the original motion with its four-component reconstruction. New
+analysis results and caches are written under `output/pca/`. The player supports
+comparison, local and classroom views. See the
+[PCA guide](https://github.com/Ekubooo/PCA4Mimickit) for other analysis workflows.
 
+<!-- PCA screenshot slot: paste GitHub-hosted runtime image Markdown here. Keep local image files out of Git. -->
 
----
+## MimicKit functionality
 
-## Training
+The retained framework still provides training, policy testing, motion viewing
+and retargeting tools. See the [integration guide](docs/MimicKit.md), including the
+seven algorithm guides. RSP itself focuses on single-scene playback of existing
+policies; it is not a replacement for those training workflows.
 
-To train a model, run the following command:
-```
-python mimickit/run.py --mode train --num_envs 4096 --engine_config data/engines/isaac_gym_engine.yaml --env_config data/envs/deepmimic_humanoid_env.yaml --agent_config data/agents/deepmimic_humanoid_ppo_agent.yaml --visualize true --out_dir output/
-```
-- `--mode` selects either `train` or `test` mode.
-- `--num_envs` the number of parallel environments used for simulation. Not all environments support parallel envs, this is mainly used for Isaac Gym envs and other environments, like DeepMind Control Suite does not support this feature and should therefore use 1 for the number of envs.
-- `--engine_config` configuration file for the engine to select between different simulator backends.
-- `--env_config` configuration file for the environment.
-- `--agent_config` configuration file for the agent.
-- `--visualize` enables visualization. Rendering should be disabled for faster training.
-- `--out_dir` the output directory where the models and logs will be saved.
-- `--logger` the logger used to record training stats. The options are text `txt`, TensorBoard `tb`, or `wandb`.
-- `--video` either `true` or `false` to enable headless video recording, which are then recorded by the logger.
+## Working with submodules
 
-Instead of specifying all arguments through the command line, arguments can also be loaded from an `arg_file`:
-```
-python mimickit/run.py --arg_file args/deepmimic_humanoid_ppo_args.txt --visualize true
-```
-The arguments in `arg_file` are treated the same as command line arguments. Arguments for all algorithms are provided in [`args/`](args/).
+All four repositories use `main`. A recursive clone normally leaves submodules at
+the recorded commits with detached HEADs. Before editing a clean, synchronized
+checkout, switch each child to its development branch and update it:
 
-
-## Testing
-
-To test a model, run the following command:
-```
-python mimickit/run.py --arg_file args/deepmimic_humanoid_ppo_args.txt --num_envs 4 --visualize true --mode test --model_file data/models/deepmimic_humanoid_spinkick_model.pt
-```
-- `--model_file` specifies the `.pt` file that contains the parameters of the trained model. Pretrained models are available in [`data/models/`](data/models/), and the corresponding training log files are available in [`data/logs/`](data/logs/).
-
-
-## Distributed Training
-
-To use distributed training with multi-CPU or multi-GPU:
-```
-python mimickit/run.py --arg_file args/deepmimic_humanoid_ppo_args.txt --devices cuda:0 cuda:1
-``` 
-- `--devices` specifies the devices used for training, which can be `cpu` or `cuda:{i}`. Multiple devices can be provided to parallelize training across multiple processes.
-
-
-## Visualizer UI
-
-- **Camera control:** Hold `Alt` key and drag with the left mouse button to pan the camera. Scroll with the mouse wheel to zoom in/out.
-- **Pause Simulation:** `Enter` key can be used to pause/unpause the simulation
-- **Step Simulation:** `Space` key can be used to step the simulator one step at a time.
-
-
-## Visualizing Training Logs
-
-When using the TensorBoard logger during training, a TensorBoard `events` file will be saved in the same output directory as the log file. The log can be viewed with:
-```
-tensorboard --logdir=output/ --port=6006 --samples_per_plugin scalars=999999
-```
-The output `log.txt` file can also be plotted using the plotting script [`plot_log.py`](tools/plot_log/plot_log.py).
-
----
-
-## Motion Data
-Motion data is stored in [`data/motions/`](data/motions/). The `motion_file` field in the environment configuration file can be used to specify the reference motion clip. In addition to imitating individual motion clips, `motion_file` can also specify a dataset file, located in [`data/datasets/`](data/datasets/), which will train a model to imitate a dataset containing multiple motion clips.
-
-The `view_motion` environment can be used to visualize motion clips:
-```
-python mimickit/run.py --mode test --arg_file args/view_motion_humanoid_args.txt --visualize true
+```powershell
+git -C Robot_Lab/PCA switch main
+git -C Robot_Lab/PCA pull --ff-only origin main
+git -C Robot_Lab/Solver switch main
+git -C Robot_Lab/Solver pull --ff-only origin main
+git -C Robot_Lab/RSP switch main
+git -C Robot_Lab/RSP pull --ff-only origin main
 ```
 
-Motion clips are represented by the `Motion` class implemented in [`motion.py`](mimickit/anim/motion.py). Each motion clip is stored in a `.pkl` file. Each frame in a motion specifies the pose of the character according to
-```
-[root position (3D), root rotation (3D), joint rotations]
-```
-where 3D rotations are specified using 3D exponential maps. Joint rotations are recorded in the order that the joints are specified in the `.xml` file (i.e. depth-first traversal of the kinematic tree). For example, in the case of [`humanoid.xml`](data/assets/humanoid/humanoid.xml), each frame is represented as
-```
-[root position (3D), root rotation (3D), abdomen (3D), neck (3D), right_shoulder (3D), right_elbow (1D), left_shoulder (3D), left_elbow (1D), right_hip (3D), right_knee (1D), right_ankle (3D), left_hip (3D), left_knee (1D), left_ankle (3D)]
-```
-The rotations of 3D joints are represented using 3D exponential maps, and the rotations of 1D joints are represented using 1D rotation angles.
+This deliberately selects the latest child development commits; use
+`git submodule update --init --recursive` instead when reproducing the host's
+recorded versions. For normal development in the same checkout, commit in each
+changed child first, then stage and commit the changed child pointers in the host.
+No intervening host pull is required just to record local child commits.
 
+Publish child commits before the host:
 
-## Motion Retargeting
-Motion retargeting can be done using [GMR](https://github.com/YanjieZe/GMR). A script to convert GMR files to the MimicKit format is available in [`tools/gmr_to_mimickit/`](tools/gmr_to_mimickit/).
-
-A script to convert SMPL motion files from [AMASS](https://amass.is.tue.mpg.de/) to the MimicKit format is available in [`tools/smpl_to_mimickit/`](tools/smpl_to_mimickit/).
-
----
-
-## Citation
-If you find this codebase helpful, please cite:
+```powershell
+git -C Robot_Lab/PCA push origin main
+git -C Robot_Lab/Solver push origin main
+git -C Robot_Lab/RSP push origin main
+git push --recurse-submodules=check origin main
 ```
-@article{
-      MimicKitPeng2025,
-      title={MimicKit: A Reinforcement Learning Framework for Motion Imitation and Control}, 
-      author={Peng, Xue Bin},
-      year={2025},
-      eprint={2510.13794},
-      archivePrefix={arXiv},
-      primaryClass={cs.GR},
-      url={https://arxiv.org/abs/2510.13794}, 
-}
+
+Proceed to the last command only after the child pushes succeed.
+
+## License and acknowledgments
+
+The [Apache-2.0 license](LICENSE) and original MimicKit copyright notice are
+retained. RoboLab adds and modifies integrations, tools and documentation; it does
+not claim authorship of the original framework. Each child repository carries its
+own inherited license and source-history notes. Earlier module history remains in
+this host repository.
+
+Data and third-party assets retain their respective terms and attribution; see
+[data/LICENSE](data/LICENSE) and the
+[RSP asset provenance](https://github.com/Ekubooo/RobotSwimingPool/blob/main/sim_ready/PROVENANCE.md).
+The project license is not a blanket grant for externally obtained assets or policies.
+
+For work using MimicKit, see its [paper](https://arxiv.org/abs/2510.13794) and the
+preserved [upstream citation metadata](docs/CITATION_MimicKit.cff). That metadata
+identifies MimicKit, not a separate RoboLab publication.

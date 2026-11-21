@@ -1,4 +1,4 @@
-# Local repositories only: these sibling remotes have not been published yet.
+# Published sibling repositories; paths resolve relative to the host remote.
 # Publish child commits before pushing the integration repository.
 [submodule "PCA4Mimickit"]
 	path = Robot_Lab/PCA

@@ -1,6 +1,7 @@
 # AMP - Adversarial Motion Priors
 
-![AMP](../images/AMP_teaser.png)
+Retained from MimicKit and maintained for the RoboLab checkout; see the
+[integration guide](MimicKit.md) for setup and backend notes.
 
 "AMP: Adversarial Motion Priors for Stylized Physics-Based Character Control"
 (https://xbpeng.github.io/projects/AMP/index.html).

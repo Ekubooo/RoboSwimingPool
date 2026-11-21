@@ -1,6 +1,7 @@
 # AWR - Advantage-Weighted Regression
 
-![AWR](../images/AWR_teaser.png)
+Retained from MimicKit and maintained for the RoboLab checkout; see the
+[integration guide](MimicKit.md) for setup and backend notes.
 
 "Advantage-Weighted Regression: Simple and Scalable Off-Policy Reinforcement Learning"
 (https://xbpeng.github.io/projects/AWR/index.html).

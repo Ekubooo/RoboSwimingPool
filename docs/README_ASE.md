@@ -1,6 +1,7 @@
 # ASE - Adversarial Skill Embeddings
 
-![ASE](../images/ASE_teaser.png)
+Retained from MimicKit and maintained for the RoboLab checkout; see the
+[integration guide](MimicKit.md) for setup and backend notes.
 
 "ASE: Large-Scale Reusable Adversarial Skill Embeddings for Physically Simulated Characters"
 (https://xbpeng.github.io/projects/ASE/index.html).

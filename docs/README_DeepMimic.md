@@ -1,6 +1,7 @@
 # DeepMimic
 
-![DeepMimic](../images/DeepMimic_teaser.png)
+Retained from MimicKit and maintained for the RoboLab checkout; see the
+[integration guide](MimicKit.md) for setup and backend notes.
 
 "DeepMimic: Example-Guided Deep Reinforcement Learning of Physics-Based Character Skills"
 (https://xbpeng.github.io/projects/DeepMimic/index.html).

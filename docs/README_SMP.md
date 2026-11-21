@@ -1,6 +1,7 @@
 # SMP - Score-Matching Motion Priors
 
-![SMP](../images/SMP_teaser.png)
+Retained from MimicKit and maintained for the RoboLab checkout; see the
+[integration guide](MimicKit.md) for setup and backend notes.
 
 "SMP: Reusable Score-Matching Motion Priors for Physics-Based Character Control" (https://xbpeng.github.io/projects/SMP/index.html).
 

@@ -38,3 +38,7 @@ wandb/
 /data/scenes/*.yml
 !/data/scenes/pbf_play.yaml
 !/data/scenes/pbf_g1.yaml
+
+# Documentation screenshots are hosted externally, not committed.
+/docs/images/
+/images/

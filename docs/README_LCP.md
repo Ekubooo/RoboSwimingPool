@@ -1,6 +1,7 @@
 # LCP - Lipschitz-Constrained Policies
 
-![LCP](../images/LCP_teaser.png)
+Retained from MimicKit and maintained for the RoboLab checkout; see the
+[integration guide](MimicKit.md) for setup and backend notes.
 
 "Learning Smooth Humanoid Locomotion through Lipschitz-Constrained Policies"
 (https://xbpeng.github.io/projects/LCP/index.html).
