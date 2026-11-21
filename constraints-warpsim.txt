@@ -1,4 +1,5 @@
-# newton_1_7 backend target; use alongside requirements.txt, not as a standalone install list.
+# Optional backend constraints for installing additional packages into WarpSim.
+# The unified requirements.txt already includes these pins; normal setup needs only it.
 newton==1.7.0
 warp-lang==1.18.0
 mujoco==3.15.0

@@ -44,20 +44,26 @@ the exact child commits recorded by the host. SSH access to GitHub must be confi
 HTTPS cloning is also supported using the corresponding repository URL.
 
 The validated environment is Windows with an NVIDIA CUDA GPU, Python 3.11,
-**Newton 1.7.0 and Warp 1.18.0**. Backend pins are recorded in
-[constraints-warpsim.txt](constraints-warpsim.txt); resource-preparation dependencies
-are recorded in the [RSP requirements](https://github.com/Ekubooo/RobotSwimingPool/blob/main/sim_ready/requirements.txt).
-Use a compatible CUDA-enabled PyTorch installation for your GPU; the general
-requirements do not select a CUDA build for you.
+**Newton 1.7.0 and Warp 1.18.0**. The root
+[requirements.txt](requirements.txt) is the unified installation list for MimicKit,
+RSP, Solver and PCA; `pyproject.toml` reads this same list. It includes the
+simulation backends, viewer UI and asset-preparation dependencies.
 
-For a new environment, install compatible PyTorch first, then install the declared
-requirements and the editable packages from the host root:
+For a new environment, install a compatible CUDA-enabled PyTorch build for your
+GPU first (the validated environment uses `torch 2.10.0+cu128`), then run:
 
 ```powershell
-python -m pip install -r requirements.txt -r Robot_Lab/RSP/sim_ready/requirements.txt -c constraints-warpsim.txt
-python -m pip install "mujoco==3.15.0" "mujoco-warp==3.15.0" "imgui-bundle>=1.92.0" -c constraints-warpsim.txt
-python -m pip install -e . -c constraints-warpsim.txt
+python -m pip install -r requirements.txt
+python -m pip install -e . --no-deps
 ```
+
+The requirements do not choose a CUDA PyTorch build for you. The optional
+[constraints-warpsim.txt](constraints-warpsim.txt) retains the same four backend
+pins for use when adding packages to an existing environment; it is not a separate
+installation step. The RSP asset package retains a smaller component dependency
+list for reference, but you do not need to install it separately. The submodules
+currently share this host environment; independent package/environment manifests
+can be added when standalone installation is supported.
 
 In the **already configured** WarpSim environment, register the checkout without
 changing installed dependencies:

@@ -20,4 +20,4 @@ include = ["RSP", "RSP.*", "Solver", "Solver.*", "PCA", "PCA.*"]
 namespaces = false
 
 [tool.setuptools.dynamic]
-dependencies = {file = ["Robot_Lab/RSP/sim_ready/requirements.txt"]}
+dependencies = {file = ["requirements.txt"]}

@@ -1,10 +1,32 @@
+# Unified RoboLab runtime: MimicKit, RSP, Solver and PCA.
+# Install a CUDA-enabled PyTorch build for your GPU first.
+# Validated with Python 3.11, torch 2.10.0+cu128, Newton 1.7.0 and Warp 1.18.0.
+# Keep this file as plain PEP 508 requirements: pyproject.toml also reads it.
+
+# Retained MimicKit training, policy playback and reporting.
 gymnasium
 diffusers>=0.36.0
 moviepy
 matplotlib
-numpy
 pyyaml
-pyglet
 tensorboardX
 torch>=1.9.1
 wandb>=0.17.4
+
+# Newton simulation and CUDA rigid/fluid coupling.
+newton==1.7.0
+warp-lang==1.18.0
+mujoco==3.15.0
+mujoco-warp==3.15.0
+
+# Viewer UI, motion analysis and image/report utilities.
+pyglet>=2.1.6,<3
+imgui-bundle>=1.92.0
+scipy>=1.11.0
+pillow>=11.3.0
+
+# Shared numerical data and RSP geometry/asset preparation.
+numpy==2.4.6
+trimesh==5.1.1
+manifold3d==3.5.4
+coacd==1.0.14
